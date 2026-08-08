@@ -1,0 +1,10 @@
+# Normalise line endings so Windows checkouts don't change file bytes.
+* text=auto eol=lf
+
+# The map fixture must survive byte for byte; the format tests compare exact
+# bytes, and any line-ending translation would corrupt it.
+test/fixtures/** -text -diff
+
+*.png binary
+*.jpg binary
+*.glb binary

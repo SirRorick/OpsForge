@@ -1,0 +1,2557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spatial Ops — Map Editor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0A0F14; --panel:#101A22; --panel2:#16222C; --raise:#1D2C37;
+  --line:#22323E; --line-soft:#1A2731;
+  --text:#D6E3EB; --dim:#7A93A4; --faint:#4E6675;
+  --accent:#E8C547; --accent-dim:#8A7727;
+  --cyan:#4EC9E0; --green:#5AD6A0; --danger:#E0574B;
+  --hud:"Barlow Condensed",'Arial Narrow',sans-serif;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{
+  background:var(--bg); color:var(--text); font-family:var(--sans); font-size:13px;
+  overflow:hidden; -webkit-font-smoothing:antialiased;
+}
+button,input,select{font:inherit;color:inherit}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:var(--raise);border-radius:5px}
+::-webkit-scrollbar-track{background:transparent}
+
+/* ---------- shell ---------- */
+#app{display:grid;grid-template-rows:46px 1fr 24px;grid-template-columns:252px 1fr 304px;height:100%}
+#topbar{grid-column:1/-1;display:flex;align-items:center;gap:14px;padding:0 12px;
+  background:var(--panel);border-bottom:1px solid var(--line)}
+#statusbar{grid-column:1/-1;display:flex;align-items:center;gap:16px;padding:0 12px;
+  background:var(--panel);border-top:1px solid var(--line);
+  font-family:var(--mono);font-size:10.5px;color:var(--dim);letter-spacing:.02em}
+aside{background:var(--panel);overflow:hidden;display:flex;flex-direction:column;min-height:0}
+#library{border-right:1px solid var(--line)}
+#inspector{border-left:1px solid var(--line)}
+#stage{position:relative;min-width:0;background:
+  radial-gradient(120% 90% at 50% 0%, #16222C 0%, #0A0F14 70%)}
+canvas{display:block;width:100%;height:100%;outline:none}
+
+/* ---------- brand ---------- */
+.brand{display:flex;align-items:baseline;gap:8px;padding-right:12px;border-right:1px solid var(--line);height:100%}
+.brand b{font-family:var(--hud);font-weight:700;font-size:17px;letter-spacing:.14em;
+  text-transform:uppercase;line-height:46px}
+.brand span{font-family:var(--hud);font-size:12px;letter-spacing:.22em;color:var(--accent);
+  text-transform:uppercase}
+
+/* ---------- controls ---------- */
+.grp{display:flex;align-items:center;gap:4px}
+.grp+.grp{padding-left:12px;border-left:1px solid var(--line-soft)}
+.btn{background:var(--panel2);border:1px solid var(--line);border-radius:4px;
+  padding:5px 10px;cursor:pointer;white-space:nowrap;
+  font-family:var(--hud);font-size:13px;font-weight:600;letter-spacing:.08em;text-transform:uppercase}
+.btn:hover{background:var(--raise);border-color:#33495a}
+.btn:active{transform:translateY(1px)}
+.btn.on{background:var(--accent);border-color:var(--accent);color:#14181C}
+.btn.ghost{background:transparent}
+.btn:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.btn[disabled]{opacity:.35;cursor:not-allowed}
+select,input[type=text],input[type=number]{
+  background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:4px 6px;
+  font-family:var(--mono);font-size:11.5px;width:100%}
+input[type=number]{-moz-appearance:textfield}
+input[type=number]::-webkit-outer-spin-button,input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+label.sw{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;
+  font-family:var(--hud);font-size:12.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--dim)}
+label.sw input{accent-color:var(--accent);width:13px;height:13px}
+label.sw:has(input:checked){color:var(--text)}
+
+/* ---------- panel sections ---------- */
+.sec{border-bottom:1px solid var(--line-soft)}
+.sec>h2{margin:0;padding:9px 12px 7px;font-family:var(--hud);font-size:12px;font-weight:600;
+  letter-spacing:.19em;text-transform:uppercase;color:var(--faint);
+  display:flex;justify-content:space-between;align-items:center}
+.sec>h2 .cnt{font-family:var(--mono);font-size:10px;letter-spacing:0;color:var(--faint)}
+.pad{padding:0 12px 12px}
+.scroll{overflow-y:auto;min-height:0;flex:1}
+
+/* ---------- library ---------- */
+#packbar{display:flex;gap:4px;padding:8px 12px;flex-wrap:wrap}
+.pill{background:transparent;border:1px solid var(--line);border-radius:99px;padding:3px 11px;
+  cursor:pointer;font-family:var(--hud);font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--dim)}
+.pill.on{border-color:var(--accent);color:var(--accent)}
+#search{margin:0 12px 8px}
+.cat{font-family:var(--hud);font-size:11.5px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--faint);padding:10px 12px 5px}
+.items{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:0 12px 6px}
+.item{background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:6px 5px 7px;
+  cursor:grab;text-align:center;transition:border-color .12s,background .12s}
+.item:hover{border-color:var(--accent-dim);background:var(--raise)}
+.item:active{cursor:grabbing}
+.item canvas,.item .ph{width:100%;aspect-ratio:1;display:block;border-radius:3px;background:#0D151B}
+.item .nm{margin-top:5px;font-size:10.5px;line-height:1.25;color:var(--dim);word-break:break-word}
+.item:hover .nm{color:var(--text)}
+.item .warn{color:var(--accent);font-family:var(--mono);font-size:9px}
+
+/* ---------- outliner ---------- */
+.row{display:flex;align-items:center;gap:8px;padding:4px 12px;cursor:pointer;font-size:12px}
+.row:hover{background:var(--panel2)}
+.row.on{background:var(--accent-dim);color:#fff}
+.row .dot{width:7px;height:7px;border-radius:2px;flex:none}
+.row .t{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .g{font-family:var(--mono);font-size:9.5px;color:var(--accent);flex:none}
+.row.on .g{color:#fff}
+
+/* ---------- inspector fields ---------- */
+.field{display:grid;grid-template-columns:58px 1fr;align-items:center;gap:8px;margin-bottom:6px}
+.field>span{font-family:var(--hud);font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+.triple{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px}
+.axis{position:relative}
+.axis::before{content:attr(data-a);position:absolute;left:5px;top:50%;transform:translateY(-50%);
+  font-family:var(--mono);font-size:9px;font-weight:600;pointer-events:none}
+.axis[data-a=X]::before{color:#E06C6C}
+.axis[data-a=Y]::before{color:#7FD17F}
+.axis[data-a=Z]::before{color:#6C9BE0}
+.axis input{padding-left:16px}
+.hint{color:var(--faint);font-size:11px;line-height:1.5}
+kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px solid var(--line);
+  border-radius:3px;padding:1px 4px;color:var(--dim)}
+
+/* ---------- viewport HUD ---------- */
+#hud{position:absolute;inset:0;pointer-events:none}
+#hud .corner{position:absolute;width:22px;height:22px;border:1px solid var(--line);opacity:.9}
+#hud .tl{top:10px;left:10px;border-right:0;border-bottom:0}
+#hud .tr{top:10px;right:10px;border-left:0;border-bottom:0}
+#hud .bl{bottom:10px;left:10px;border-right:0;border-top:0}
+#hud .br{bottom:10px;right:10px;border-left:0;border-top:0}
+#readout{position:absolute;left:22px;bottom:20px;font-family:var(--mono);font-size:10.5px;
+  color:var(--faint);line-height:1.75;letter-spacing:.02em}
+#readout b{color:var(--accent);font-weight:500}
+#viewbtns{position:absolute;top:16px;right:20px;display:flex;gap:3px;pointer-events:auto}
+#viewbtns .btn{padding:3px 8px;font-size:11.5px}
+#marquee{position:fixed;border:1px solid var(--accent);background:rgba(232,197,71,.09);
+  pointer-events:none;display:none;z-index:50}
+#drophint{position:absolute;inset:0;display:none;place-items:center;
+  border:2px dashed var(--accent);background:rgba(232,197,71,.05);
+  font-family:var(--hud);font-size:16px;letter-spacing:.2em;text-transform:uppercase;color:var(--accent)}
+#stage.dropping #drophint{display:grid}
+
+/* ---------- toast ---------- */
+#toast{position:fixed;left:50%;bottom:52px;transform:translateX(-50%) translateY(10px);
+  background:var(--raise);border:1px solid var(--line);border-left:3px solid var(--accent);
+  padding:9px 16px;border-radius:4px;font-size:12.5px;opacity:0;transition:.2s;pointer-events:none;z-index:100;max-width:60ch}
+#toast.show{opacity:1;transform:translateX(-50%)}
+#toast.bad{border-left-color:var(--danger)}
+
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <header id="topbar">
+    <div class="brand"><b>Spatial Ops</b><span>Map Editor</span></div>
+
+    <div class="grp">
+      <button class="btn" id="b-new">New</button>
+      <button class="btn" id="b-open">Open</button>
+      <button class="btn" id="b-save">Export</button>
+    </div>
+
+    <div class="grp">
+      <button class="btn" id="m-translate" title="Move (W)">Move</button>
+      <button class="btn" id="m-rotate" title="Rotate (E)">Rotate</button>
+      <button class="btn" id="m-scale" title="Scale (R)">Scale</button>
+      <button class="btn ghost" id="m-space" title="Toggle world/local axes">World</button>
+    </div>
+
+    <div class="grp">
+      <label class="sw" title="Snap movement to a grid"><input type="checkbox" id="snap-t" checked>Grid</label>
+      <select id="snap-t-v" style="width:64px"><option value="0.05">5cm</option><option value="0.1">10cm</option><option value="0.25" selected>25cm</option><option value="0.5">50cm</option><option value="1">1m</option></select>
+      <label class="sw" title="Snap rotation to an angle"><input type="checkbox" id="snap-r" checked>Angle</label>
+      <select id="snap-r-v" style="width:56px"><option value="5">5&deg;</option><option value="15" selected>15&deg;</option><option value="45">45&deg;</option><option value="90">90&deg;</option></select>
+    </div>
+
+    <div class="grp">
+      <label class="sw" title="Scale all axes together"><input type="checkbox" id="uniform" checked>Uniform</label>
+      <label class="sw" title="Keep floor pieces resting on the ground"><input type="checkbox" id="floorlock" checked>Floor</label>
+    </div>
+
+    <div class="grp" style="margin-left:auto">
+      <button class="btn ghost" id="b-undo" title="Undo (Ctrl+Z)">Undo</button>
+      <button class="btn ghost" id="b-redo" title="Redo (Ctrl+Shift+Z)">Redo</button>
+    </div>
+  </header>
+
+  <!-- ---------------- library ---------------- -->
+  <aside id="library">
+    <div class="sec">
+      <h2>Library <span class="cnt" id="lib-count"></span></h2>
+      <div id="packbar"></div>
+      <div id="search"><input type="text" id="q" placeholder="Filter objects"></div>
+    </div>
+    <div class="scroll" id="lib-list"></div>
+    <div class="sec" style="border-bottom:0;border-top:1px solid var(--line-soft)">
+      <div class="pad" style="padding-top:10px">
+        <button class="btn ghost" id="b-import-pack" style="width:100%">Import pack&hellip;</button>
+        <p class="hint" style="margin:8px 0 0">Drag an object into the view to place it, or click to drop it at the centre.</p>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ---------------- viewport ---------------- -->
+  <div id="stage">
+    <canvas id="view"></canvas>
+    <div id="hud">
+      <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+      <div id="readout"></div>
+      <div id="viewbtns">
+        <button class="btn ghost" data-view="top">Top</button>
+        <button class="btn ghost" data-view="front">Front</button>
+        <button class="btn ghost" data-view="side">Side</button>
+        <button class="btn ghost" data-view="persp">3D</button>
+      </div>
+    </div>
+    <div id="drophint">Release to place</div>
+  </div>
+
+  <!-- ---------------- inspector ---------------- -->
+  <aside id="inspector">
+    <div class="scroll">
+
+      <div class="sec">
+        <h2>Selection <span class="cnt" id="sel-count">none</span></h2>
+        <div class="pad" id="sel-body"></div>
+      </div>
+
+      <div class="sec">
+        <h2>Objects <span class="cnt" id="obj-count">0</span></h2>
+        <div id="outliner" style="max-height:210px;overflow-y:auto"></div>
+      </div>
+
+      <div class="sec">
+        <h2>Arena</h2>
+        <div class="pad">
+          <div class="field"><span>Size</span>
+            <div class="triple">
+              <div class="axis" data-a="X"><input type="number" id="bx" min="1" max="60" step="1"></div>
+              <div class="axis" data-a="Y"><input type="number" id="by" min="1" max="20" step="1"></div>
+              <div class="axis" data-a="Z"><input type="number" id="bz" min="1" max="60" step="1"></div>
+            </div>
+          </div>
+          <p class="hint">Whole metres &mdash; the game stores arena bounds as integers. Y is the ceiling height.</p>
+        </div>
+      </div>
+
+      <div class="sec">
+        <h2>Play space</h2>
+        <div class="pad">
+          <div class="field"><span>Shape</span>
+            <select id="nav-shape"><option value="keep">Keep from file</option><option value="circle">Circle</option><option value="rect">Rectangle</option></select>
+          </div>
+          <div class="field" id="nav-r-row"><span>Radius</span><input type="number" id="nav-r" value="5" min="1" max="17" step="0.25"></div>
+          <div class="field" id="nav-w-row" style="display:none"><span>Width</span><input type="number" id="nav-w" value="7" min="1" max="34" step="0.25"></div>
+          <div class="field" id="nav-d-row" style="display:none"><span>Depth</span><input type="number" id="nav-d" value="7" min="1" max="34" step="0.25"></div>
+          <p class="hint">The green outline is the physical room the player walks in, captured by the headset. Leave it as it came unless you know you want to change it.</p>
+        </div>
+      </div>
+
+      <div class="sec">
+        <h2>Map</h2>
+        <div class="pad">
+          <div class="field"><span>Name</span><input type="text" id="m-name"></div>
+          <div class="field"><span>Author</span><input type="text" id="m-author"></div>
+          <div class="field"><span>ID</span><input type="text" id="m-guid" readonly></div>
+          <button class="btn ghost" id="b-newguid" style="width:100%;margin-top:2px">New ID</button>
+          <p class="hint" style="margin-top:8px">Exports as <code id="fname" style="font-family:var(--mono);color:var(--dim)"></code></p>
+        </div>
+      </div>
+
+      <div class="sec" style="border-bottom:0">
+        <h2>Shortcuts</h2>
+        <div class="pad">
+          <p class="hint">
+            <kbd>W</kbd><kbd>E</kbd><kbd>R</kbd> move / rotate / scale &middot;
+            <kbd>G</kbd> group &middot; <kbd>Shift</kbd>+<kbd>G</kbd> ungroup &middot;
+            <kbd>Ctrl</kbd>+<kbd>D</kbd> duplicate &middot; <kbd>F</kbd> frame &middot;
+            <kbd>End</kbd> drop to floor &middot; <kbd>Del</kbd> delete &middot;
+            <kbd>Ctrl</kbd>+<kbd>A</kbd> select all<br><br>
+            Left drag selects, right drag orbits, middle drag pans,
+            <kbd>Alt</kbd>+left orbits. <kbd>Shift</kbd> adds to the selection,
+            <kbd>Ctrl</kbd> picks a single object out of a group.
+          </p>
+        </div>
+      </div>
+
+    </div>
+  </aside>
+
+  <footer id="statusbar">
+    <span id="st-file">No map loaded</span>
+    <span id="st-mode"></span>
+    <span id="st-sel"></span>
+    <span style="margin-left:auto" id="st-msg"></span>
+  </footer>
+</div>
+
+<div id="marquee"></div>
+<div id="toast"></div>
+<input type="file" id="filepick" style="display:none">
+<input type="file" id="packpick" accept=".json,application/json" style="display:none">
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+// ==== src/unity.js ====================================================
+// ---------------------------------------------------------------------------
+// Unity <-> three.js transform conversion
+// ---------------------------------------------------------------------------
+// Unity is left-handed (X right, Y up, Z forward-into-the-scene) and composes
+// euler angles as Ry * Rx * Rz. three.js is right-handed with Z toward the
+// viewer. Feeding Unity numbers straight into three.js mirrors the whole map,
+// which matters as soon as an asymmetric piece like BarrierCorner is placed.
+//
+// The fix is the reflection M(x, y, z) = (x, y, -z). Under a reflection a
+// rotation about axis a by angle t becomes a rotation about M(a) by -t, so:
+//
+//   q_three = Ry(-uy) * Rx(-ux) * Rz(uz)   ==  THREE.Euler(-ux, -uy, uz, 'YXZ')
+//
+// Written out longhand here rather than leaning on three.js so it can be
+// tested standalone.
+// ---------------------------------------------------------------------------
+
+const DEG = Math.PI / 180;
+const RAD = 180 / Math.PI;
+
+/** Quaternion (as [x,y,z,w]) from euler radians applied in three.js 'YXZ' order. */
+function quatFromEulerYXZ(x, y, z) {
+  const c1 = Math.cos(x / 2), c2 = Math.cos(y / 2), c3 = Math.cos(z / 2);
+  const s1 = Math.sin(x / 2), s2 = Math.sin(y / 2), s3 = Math.sin(z / 2);
+  return [
+    s1 * c2 * c3 + c1 * s2 * s3,
+    c1 * s2 * c3 - s1 * c2 * s3,
+    c1 * c2 * s3 - s1 * s2 * c3,
+    c1 * c2 * c3 + s1 * s2 * s3,
+  ];
+}
+
+/** Euler radians in 'YXZ' order from a normalised quaternion [x,y,z,w]. */
+function eulerYXZFromQuat(q) {
+  const [x, y, z, w] = q;
+  const x2 = x + x, y2 = y + y, z2 = z + z;
+  const xx = x * x2, xy = x * y2, xz = x * z2;
+  const yy = y * y2, yz = y * z2, zz = z * z2;
+  const wx = w * x2, wy = w * y2, wz = w * z2;
+
+  const m11 = 1 - (yy + zz), m13 = xz + wy;
+  const m21 = xy + wz,       m22 = 1 - (xx + zz), m23 = yz - wx;
+  const m31 = xz - wy,       m33 = 1 - (xx + yy);
+
+  const clamp = (v) => (v < -1 ? -1 : v > 1 ? 1 : v);
+  const ex = Math.asin(-clamp(m23));
+  let ey, ez;
+  if (Math.abs(m23) < 0.9999999) {
+    ey = Math.atan2(m13, m33);
+    ez = Math.atan2(m21, m22);
+  } else {
+    ey = Math.atan2(-m31, m11);
+    ez = 0;
+  }
+  return [ex, ey, ez];
+}
+
+/** Unity position {x,y,z} -> three.js [x, y, z]. Self-inverse. */
+function convertPosition(p) {
+  return [p.x, p.y, -p.z];
+}
+
+/** Unity euler degrees {x,y,z} -> three.js quaternion [x,y,z,w]. */
+function unityEulerToQuat(r) {
+  return quatFromEulerYXZ(-r.x * DEG, -r.y * DEG, r.z * DEG);
+}
+
+/** three.js quaternion [x,y,z,w] -> Unity euler degrees {x,y,z} in [0, 360). */
+function quatToUnityEuler(q) {
+  const [ex, ey, ez] = eulerYXZFromQuat(q);
+  return {
+    x: wrap360(-ex * RAD),
+    y: wrap360(-ey * RAD),
+    z: wrap360(ez * RAD),
+  };
+}
+
+function wrap360(deg) {
+  let d = deg % 360;
+  if (d < 0) d += 360;
+  // Kill -0 and floating point fuzz right below 360 so exports stay tidy.
+  if (Math.abs(d) < 1e-6 || Math.abs(d - 360) < 1e-6) d = 0;
+  return d;
+}
+
+
+// ==== src/format.js ===================================================
+// ---------------------------------------------------------------------------
+// Spatial Ops map file format
+// ---------------------------------------------------------------------------
+// Reverse engineered from a v4 map file. See docs/FORMAT.md for the full notes.
+//
+// The game serialises with Newtonsoft.Json, minified, and distinguishes int
+// fields (written bare: 7) from float fields (always given a decimal point:
+// 0.0). Floats are single precision, printed with .NET "shortest round-trip"
+// formatting. Reproducing both rules exactly means an unmodified map can be
+// loaded and re-exported byte for byte.
+// ---------------------------------------------------------------------------
+
+const MAP_VERSION = 4;
+const DOTNET_MIN_DATE = '0001-01-01T00:00:00';
+
+// -- GUIDs ------------------------------------------------------------------
+// The dev pointed at System.Guid. Map files use Guid.NewGuid().ToString("N"):
+// a RFC 4122 version 4 UUID rendered as 32 lowercase hex digits, no hyphens.
+// The file name is `${name}_${guid}` with no extension.
+
+function newGuid() {
+  let hex;
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    hex = crypto.randomUUID().replace(/-/g, '');
+  } else {
+    const b = new Uint8Array(16);
+    crypto.getRandomValues(b);
+    b[6] = (b[6] & 0x0f) | 0x40; // version 4
+    b[8] = (b[8] & 0x3f) | 0x80; // RFC 4122 variant
+    hex = [...b].map((n) => n.toString(16).padStart(2, '0')).join('');
+  }
+  return hex.toLowerCase();
+}
+
+function isGuidN(s) {
+  return typeof s === 'string' && /^[0-9a-f]{32}$/.test(s);
+}
+
+/** Map name -> safe file name component. The game shows `name`, the file uses it too. */
+function mapFileName(name, guid) {
+  const safe = String(name || 'Map').replace(/[\\/:*?"<>|]/g, '').trim() || 'Map';
+  return `${safe}_${guid}`;
+}
+
+// -- .NET style float formatting -------------------------------------------
+
+/**
+ * Format a float the way the game does.
+ *
+ * Verified against every float in the sample map: it is .NET Framework / Mono
+ * "R" formatting for Single, i.e. 7 significant digits with trailing zeros
+ * trimmed, falling back to 9 significant digits when 7 does not round-trip.
+ * (Modern shortest-round-trip formatting gives 8 digits for some values and
+ * does not reproduce the file.) Newtonsoft always leaves a decimal point on,
+ * so integral values are written as "1.0".
+ */
+function f32(value) {
+  const v = Math.fround(value);
+  if (!Number.isFinite(v)) return '0.0';
+  if (v === 0) return '0.0'; // also normalises -0
+  let out = gDigits(v, 7);
+  if (Math.fround(parseFloat(out)) !== v) out = gDigits(v, 9);
+  if (!/[.eE]/.test(out)) out += '.0';
+  return out;
+}
+
+/** .NET "G{p}" for a positive/negative finite double, trailing zeros trimmed. */
+function gDigits(v, p) {
+  let s = v.toPrecision(p);
+  if (s.includes('e')) {
+    // .NET switches to E notation outside 1e-5..1e{p}; map data never gets
+    // there in practice, so expand rather than risk a mismatched exponent form.
+    const abs = Math.abs(v);
+    if (abs > 1e-7 && abs < 1e21) s = expand(v, p);
+    else return v.toExponential(p - 1).replace('e', 'E');
+  }
+  if (s.includes('.')) s = s.replace(/0+$/, '').replace(/\.$/, '');
+  return s;
+}
+
+function expand(v, p) {
+  const exp = Math.floor(Math.log10(Math.abs(v)));
+  const decimals = Math.min(100, Math.max(0, p - 1 - exp));
+  return v.toFixed(decimals);
+}
+
+const J = JSON.stringify; // for strings only
+
+function vec3(v) {
+  return `{"x":${f32(v.x)},"y":${f32(v.y)},"z":${f32(v.z)}}`;
+}
+function vec3i(v) {
+  return `{"x":${Math.round(v.x)},"y":${Math.round(v.y)},"z":${Math.round(v.z)}}`;
+}
+function vec2(v) {
+  return `{"x":${f32(v.x)},"y":${f32(v.y)}}`;
+}
+function vec2i(v) {
+  return `{"x":${Math.round(v.x)},"y":${Math.round(v.y)}}`;
+}
+
+/** Plain JSON for the free-form rule-set value dictionaries. */
+function dict(o) {
+  const keys = Object.keys(o || {});
+  if (!keys.length) return '{}';
+  return `{${keys.map((k) => `${J(k)}:${JSON.stringify(o[k])}`).join(',')}}`;
+}
+
+// -- Serialise --------------------------------------------------------------
+
+function serializeMap(map) {
+  const parts = [];
+  parts.push(`"guid":${J(map.guid)}`);
+  parts.push(`"version":${map.version ?? MAP_VERSION}`);
+  parts.push(`"name":${J(map.name)}`);
+  parts.push(`"author":${J(map.author ?? '')}`);
+  parts.push(`"source":${J(map.source ?? 'Player')}`);
+  parts.push(`"createdTime":${J(map.createdTime)}`);
+  parts.push(`"editedTime":${J(map.editedTime)}`);
+  parts.push(`"playedTime":${J(map.playedTime ?? DOTNET_MIN_DATE)}`);
+  parts.push(`"mapBoundsSize":${vec3i(map.mapBoundsSize)}`);
+
+  const rs = (map.ruleSets || []).map(
+    (r) =>
+      `{"name":${J(r.name)},"type":${J(r.type)},"intValues":${dict(r.intValues)},` +
+      `"boolValues":${dict(r.boolValues)},"enumValues":${dict(r.enumValues)},` +
+      `"flagsValues":${dict(r.flagsValues)}}`
+  );
+  parts.push(`"ruleSets":[${rs.join(',')}]`);
+
+  const an = (map.anchors || []).map(
+    (a) =>
+      `{"$type":${J(a.$type ?? 'MetaGroupSpatialAnchor')},"guid":${J(a.guid)},` +
+      `"groupGuid":${J(a.groupGuid)},"positionOffset":${vec3(a.positionOffset)},` +
+      `"rotationOffset":${vec3(a.rotationOffset)}}`
+  );
+  parts.push(`"anchors":[${an.join(',')}]`);
+
+  const mo = (map.mapObjects || []).map((o) => {
+    if (o.raw && !o.dirty) return o.raw; // untouched -> byte-identical passthrough
+    return (
+      `{"$type":${J(o.$type ?? 'MapObject')},"type":${J(o.type)},` +
+      `"position":${vec3(o.position)},"rotation":${vec3(o.rotation)},` +
+      `"scale":${vec3(o.scale)}}`
+    );
+  });
+  parts.push(`"mapObjects":[${mo.join(',')}]`);
+
+  const nc = map.navCloud;
+  parts.push(
+    `"navCloud":{"position":${vec3(nc.position)},"rotation":${vec3(nc.rotation)},` +
+      `"size":${vec2(nc.size)},"divisions":${vec2i(nc.divisions)},` +
+      `"encodedPoints":${J(nc.encodedPoints)}}`
+  );
+
+  parts.push(`"hasArUcoAnchor":${map.hasArUcoAnchor ? 'true' : 'false'}`);
+  return `{${parts.join(',')}}`;
+}
+
+// -- Parse ------------------------------------------------------------------
+
+/**
+ * Parse a map file. Keeps the original minified text of every map object so
+ * anything the user never touches is written back exactly as it came in.
+ */
+function parseMap(text) {
+  const data = JSON.parse(text);
+  if (typeof data !== 'object' || !data || !Array.isArray(data.mapObjects)) {
+    throw new Error('Not a Spatial Ops map file: no mapObjects array.');
+  }
+
+  const rawObjects = extractRawMapObjects(text);
+  const mapObjects = data.mapObjects.map((o, i) => ({
+    $type: o.$type || 'MapObject',
+    type: o.type,
+    position: { ...o.position },
+    rotation: { ...o.rotation },
+    scale: { ...o.scale },
+    raw: rawObjects[i] || null,
+    dirty: false,
+  }));
+
+  return {
+    guid: isGuidN(data.guid) ? data.guid : newGuid(),
+    version: data.version ?? MAP_VERSION,
+    name: data.name ?? 'Untitled',
+    author: data.author ?? '',
+    source: data.source ?? 'Player',
+    createdTime: data.createdTime ?? nowStamp(),
+    editedTime: data.editedTime ?? nowStamp(),
+    playedTime: data.playedTime ?? DOTNET_MIN_DATE,
+    mapBoundsSize: { ...data.mapBoundsSize },
+    ruleSets: data.ruleSets || [],
+    anchors: data.anchors || [],
+    mapObjects,
+    navCloud: data.navCloud
+      ? {
+          position: { ...data.navCloud.position },
+          rotation: { ...data.navCloud.rotation },
+          size: { ...data.navCloud.size },
+          divisions: { ...data.navCloud.divisions },
+          encodedPoints: data.navCloud.encodedPoints,
+        }
+      : defaultNavCloudStub(),
+    hasArUcoAnchor: !!data.hasArUcoAnchor,
+    unknownVersion: data.version !== MAP_VERSION ? data.version : null,
+  };
+}
+
+/** Pull the exact source text of each element of the "mapObjects" array. */
+function extractRawMapObjects(text) {
+  const key = '"mapObjects":';
+  const at = text.indexOf(key);
+  if (at < 0) return [];
+  let i = text.indexOf('[', at);
+  if (i < 0) return [];
+  const out = [];
+  let depth = 0;
+  let start = -1;
+  let inStr = false;
+  let esc = false;
+  for (i = i + 1; i < text.length; i++) {
+    const c = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === '\\') esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') inStr = true;
+    else if (c === '{') {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (c === '}') {
+      depth--;
+      if (depth === 0) out.push(text.slice(start, i + 1));
+    } else if (c === ']' && depth === 0) break;
+  }
+  return out;
+}
+
+function nowStamp(d = new Date()) {
+  const p = (n) => String(n).padStart(2, '0');
+  return (
+    `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}` +
+    `T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  );
+}
+
+// -- navCloud ---------------------------------------------------------------
+// The nav cloud is the player's physical play space, not a mesh derived from
+// map geometry: one byte per grid point (0 = outside, 1 = inside), gzipped and
+// base64'd. The sample is a 5 m radius circle on a 141x141 grid at 0.25 m
+// spacing (35 m across) centred on the world origin.
+
+const NAV_SPACING = 0.25;
+
+async function decodeNavCloud(encoded) {
+  const bin = Uint8Array.from(atob(encoded), (c) => c.charCodeAt(0));
+  const stream = new Blob([bin]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+async function encodeNavCloud(bytes) {
+  const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream('gzip'));
+  const out = new Uint8Array(await new Response(stream).arrayBuffer());
+  let s = '';
+  for (let i = 0; i < out.length; i++) s += String.fromCharCode(out[i]);
+  return btoa(s);
+}
+
+/** Grid index -> world metres, for a grid of `divisions` points centred on origin. */
+function navIndexToWorld(i, divisions) {
+  return (i - (divisions - 1) / 2) * NAV_SPACING;
+}
+
+/** Build a play-space mask. shape: 'circle' | 'rect'. */
+function buildNavMask({ shape = 'circle', radius = 5, width = 7, depth = 7, divisions = 141 }) {
+  const bytes = new Uint8Array(divisions * divisions);
+  for (let r = 0; r < divisions; r++) {
+    const z = navIndexToWorld(r, divisions);
+    for (let c = 0; c < divisions; c++) {
+      const x = navIndexToWorld(c, divisions);
+      const inside =
+        shape === 'circle'
+          ? x * x + z * z <= radius * radius + 1e-6
+          : Math.abs(x) <= width / 2 + 1e-6 && Math.abs(z) <= depth / 2 + 1e-6;
+      if (inside) bytes[r * divisions + c] = 1;
+    }
+  }
+  return bytes;
+}
+
+function defaultNavCloudStub() {
+  return {
+    position: { x: 0, y: 0, z: 0 },
+    rotation: { x: 0, y: 0, z: 0 },
+    size: { x: 35, y: 35 },
+    divisions: { x: 141, y: 141 },
+    encodedPoints: '',
+  };
+}
+
+async function defaultNavCloud(radius = 5) {
+  const stub = defaultNavCloudStub();
+  stub.encodedPoints = await encodeNavCloud(buildNavMask({ shape: 'circle', radius }));
+  return stub;
+}
+
+// -- New map ----------------------------------------------------------------
+
+async function newMap({ name = 'New Map', author = '' } = {}) {
+  const ts = nowStamp();
+  return {
+    guid: newGuid(),
+    version: MAP_VERSION,
+    name,
+    author,
+    source: 'Player',
+    createdTime: ts,
+    editedTime: ts,
+    playedTime: DOTNET_MIN_DATE,
+    mapBoundsSize: { x: 7, y: 3, z: 7 },
+    ruleSets: DEFAULT_RULESETS.map((r) => ({ ...r, intValues: {}, boolValues: {}, enumValues: {}, flagsValues: {} })),
+    anchors: [],
+    mapObjects: [],
+    navCloud: await defaultNavCloud(5),
+    hasArUcoAnchor: false,
+  };
+}
+
+const DEFAULT_RULESETS = [
+  { name: 'Free For All', type: 'FreeForAll' },
+  { name: 'Co-op Survival', type: 'Survival' },
+  { name: 'Team Deathmatch', type: 'TeamDeathMatch' },
+  { name: 'Capture The Flag', type: 'CaptureTheFlag' },
+  { name: 'Domination', type: 'Domination' },
+];
+
+
+// ==== src/catalog.js ==================================================
+// ---------------------------------------------------------------------------
+// Object catalog
+// ---------------------------------------------------------------------------
+// A pack is data, not code. Everything the editor knows about a game object
+// lives in one of these entries, so adding a new pack means adding a JSON file
+// and nothing else. Swap `model` in once real .glb assets are available and the
+// placeholder is ignored.
+//
+// Fields
+//   type          exact string written to the map file. This is the contract.
+//   label         what the library shows
+//   category      library grouping inside the pack
+//   shape         placeholder generator id (see placeholders.js)
+//   size          [w, h, d] in metres of the base mesh at scale 1,1,1
+//   pivot         'base'   -> mesh sits on y = 0, origin at floor level
+//                 'center' -> origin at the middle of the mesh
+//   rotationAxes  'y'   -> yaw only (floor pieces)
+//                 'xyz' -> free
+//   floor         true if the piece is expected to rest on the ground
+//   color         placeholder tint
+//   uncertain     dimensions are inferred, not confirmed by the developers
+// ---------------------------------------------------------------------------
+
+const PACK_SCHEMA_VERSION = 1;
+
+// Pivot and floor behaviour below are read straight off the sample map:
+// every Barrier/Crate sits at y = 0 (base pivot), while the *Solid primitives
+// and Tunnel sit at y = scale.y / 2 (centre pivot resting on the floor).
+const DEFAULT_PACK = {
+  id: 'default',
+  name: 'Default',
+  schema: PACK_SCHEMA_VERSION,
+  objects: [
+    // -- Barriers -----------------------------------------------------------
+    {
+      type: 'BarrierLow', label: 'Barrier Low', category: 'Barriers',
+      shape: 'barrier', size: [1.0, 0.6, 0.12], pivot: 'base',
+      rotationAxes: 'y', floor: true, color: '#8B99A6', uncertain: true,
+    },
+    {
+      type: 'BarrierFull', label: 'Barrier Full', category: 'Barriers',
+      shape: 'barrier', size: [1.0, 1.4, 0.12], pivot: 'base',
+      rotationAxes: 'y', floor: true, color: '#8B99A6', uncertain: true,
+    },
+    {
+      type: 'BarrierWindow', label: 'Barrier Window', category: 'Barriers',
+      shape: 'barrierWindow', size: [1.0, 1.4, 0.12], pivot: 'base',
+      rotationAxes: 'y', floor: true, color: '#8B99A6', uncertain: true,
+    },
+    {
+      type: 'BarrierCorner', label: 'Barrier Corner', category: 'Barriers',
+      shape: 'barrierCorner', size: [1.0, 1.4, 1.0], pivot: 'base',
+      rotationAxes: 'y', floor: true, color: '#8B99A6', uncertain: true,
+    },
+    {
+      type: 'BarrierU', label: 'Barrier U', category: 'Barriers',
+      shape: 'barrierU', size: [1.0, 1.4, 1.0], pivot: 'base',
+      rotationAxes: 'y', floor: true, color: '#8B99A6', uncertain: true,
+    },
+
+    // -- Props --------------------------------------------------------------
+    {
+      type: 'Crate', label: 'Crate', category: 'Props',
+      shape: 'crate', size: [0.6, 0.6, 0.6], pivot: 'base',
+      rotationAxes: 'y', floor: true, color: '#A8794A', uncertain: true,
+    },
+    {
+      type: 'DestructibleCrate', label: 'Destructible Crate', category: 'Props',
+      shape: 'crate', size: [0.6, 0.6, 0.6], pivot: 'base',
+      rotationAxes: 'y', floor: true, color: '#B85C36', uncertain: true,
+    },
+    {
+      type: 'DefaultElectricityBox', label: 'Electricity Box', category: 'Props',
+      shape: 'electricityBox', size: [0.4, 0.6, 0.28], pivot: 'base',
+      rotationAxes: 'y', floor: true, color: '#5C8A6B', uncertain: true,
+    },
+    {
+      type: 'Tunnel', label: 'Tunnel', category: 'Props',
+      shape: 'tunnel', size: [1.0, 1.0, 1.0], pivot: 'center',
+      rotationAxes: 'y', floor: true, color: '#7C8794', uncertain: true,
+    },
+
+    // -- Primitives ---------------------------------------------------------
+    // Confirmed by the sample: BoxSolidGrounded at y 0.5 with scale.y 1, and
+    // CylinderSolid at y 1 with scale.y 2, both resting exactly on the floor.
+    {
+      type: 'BoxSolid', label: 'Box', category: 'Primitives',
+      shape: 'box', size: [1, 1, 1], pivot: 'center',
+      rotationAxes: 'xyz', floor: false, color: '#6E7C8A',
+    },
+    {
+      type: 'BoxSolidGrounded', label: 'Box (Grounded)', category: 'Primitives',
+      shape: 'box', size: [1, 1, 1], pivot: 'center',
+      rotationAxes: 'y', floor: true, color: '#6E7C8A',
+    },
+    {
+      type: 'CylinderSolid', label: 'Cylinder', category: 'Primitives',
+      shape: 'cylinder', size: [1, 1, 1], pivot: 'center',
+      rotationAxes: 'xyz', floor: false, color: '#6E7C8A',
+    },
+    {
+      type: 'CylinderSolidGrounded', label: 'Cylinder (Grounded)', category: 'Primitives',
+      shape: 'cylinder', size: [1, 1, 1], pivot: 'center',
+      rotationAxes: 'y', floor: true, color: '#6E7C8A',
+    },
+    {
+      type: 'WallSolid', label: 'Wall', category: 'Primitives',
+      shape: 'box', size: [1, 1, 0.1], pivot: 'center',
+      rotationAxes: 'y', floor: true, color: '#6E7C8A', uncertain: true,
+    },
+  ],
+};
+
+// ---------------------------------------------------------------------------
+
+const packs = new Map();
+const byType = new Map();
+
+function registerPack(pack) {
+  if (!pack || !pack.id || !Array.isArray(pack.objects)) {
+    throw new Error('A pack needs an id and an objects array.');
+  }
+  packs.set(pack.id, pack);
+  for (const def of pack.objects) byType.set(def.type, { ...def, pack: pack.id });
+  return pack;
+}
+
+function getPacks() {
+  return [...packs.values()];
+}
+
+function getDef(type) {
+  return byType.get(type) || null;
+}
+
+/**
+ * Definition for a type the catalog has never seen. Loading a map that uses a
+ * pack you have not installed should still work, so unknown types get a clearly
+ * marked stand-in rather than being dropped on the floor.
+ */
+function unknownDef(type) {
+  return {
+    type,
+    label: type,
+    category: 'Unrecognised',
+    shape: 'unknown',
+    size: [0.5, 0.5, 0.5],
+    pivot: 'base',
+    rotationAxes: 'xyz',
+    floor: false,
+    color: '#C0407A',
+    unknown: true,
+    pack: 'unrecognised',
+  };
+}
+
+function defOrUnknown(type) {
+  return getDef(type) || unknownDef(type);
+}
+
+function categoriesOf(pack) {
+  const out = new Map();
+  for (const def of pack.objects) {
+    if (!out.has(def.category)) out.set(def.category, []);
+    out.get(def.category).push(def);
+  }
+  return out;
+}
+
+registerPack(DEFAULT_PACK);
+
+
+// ==== src/placeholders.js =============================================
+// ---------------------------------------------------------------------------
+// Placeholder geometry
+// ---------------------------------------------------------------------------
+// Stand-ins until the real .glb assets arrive. Each builder returns a single
+// merged BufferGeometry authored to exactly the catalog `size`, with the origin
+// where the catalog `pivot` says it is, so that applying the Unity scale
+// straight to the mesh gives correct world dimensions.
+// ---------------------------------------------------------------------------
+
+
+
+
+const cache = new Map();
+
+function box(w, h, d, x = 0, y = 0, z = 0) {
+  const g = new THREE.BoxGeometry(w, h, d);
+  g.translate(x, y, z);
+  return g.toNonIndexed();
+}
+
+function cyl(r, h, y = 0, seg = 24) {
+  const g = new THREE.CylinderGeometry(r, r, h, seg);
+  g.translate(0, y, 0);
+  return g.toNonIndexed();
+}
+
+function merge(parts) {
+  return parts.length === 1 ? parts[0] : mergeGeometries(parts, false);
+}
+
+// -- Builders ---------------------------------------------------------------
+// All builders author in a 1 x 1 x 1 cell with the base on y = 0; the caller
+// rescales to `size` and moves the origin for centre-pivot pieces.
+
+const builders = {
+  box: () => box(1, 1, 1, 0, 0.5, 0),
+
+  cylinder: () => cyl(0.5, 1, 0.5),
+
+  // Slab with a kick plate and two end posts, so facing is readable at a glance.
+  barrier: () => {
+    const t = 1;
+    return merge([
+      box(1, 0.86, t * 0.62, 0, 0.5, 0),
+      box(1, 0.1, t, 0, 0.06, 0),
+      box(0.08, 1, t, -0.46, 0.5, 0),
+      box(0.08, 1, t, 0.46, 0.5, 0),
+    ]);
+  },
+
+  // Same slab with a letterbox opening in the upper half.
+  barrierWindow: () => {
+    const t = 0.62;
+    return merge([
+      box(1, 0.46, t, 0, 0.23, 0),
+      box(1, 0.14, t, 0, 0.93, 0),
+      box(0.16, 0.4, t, -0.42, 0.66, 0),
+      box(0.16, 0.4, t, 0.42, 0.66, 0),
+      box(0.08, 1, 1, -0.46, 0.5, 0),
+      box(0.08, 1, 1, 0.46, 0.5, 0),
+    ]);
+  },
+
+  // Two panels meeting at a right angle, occupying the -x / -z quadrant edges.
+  barrierCorner: () => {
+    const t = 0.12;
+    return merge([
+      box(1, 1, t, 0, 0.5, -0.5 + t / 2),
+      box(t, 1, 1 - t, -0.5 + t / 2, 0.5, t / 2),
+      box(0.1, 1.04, 0.1, -0.45, 0.52, -0.45),
+    ]);
+  },
+
+  // Three panels forming a U opening toward +z.
+  barrierU: () => {
+    const t = 0.12;
+    return merge([
+      box(1, 1, t, 0, 0.5, -0.5 + t / 2),
+      box(t, 1, 1 - t, -0.5 + t / 2, 0.5, t / 2),
+      box(t, 1, 1 - t, 0.5 - t / 2, 0.5, t / 2),
+    ]);
+  },
+
+  // Shell plus corner battens.
+  crate: () => {
+    const parts = [box(0.94, 0.94, 0.94, 0, 0.5, 0)];
+    const e = 0.47;
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        parts.push(box(0.1, 1, 0.1, sx * e, 0.5, sz * e));
+      }
+    }
+    parts.push(box(1, 0.09, 0.09, 0, 0.5, -e));
+    parts.push(box(1, 0.09, 0.09, 0, 0.5, e));
+    return merge(parts);
+  },
+
+  electricityBox: () => {
+    return merge([
+      box(1, 0.9, 1, 0, 0.45, 0),
+      box(0.7, 0.12, 0.2, 0, 0.95, 0.1),
+      box(0.24, 0.3, 0.12, 0, 0.5, 0.56),
+    ]);
+  },
+
+  // Two legs and a lintel: a readable walk-through arch.
+  tunnel: () => {
+    const leg = 0.22;
+    return merge([
+      box(leg, 0.78, 1, -0.5 + leg / 2, 0.39, 0),
+      box(leg, 0.78, 1, 0.5 - leg / 2, 0.39, 0),
+      box(1, 0.22, 1, 0, 0.89, 0),
+    ]);
+  },
+
+  // Deliberately odd so an unrecognised type is impossible to mistake.
+  unknown: () => {
+    const g = new THREE.OctahedronGeometry(0.5, 0);
+    g.scale(1, 1, 1);
+    g.translate(0, 0.5, 0);
+    return g.toNonIndexed();
+  },
+};
+
+/**
+ * Geometry for a catalog definition, scaled to its size and pivoted correctly.
+ * Cached: every Crate in the map shares one BufferGeometry.
+ */
+function geometryFor(def) {
+  const key = `${def.shape}|${def.size.join(',')}|${def.pivot}`;
+  if (cache.has(key)) return cache.get(key);
+
+  const build = builders[def.shape] || builders.unknown;
+  const g = build().clone();
+  const [w, h, d] = def.size;
+  g.scale(w, h, d);
+  if (def.pivot === 'center') g.translate(0, -h / 2, 0);
+  g.computeVertexNormals();
+  g.computeBoundingBox();
+  cache.set(key, g);
+  return g;
+}
+
+/** Local-space bounding box of the unscaled placeholder. */
+function localBox(def) {
+  return geometryFor(def).boundingBox;
+}
+
+function clearGeometryCache() {
+  for (const g of cache.values()) g.dispose();
+  cache.clear();
+}
+
+
+// ==== src/scene.js ====================================================
+// ---------------------------------------------------------------------------
+// Viewport
+// ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+const ACCENT = 0xe8c547;
+const CYAN = 0x4ec9e0;
+
+class Viewport extends EventTarget {
+  constructor(canvas) {
+    super();
+    this.canvas = canvas;
+    this.objects = [];
+    this.selection = new Set();
+    this.uniformScale = true;
+    this.floorLock = true;
+    this.snap = { translate: 0.25, rotate: 15, scale: 0 };
+    this.gizmoMode = 'translate';
+    this.gizmoSpace = 'world';
+    this._nextId = 1;
+    this._edgeCache = new Map();
+    this._materials = new Map();
+    this._modelCache = new Map();
+    this._gltf = new GLTFLoader();
+
+    this._initRenderer();
+    this._initScene();
+    this._initControls();
+    this._initPicking();
+
+    this.renderer.setAnimationLoop(() => this._frame());
+  }
+
+  // -- setup ----------------------------------------------------------------
+
+  _initRenderer() {
+    this.renderer = new THREE.WebGLRenderer({
+      canvas: this.canvas,
+      antialias: true,
+      alpha: true,
+      powerPreference: 'high-performance',
+    });
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  }
+
+  _initScene() {
+    this.scene = new THREE.Scene();
+
+    this.camera = new THREE.PerspectiveCamera(50, 1, 0.05, 500);
+    this.camera.position.set(7, 6, 9);
+
+    this.scene.add(new THREE.HemisphereLight(0x9fc4e0, 0x1a2028, 2.0));
+    const key = new THREE.DirectionalLight(0xfff2df, 2.4);
+    key.position.set(6, 12, 5);
+    key.castShadow = true;
+    key.shadow.mapSize.set(2048, 2048);
+    const s = 14;
+    key.shadow.camera.left = -s;
+    key.shadow.camera.right = s;
+    key.shadow.camera.top = s;
+    key.shadow.camera.bottom = -s;
+    key.shadow.camera.far = 60;
+    key.shadow.bias = -0.0012;
+    this.scene.add(key);
+    const fill = new THREE.DirectionalLight(0x7fa8c9, 0.7);
+    fill.position.set(-7, 5, -6);
+    this.scene.add(fill);
+
+    // Ground catches shadows but is otherwise invisible.
+    this.ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(200, 200),
+      new THREE.ShadowMaterial({ opacity: 0.32 })
+    );
+    this.ground.rotation.x = -Math.PI / 2;
+    this.ground.receiveShadow = true;
+    this.scene.add(this.ground);
+
+    this.grid = new THREE.GridHelper(40, 160, 0x2f4553, 0x1c2831);
+    this.grid.material.transparent = true;
+    this.grid.material.opacity = 0.75;
+    this.scene.add(this.grid);
+
+    this.boundsGroup = new THREE.Group();
+    this.scene.add(this.boundsGroup);
+
+    this.navGroup = new THREE.Group();
+    this.scene.add(this.navGroup);
+
+    this.pivot = new THREE.Group();
+    this.scene.add(this.pivot);
+  }
+
+  _initControls() {
+    this.orbit = new OrbitControls(this.camera, this.canvas);
+    this.orbit.enableDamping = true;
+    this.orbit.dampingFactor = 0.08;
+    this.orbit.maxPolarAngle = Math.PI * 0.499;
+    this.orbit.target.set(0, 0.75, 0);
+    // Left is reserved for selection. Right orbits, middle pans, Alt+Left orbits.
+    this.orbit.mouseButtons = {
+      LEFT: null,
+      MIDDLE: THREE.MOUSE.PAN,
+      RIGHT: THREE.MOUSE.ROTATE,
+    };
+    this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+    this.gizmo = new TransformControls(this.camera, this.canvas);
+    this.gizmo.setSize(0.9);
+    // three r169+ exposes the visual half of TransformControls separately.
+    this._gizmoHelper =
+      typeof this.gizmo.getHelper === 'function' ? this.gizmo.getHelper() : this.gizmo;
+    this.scene.add(this._gizmoHelper);
+
+    this.gizmo.addEventListener('dragging-changed', (e) => {
+      this.orbit.enabled = !e.value;
+      if (e.value) this._beginDrag();
+      else this._endDrag();
+    });
+    this.gizmo.addEventListener('objectChange', () => {
+      this._constrainDuringDrag();
+      this.emit('transform');
+    });
+
+    addEventListener('keydown', (e) => {
+      if (e.key === 'Alt') this.orbit.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
+    });
+    addEventListener('keyup', (e) => {
+      if (e.key === 'Alt') this.orbit.mouseButtons.LEFT = null;
+    });
+  }
+
+  emit(name, detail) {
+    this.dispatchEvent(new CustomEvent(name, { detail }));
+  }
+
+  // -- object lifecycle -----------------------------------------------------
+
+  materialFor(def) {
+    const key = def.color + (def.unknown ? '!' : '');
+    if (!this._materials.has(key)) {
+      this._materials.set(
+        key,
+        new THREE.MeshStandardMaterial({
+          color: new THREE.Color(def.color),
+          roughness: 0.82,
+          metalness: 0.04,
+          flatShading: false,
+        })
+      );
+    }
+    return this._materials.get(key);
+  }
+
+  /**
+   * Add a map object. `mo` uses Unity values, exactly as they appear in the
+   * file, so nothing is lost on the way in or out.
+   */
+  addObject(mo) {
+    const def = defOrUnknown(mo.type);
+    const mesh = new THREE.Mesh(geometryFor(def), this.materialFor(def));
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.userData = {
+      id: this._nextId++,
+      def,
+      raw: mo.raw || null,
+      dirty: !!mo.dirty,
+      group: null,
+    };
+    mesh.position.fromArray(convertPosition(mo.position));
+    mesh.quaternion.fromArray(unityEulerToQuat(mo.rotation));
+    mesh.scale.set(mo.scale.x, mo.scale.y, mo.scale.z);
+    this.scene.add(mesh);
+    this.objects.push(mesh);
+    if (def.model) this._swapInModel(mesh, def);
+    return mesh;
+  }
+
+  /** Replace the placeholder with a real asset once one is configured. */
+  async _swapInModel(mesh, def) {
+    try {
+      let geo = this._modelCache.get(def.model);
+      if (!geo) {
+        const gltf = await this._gltf.loadAsync(def.model);
+        const found = [];
+        gltf.scene.updateWorldMatrix(true, true);
+        gltf.scene.traverse((n) => {
+          if (n.isMesh) {
+            const g = n.geometry.clone();
+            g.applyMatrix4(n.matrixWorld);
+            found.push(g);
+          }
+        });
+        if (!found.length) return;
+        geo = found[0];
+        this._modelCache.set(def.model, geo);
+      }
+      mesh.geometry = geo;
+      this._refreshOutline(mesh);
+      this.emit('change');
+    } catch (err) {
+      console.warn(`Could not load model for ${def.type}, keeping placeholder.`, err);
+    }
+  }
+
+  removeObjects(meshes) {
+    for (const m of meshes) {
+      this._setOutline(m, false);
+      m.removeFromParent();
+      const i = this.objects.indexOf(m);
+      if (i >= 0) this.objects.splice(i, 1);
+      this.selection.delete(m);
+    }
+    this.rebuildPivot();
+    this.emit('selection');
+    this.emit('change');
+  }
+
+  clearObjects() {
+    this.setSelection([]);
+    for (const m of this.objects) m.removeFromParent();
+    this.objects.length = 0;
+    this.emit('change');
+  }
+
+  markDirty(mesh) {
+    mesh.userData.dirty = true;
+  }
+
+  /** Unity-space record for a mesh, ready to hand to the serialiser. */
+  toMapObject(mesh) {
+    mesh.updateWorldMatrix(true, false);
+    const p = new THREE.Vector3();
+    const q = new THREE.Quaternion();
+    const s = new THREE.Vector3();
+    mesh.matrixWorld.decompose(p, q, s);
+    return {
+      $type: 'MapObject',
+      type: mesh.userData.def.type,
+      position: { x: p.x, y: p.y, z: -p.z },
+      rotation: quatToUnityEuler(q.toArray()),
+      scale: { x: s.x, y: s.y, z: s.z },
+      raw: mesh.userData.raw,
+      dirty: mesh.userData.dirty,
+    };
+  }
+
+  // -- selection ------------------------------------------------------------
+
+  setSelection(list) {
+    const next = new Set(list);
+    for (const m of this.selection) if (!next.has(m)) this._setOutline(m, false);
+    for (const m of next) if (!this.selection.has(m)) this._setOutline(m, true);
+    this.selection = next;
+    this.rebuildPivot();
+    this.emit('selection');
+  }
+
+  selectAll() {
+    this.setSelection(this.objects);
+  }
+
+  /** Expand a click to its whole group, unless the user is overriding. */
+  expandGroup(mesh, override = false) {
+    const g = mesh.userData.group;
+    if (!g || override) return [mesh];
+    return this.objects.filter((o) => o.userData.group === g);
+  }
+
+  _setOutline(mesh, on) {
+    if (on) {
+      if (mesh.userData.outline) return;
+      const line = new THREE.LineSegments(
+        this._edgesFor(mesh.geometry),
+        new THREE.LineBasicMaterial({ color: ACCENT, depthTest: false, transparent: true })
+      );
+      line.renderOrder = 999;
+      mesh.add(line);
+      mesh.userData.outline = line;
+    } else if (mesh.userData.outline) {
+      mesh.userData.outline.removeFromParent();
+      mesh.userData.outline.material.dispose();
+      mesh.userData.outline = null;
+    }
+  }
+
+  _refreshOutline(mesh) {
+    if (mesh.userData.outline) {
+      this._setOutline(mesh, false);
+      this._setOutline(mesh, true);
+    }
+  }
+
+  _edgesFor(geometry) {
+    if (!this._edgeCache.has(geometry)) {
+      this._edgeCache.set(geometry, new THREE.EdgesGeometry(geometry, 25));
+    }
+    return this._edgeCache.get(geometry);
+  }
+
+  selectionBounds() {
+    const box = new THREE.Box3();
+    for (const m of this.selection) box.expandByObject(m);
+    return box;
+  }
+
+  // -- gizmo ----------------------------------------------------------------
+
+  rebuildPivot() {
+    // Hand every child back to the scene before moving the pivot.
+    for (const child of [...this.pivot.children]) this.scene.attach(child);
+
+    if (!this.selection.size) {
+      this.gizmo.detach();
+      return;
+    }
+    const list = [...this.selection];
+    if (list.length === 1) {
+      const m = list[0];
+      m.updateWorldMatrix(true, false);
+      const p = new THREE.Vector3();
+      const q = new THREE.Quaternion();
+      const s = new THREE.Vector3();
+      m.matrixWorld.decompose(p, q, s);
+      this.pivot.position.copy(p);
+      this.pivot.quaternion.copy(q);
+    } else {
+      this.pivot.position.copy(this.selectionBounds().getCenter(new THREE.Vector3()));
+      this.pivot.quaternion.identity();
+    }
+    this.pivot.scale.set(1, 1, 1);
+    this.pivot.updateMatrixWorld(true);
+    for (const m of list) this.pivot.attach(m);
+
+    this.gizmo.attach(this.pivot);
+    this._applyGizmoConstraints();
+  }
+
+  setGizmoMode(mode) {
+    this.gizmoMode = mode;
+    this.gizmo.setMode(mode);
+    this._applyGizmoConstraints();
+    this.emit('mode');
+  }
+
+  setGizmoSpace(space) {
+    this.gizmoSpace = space;
+    this.gizmo.setSpace(space);
+    this.emit('mode');
+  }
+
+  _applyGizmoConstraints() {
+    const list = [...this.selection];
+    const yawOnly = list.length > 0 && list.every((m) => m.userData.def.rotationAxes === 'y');
+    this.gizmo.showX = true;
+    this.gizmo.showY = true;
+    this.gizmo.showZ = true;
+    if (this.gizmoMode === 'rotate' && yawOnly) {
+      this.gizmo.showX = false;
+      this.gizmo.showZ = false;
+    }
+    this.gizmo.translationSnap = this.snap.translate || null;
+    this.gizmo.rotationSnap = this.snap.rotate ? THREE.MathUtils.degToRad(this.snap.rotate) : null;
+    this.gizmo.scaleSnap = this.snap.scale || null;
+    this.gizmo.setSpace(this.gizmoSpace);
+  }
+
+  setSnap(part, value) {
+    this.snap[part] = value;
+    this._applyGizmoConstraints();
+    this.emit('mode');
+  }
+
+  _beginDrag() {
+    this._dragStartScale = this.pivot.scale.clone();
+    this.emit('commit-begin');
+  }
+
+  _constrainDuringDrag() {
+    if (this.gizmoMode === 'scale') {
+      // A rotated child under a non-uniformly scaled parent shears, which no
+      // position/rotation/scale triple can represent. Forcing uniform scale on
+      // multi-selects keeps the export honest.
+      const force = this.uniformScale || this.selection.size > 1;
+      if (force && this._dragStartScale) {
+        const s0 = this._dragStartScale;
+        const s = this.pivot.scale;
+        const r = [s.x / s0.x, s.y / s0.y, s.z / s0.z];
+        let best = r[0];
+        for (const v of r) if (Math.abs(v - 1) > Math.abs(best - 1)) best = v;
+        s.set(s0.x * best, s0.y * best, s0.z * best);
+      }
+    }
+    if (this.floorLock) this._applyFloorLock();
+  }
+
+  _applyFloorLock() {
+    for (const m of this.selection) {
+      if (!m.userData.def.floor) continue;
+      m.updateWorldMatrix(true, false);
+      const box = new THREE.Box3().setFromObject(m);
+      const drop = box.min.y;
+      if (Math.abs(drop) > 1e-5) {
+        const world = new THREE.Vector3();
+        m.getWorldPosition(world);
+        world.y -= drop;
+        const local = this.pivot.worldToLocal(world.clone());
+        if (m.parent === this.pivot) m.position.copy(local);
+        else m.position.copy(world);
+      }
+    }
+  }
+
+  dropToFloor() {
+    const targets = this.selection.size ? [...this.selection] : [];
+    for (const m of targets) {
+      const box = new THREE.Box3().setFromObject(m);
+      const world = new THREE.Vector3();
+      m.getWorldPosition(world);
+      world.y -= box.min.y;
+      const local = m.parent === this.pivot ? this.pivot.worldToLocal(world.clone()) : world;
+      m.position.copy(local);
+      this.markDirty(m);
+    }
+    this.emit('transform');
+    this.emit('commit-end');
+  }
+
+  _endDrag() {
+    for (const m of this.selection) this.markDirty(m);
+    this.rebuildPivot();
+    this.emit('transform');
+    this.emit('commit-end');
+  }
+
+  // -- picking --------------------------------------------------------------
+
+  _initPicking() {
+    this.ray = new THREE.Raycaster();
+    this.marquee = null;
+    const pt = new THREE.Vector2();
+
+    const ndc = (e) => {
+      const r = this.canvas.getBoundingClientRect();
+      pt.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+      return pt;
+    };
+
+    let down = null;
+
+    this.canvas.addEventListener('pointerdown', (e) => {
+      // this.gizmo.axis is set while a handle is hovered; TransformControls
+      // registers its listeners first, so this reliably wins.
+      if (e.button !== 0 || e.altKey || this.gizmo.dragging || this.gizmo.axis) return;
+      down = { x: e.clientX, y: e.clientY, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey };
+      this.emit('marquee-start', down);
+    });
+
+    addEventListener('pointermove', (e) => {
+      if (!down) return;
+      const dx = e.clientX - down.x;
+      const dy = e.clientY - down.y;
+      if (!down.active && Math.hypot(dx, dy) > 4) down.active = true;
+      if (down.active) {
+        this.marquee = {
+          x1: Math.min(down.x, e.clientX), y1: Math.min(down.y, e.clientY),
+          x2: Math.max(down.x, e.clientX), y2: Math.max(down.y, e.clientY),
+        };
+        this.emit('marquee-move', this.marquee);
+      }
+    });
+
+    addEventListener('pointerup', (e) => {
+      if (!down) return;
+      const wasDrag = down.active;
+      const mods = { shift: down.shift, ctrl: down.ctrl };
+      const box = this.marquee;
+      down = null;
+      this.marquee = null;
+      this.emit('marquee-end');
+      if (wasDrag && box) this._marqueeSelect(box, mods);
+      else this._clickSelect(ndc(e), mods);
+    });
+  }
+
+  _clickSelect(ndcPoint, mods) {
+    this.ray.setFromCamera(ndcPoint, this.camera);
+    const hits = this.ray.intersectObjects(this.objects, false);
+    const hit = hits.length ? hits[0].object : null;
+    if (!hit) {
+      if (!mods.shift && !mods.ctrl) this.setSelection([]);
+      return;
+    }
+    const picked = this.expandGroup(hit, mods.ctrl);
+    if (mods.shift) {
+      const next = new Set(this.selection);
+      const allIn = picked.every((m) => next.has(m));
+      for (const m of picked) allIn ? next.delete(m) : next.add(m);
+      this.setSelection([...next]);
+    } else {
+      this.setSelection(picked);
+    }
+  }
+
+  _marqueeSelect(box, mods) {
+    const r = this.canvas.getBoundingClientRect();
+    const toScreen = (v) => {
+      const p = v.clone().project(this.camera);
+      return { x: r.left + ((p.x + 1) / 2) * r.width, y: r.top + ((1 - p.y) / 2) * r.height, z: p.z };
+    };
+    const corner = new THREE.Vector3();
+    const inside = [];
+    for (const m of this.objects) {
+      m.updateWorldMatrix(true, false);
+      const bb = new THREE.Box3().setFromObject(m);
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, visible = false;
+      for (let i = 0; i < 8; i++) {
+        corner.set(
+          i & 1 ? bb.max.x : bb.min.x,
+          i & 2 ? bb.max.y : bb.min.y,
+          i & 4 ? bb.max.z : bb.min.z
+        );
+        const s = toScreen(corner);
+        if (s.z < 1) visible = true;
+        minX = Math.min(minX, s.x); maxX = Math.max(maxX, s.x);
+        minY = Math.min(minY, s.y); maxY = Math.max(maxY, s.y);
+      }
+      if (!visible) continue;
+      const overlaps = maxX >= box.x1 && minX <= box.x2 && maxY >= box.y1 && minY <= box.y2;
+      if (overlaps) inside.push(m);
+    }
+
+    const expanded = new Set();
+    for (const m of inside) for (const g of this.expandGroup(m, mods.ctrl)) expanded.add(g);
+
+    if (mods.shift) {
+      const next = new Set(this.selection);
+      for (const m of expanded) next.add(m);
+      this.setSelection([...next]);
+    } else {
+      this.setSelection([...expanded]);
+    }
+  }
+
+  /** Where a screen point meets the ground plane, for drag-and-drop placement. */
+  groundPoint(clientX, clientY) {
+    const r = this.canvas.getBoundingClientRect();
+    const ndcPoint = new THREE.Vector2(
+      ((clientX - r.left) / r.width) * 2 - 1,
+      -((clientY - r.top) / r.height) * 2 + 1
+    );
+    this.ray.setFromCamera(ndcPoint, this.camera);
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const out = new THREE.Vector3();
+    return this.ray.ray.intersectPlane(plane, out) ? out : new THREE.Vector3(0, 0, 0);
+  }
+
+  // -- arena and play space -------------------------------------------------
+
+  setBounds(size) {
+    this.boundsGroup.clear();
+    const { x, y, z } = size;
+    const geo = new THREE.BoxGeometry(x, y, z);
+    geo.translate(0, y / 2, 0);
+    const edges = new THREE.LineSegments(
+      new THREE.EdgesGeometry(geo),
+      new THREE.LineBasicMaterial({ color: CYAN, transparent: true, opacity: 0.5 })
+    );
+    this.boundsGroup.add(edges);
+
+    // Solid corner brackets read as an arena; a plain wire box reads as noise.
+    const len = Math.min(0.6, Math.min(x, z) * 0.18);
+    const mat = new THREE.LineBasicMaterial({ color: CYAN });
+    const pts = [];
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        const cx = (sx * x) / 2;
+        const cz = (sz * z) / 2;
+        pts.push(cx, 0, cz, cx - sx * len, 0, cz);
+        pts.push(cx, 0, cz, cx, 0, cz - sz * len);
+        pts.push(cx, 0, cz, cx, len, cz);
+        pts.push(cx, y, cz, cx - sx * len, y, cz);
+        pts.push(cx, y, cz, cx, y, cz - sz * len);
+        pts.push(cx, y, cz, cx, y - len, cz);
+      }
+    }
+    const bg = new THREE.BufferGeometry();
+    bg.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+    this.boundsGroup.add(new THREE.LineSegments(bg, mat));
+    geo.dispose();
+  }
+
+  /** Draw the play space mask so it is obvious where the player can walk. */
+  async setNavCloud(navCloud) {
+    this.navGroup.clear();
+    if (!navCloud || !navCloud.encodedPoints) return;
+    let bytes;
+    try {
+      bytes = await decodeNavCloud(navCloud.encodedPoints);
+    } catch {
+      return;
+    }
+    const N = navCloud.divisions.x;
+    const M = navCloud.divisions.y;
+    const positions = [];
+    // Outline only: draw an edge wherever an inside cell touches an outside one.
+    const at = (r, c) => (r < 0 || c < 0 || r >= M || c >= N ? 0 : bytes[r * N + c]);
+    const h = 0.012;
+    for (let r = 0; r < M; r++) {
+      for (let c = 0; c < N; c++) {
+        if (!at(r, c)) continue;
+        const x0 = navIndexToWorld(c, N) - 0.125;
+        const x1 = x0 + 0.25;
+        const z0 = -(navIndexToWorld(r, M) - 0.125);
+        const z1 = z0 - 0.25;
+        if (!at(r - 1, c)) positions.push(x0, h, z0, x1, h, z0);
+        if (!at(r + 1, c)) positions.push(x0, h, z1, x1, h, z1);
+        if (!at(r, c - 1)) positions.push(x0, h, z0, x0, h, z1);
+        if (!at(r, c + 1)) positions.push(x1, h, z0, x1, h, z1);
+      }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    this.navGroup.add(
+      new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: 0x5ad6a0, transparent: true, opacity: 0.85 }))
+    );
+  }
+
+  // -- camera ---------------------------------------------------------------
+
+  frameSelection() {
+    const box = this.selection.size ? this.selectionBounds() : this._allBounds();
+    if (box.isEmpty()) return;
+    const center = box.getCenter(new THREE.Vector3());
+    const radius = Math.max(box.getSize(new THREE.Vector3()).length() / 2, 0.8);
+    const dir = this.camera.position.clone().sub(this.orbit.target).normalize();
+    this.orbit.target.copy(center);
+    this.camera.position.copy(center).add(dir.multiplyScalar(radius * 3));
+  }
+
+  _allBounds() {
+    const box = new THREE.Box3();
+    for (const m of this.objects) box.expandByObject(m);
+    return box;
+  }
+
+  setView(name) {
+    const box = this._allBounds();
+    const center = box.isEmpty() ? new THREE.Vector3(0, 0.75, 0) : box.getCenter(new THREE.Vector3());
+    const d = box.isEmpty() ? 10 : Math.max(box.getSize(new THREE.Vector3()).length(), 6);
+    const offsets = {
+      top: [0.001, d, 0.001],
+      front: [0, d * 0.25, d],
+      side: [d, d * 0.25, 0],
+      persp: [d * 0.7, d * 0.6, d * 0.9],
+    };
+    const o = offsets[name] || offsets.persp;
+    this.orbit.target.copy(center);
+    this.camera.position.set(center.x + o[0], center.y + o[1], center.z + o[2]);
+  }
+
+  resize() {
+    const r = this.canvas.parentElement.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    this.camera.aspect = r.width / r.height;
+    this.camera.updateProjectionMatrix();
+    this.renderer.setSize(r.width, r.height, false);
+  }
+
+  _frame() {
+    this.orbit.update();
+    this.renderer.render(this.scene, this.camera);
+  }
+}
+
+
+// ==== src/app.js ======================================================
+// ---------------------------------------------------------------------------
+// Spatial Ops map editor — application wiring
+// ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+const $ = (id) => document.getElementById(id);
+const vp = new Viewport($('view'));
+
+let map = null;             // everything except mapObjects, which live in the viewport
+let activePack = 'default';
+let undoStack = [], redoStack = [], current = null;
+let groupSeq = 1;
+
+// ---------------------------------------------------------------------------
+// Boot
+// ---------------------------------------------------------------------------
+
+(async function boot() {
+  map = await newMap({ name: 'New Map' });
+  applyMapMeta();
+  await tryLoadDiskPacks();
+  buildPackBar();
+  buildLibrary();
+  wireToolbar();
+  wireInspector();
+  wireKeyboard();
+  wireDragDrop();
+  wireViewport();
+  resize();
+  addEventListener('resize', resize);
+  current = snapshot();
+  refreshAll();
+  toast('Ready. Open a map file, or drag objects in from the library.');
+})();
+
+function resize() {
+  vp.resize();
+}
+
+/** Packs sitting next to index.html, when the editor is served over http. */
+async function tryLoadDiskPacks() {
+  try {
+    const res = await fetch('./packs/index.json', { cache: 'no-store' });
+    if (!res.ok) return;
+    const list = await res.json();
+    for (const file of list) {
+      try {
+        const p = await (await fetch(`./packs/${file}`, { cache: 'no-store' })).json();
+        registerPack(p);
+      } catch (e) { console.warn(`Pack ${file} failed to load`, e); }
+    }
+  } catch { /* file:// or no packs folder — the built-in pack is enough */ }
+}
+
+// ---------------------------------------------------------------------------
+// History
+// ---------------------------------------------------------------------------
+
+function snapshot() {
+  return {
+    objects: vp.objects.map((m) => {
+      m.updateWorldMatrix(true, false);
+      const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+      m.matrixWorld.decompose(p, q, s);
+      return {
+        type: m.userData.def.type,
+        p: p.toArray(), q: q.toArray(), s: s.toArray(),
+        dirty: m.userData.dirty, raw: m.userData.raw, group: m.userData.group,
+      };
+    }),
+    selection: vp.objects.map((m) => vp.selection.has(m)),
+    bounds: { ...map.mapBoundsSize },
+  };
+}
+
+function restore(snap) {
+  vp.clearObjects();
+  const picked = [];
+  snap.objects.forEach((rec, i) => {
+    const mesh = vp.addObject({
+      type: rec.type,
+      position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 },
+      raw: rec.raw, dirty: rec.dirty,
+    });
+    mesh.position.fromArray(rec.p);
+    mesh.quaternion.fromArray(rec.q);
+    mesh.scale.fromArray(rec.s);
+    mesh.userData.group = rec.group;
+    if (snap.selection[i]) picked.push(mesh);
+  });
+  map.mapBoundsSize = { ...snap.bounds };
+  vp.setBounds(map.mapBoundsSize);
+  vp.setSelection(picked);
+  refreshAll();
+}
+
+function commit() {
+  if (current) undoStack.push(current);
+  if (undoStack.length > 120) undoStack.shift();
+  redoStack.length = 0;
+  current = snapshot();
+  touchEdited();
+  refreshAll();
+}
+
+function undo() {
+  if (!undoStack.length) return toast('Nothing left to undo.');
+  redoStack.push(current);
+  current = undoStack.pop();
+  restore(current);
+}
+
+function redo() {
+  if (!redoStack.length) return toast('Nothing to redo.');
+  undoStack.push(current);
+  current = redoStack.pop();
+  restore(current);
+}
+
+function touchEdited() {
+  if (map) map.editedTime = nowStamp();
+}
+
+// ---------------------------------------------------------------------------
+// Library
+// ---------------------------------------------------------------------------
+
+function buildPackBar() {
+  const bar = $('packbar');
+  bar.innerHTML = '';
+  for (const p of getPacks()) {
+    const b = document.createElement('button');
+    b.className = 'pill' + (p.id === activePack ? ' on' : '');
+    b.textContent = p.name;
+    b.onclick = () => { activePack = p.id; buildPackBar(); buildLibrary(); };
+    bar.appendChild(b);
+  }
+}
+
+function buildLibrary() {
+  const pack = getPacks().find((p) => p.id === activePack) || getPacks()[0];
+  const q = $('q').value.trim().toLowerCase();
+  const host = $('lib-list');
+  host.innerHTML = '';
+  let shown = 0;
+
+  for (const [cat, defs] of categoriesOf(pack)) {
+    const matching = defs.filter(
+      (d) => !q || d.label.toLowerCase().includes(q) || d.type.toLowerCase().includes(q)
+    );
+    if (!matching.length) continue;
+    const h = document.createElement('div');
+    h.className = 'cat';
+    h.textContent = cat;
+    host.appendChild(h);
+
+    const grid = document.createElement('div');
+    grid.className = 'items';
+    for (const def of matching) {
+      shown++;
+      const el = document.createElement('div');
+      el.className = 'item';
+      el.draggable = true;
+      el.title = def.uncertain
+        ? `${def.type} — placeholder size is an estimate`
+        : def.type;
+      el.appendChild(thumbnail(def));
+      const nm = document.createElement('div');
+      nm.className = 'nm';
+      nm.textContent = def.label;
+      if (def.uncertain) {
+        const w = document.createElement('span');
+        w.className = 'warn';
+        w.textContent = ' ~';
+        w.title = 'Placeholder dimensions are inferred, not confirmed';
+        nm.appendChild(w);
+      }
+      el.appendChild(nm);
+      el.onclick = () => placeNew(def, vp.orbit.target.clone().setY(0));
+      el.ondragstart = (ev) => {
+        ev.dataTransfer.setData('text/spatial-ops-type', def.type);
+        ev.dataTransfer.effectAllowed = 'copy';
+      };
+      grid.appendChild(el);
+    }
+    host.appendChild(grid);
+  }
+  $('lib-count').textContent = `${shown}`;
+  if (!shown) host.innerHTML = '<p class="hint" style="padding:16px 12px">No objects match that filter.</p>';
+}
+
+// -- thumbnails -------------------------------------------------------------
+// Rendered from the same geometry the viewport uses, so when real models drop
+// in the library updates itself.
+
+let thumbRenderer = null, thumbScene = null, thumbCam = null;
+const thumbCache = new Map();
+
+function thumbnail(def) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  if (thumbCache.has(def.type)) {
+    c.getContext('2d').drawImage(thumbCache.get(def.type), 0, 0);
+    return c;
+  }
+  try {
+    if (!thumbRenderer) {
+      thumbRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      thumbRenderer.setSize(128, 128);
+      thumbScene = new THREE.Scene();
+      thumbScene.add(new THREE.HemisphereLight(0xbfd8ea, 0x1a2028, 2.4));
+      const d = new THREE.DirectionalLight(0xffffff, 2.2);
+      d.position.set(3, 5, 4);
+      thumbScene.add(d);
+      thumbCam = new THREE.PerspectiveCamera(38, 1, 0.01, 100);
+    }
+    const mesh = new THREE.Mesh(geometryFor(def), vp.materialFor(def));
+    thumbScene.add(mesh);
+    const box = new THREE.Box3().setFromObject(mesh);
+    const center = box.getCenter(new THREE.Vector3());
+    const radius = Math.max(box.getSize(new THREE.Vector3()).length() / 2, 0.2);
+    thumbCam.position.set(center.x + radius * 1.9, center.y + radius * 1.5, center.z + radius * 2.3);
+    thumbCam.lookAt(center);
+    thumbRenderer.render(thumbScene, thumbCam);
+    const ctx = c.getContext('2d');
+    ctx.drawImage(thumbRenderer.domElement, 0, 0);
+    thumbScene.remove(mesh);
+    const store = document.createElement('canvas');
+    store.width = store.height = 128;
+    store.getContext('2d').drawImage(c, 0, 0);
+    thumbCache.set(def.type, store);
+  } catch (e) {
+    console.warn('Thumbnail render failed', e);
+  }
+  return c;
+}
+
+// ---------------------------------------------------------------------------
+// Placing, duplicating, grouping
+// ---------------------------------------------------------------------------
+
+function placeNew(def, worldPoint) {
+  const y = def.pivot === 'center' ? def.size[1] / 2 : 0;
+  const mesh = vp.addObject({
+    type: def.type,
+    position: { x: round(worldPoint.x), y, z: round(-worldPoint.z) },
+    rotation: { x: 0, y: 0, z: 0 },
+    scale: { x: 1, y: 1, z: 1 },
+    dirty: true,
+  });
+  vp.setSelection([mesh]);
+  commit();
+  toast(`Placed ${def.label}.`);
+}
+
+function round(v) {
+  const s = vp.snap.translate;
+  return s ? Math.round(v / s) * s : v;
+}
+
+function duplicate() {
+  if (!vp.selection.size) return;
+  const source = [...vp.selection];
+  const remap = new Map();
+  const made = [];
+  for (const m of source) {
+    m.updateWorldMatrix(true, false);
+    const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+    m.matrixWorld.decompose(p, q, s);
+    const copy = vp.addObject({
+      type: m.userData.def.type,
+      position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 },
+      dirty: true,
+    });
+    copy.position.copy(p).add(new THREE.Vector3(vp.snap.translate || 0.25, 0, 0));
+    copy.quaternion.copy(q);
+    copy.scale.copy(s);
+    // A cloned group becomes its own group, so moving the copy leaves the
+    // original alone.
+    if (m.userData.group) {
+      if (!remap.has(m.userData.group)) remap.set(m.userData.group, `g${groupSeq++}`);
+      copy.userData.group = remap.get(m.userData.group);
+    }
+    made.push(copy);
+  }
+  vp.setSelection(made);
+  commit();
+  toast(`Duplicated ${made.length} object${made.length === 1 ? '' : 's'}.`);
+}
+
+function groupSelection() {
+  if (vp.selection.size < 2) return toast('Select at least two objects to group.');
+  const id = `g${groupSeq++}`;
+  for (const m of vp.selection) m.userData.group = id;
+  commit();
+  toast(`Grouped ${vp.selection.size} objects.`);
+}
+
+function ungroupSelection() {
+  let n = 0;
+  for (const m of vp.selection) if (m.userData.group) { m.userData.group = null; n++; }
+  if (!n) return toast('Nothing in the selection is grouped.');
+  commit();
+  toast('Ungrouped.');
+}
+
+function deleteSelection() {
+  if (!vp.selection.size) return;
+  const n = vp.selection.size;
+  vp.removeObjects([...vp.selection]);
+  commit();
+  toast(`Deleted ${n} object${n === 1 ? '' : 's'}.`);
+}
+
+// ---------------------------------------------------------------------------
+// Toolbar
+// ---------------------------------------------------------------------------
+
+function wireToolbar() {
+  $('b-new').onclick = async () => {
+    if (vp.objects.length && !confirm('Start a new map? Anything unexported is lost.')) return;
+    map = await newMap({ name: 'New Map', author: map?.author || '' });
+    vp.clearObjects();
+    applyMapMeta();
+    undoStack = []; redoStack = []; current = snapshot();
+    refreshAll();
+    toast('New map started.');
+  };
+  $('b-open').onclick = () => $('filepick').click();
+  $('filepick').onchange = (e) => { const f = e.target.files[0]; if (f) openFile(f); e.target.value = ''; };
+  $('b-save').onclick = exportMap;
+
+  for (const mode of ['translate', 'rotate', 'scale']) {
+    $(`m-${mode}`).onclick = () => vp.setGizmoMode(mode);
+  }
+  $('m-space').onclick = () => {
+    vp.setGizmoSpace(vp.gizmoSpace === 'world' ? 'local' : 'world');
+    $('m-space').textContent = vp.gizmoSpace === 'world' ? 'World' : 'Local';
+  };
+
+  const syncSnap = () => {
+    vp.setSnap('translate', $('snap-t').checked ? parseFloat($('snap-t-v').value) : 0);
+    vp.setSnap('rotate', $('snap-r').checked ? parseFloat($('snap-r-v').value) : 0);
+  };
+  ['snap-t', 'snap-t-v', 'snap-r', 'snap-r-v'].forEach((id) => ($(id).onchange = syncSnap));
+  $('uniform').onchange = (e) => { vp.uniformScale = e.target.checked; };
+  $('floorlock').onchange = (e) => { vp.floorLock = e.target.checked; };
+
+  $('b-undo').onclick = undo;
+  $('b-redo').onclick = redo;
+  $('b-import-pack').onclick = () => $('packpick').click();
+  $('packpick').onchange = async (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    try {
+      const p = JSON.parse(await f.text());
+      registerPack(p);
+      activePack = p.id;
+      thumbCache.clear();
+      buildPackBar(); buildLibrary();
+      toast(`Loaded pack "${p.name}" with ${p.objects.length} objects.`);
+    } catch (err) {
+      toast(`That pack did not load: ${err.message}`, true);
+    }
+  };
+
+  document.querySelectorAll('#viewbtns .btn').forEach((b) => {
+    b.onclick = () => vp.setView(b.dataset.view);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Inspector
+// ---------------------------------------------------------------------------
+
+function wireInspector() {
+  for (const id of ['bx', 'by', 'bz']) {
+    $(id).onchange = () => {
+      map.mapBoundsSize = {
+        x: clampInt($('bx').value, 1, 60),
+        y: clampInt($('by').value, 1, 20),
+        z: clampInt($('bz').value, 1, 60),
+      };
+      applyMapMeta();
+      vp.setBounds(map.mapBoundsSize);
+      commit();
+    };
+  }
+  $('m-name').onchange = () => { map.name = $('m-name').value || 'Untitled'; refreshMeta(); touchEdited(); };
+  $('m-author').onchange = () => { map.author = $('m-author').value; touchEdited(); };
+  $('b-newguid').onclick = () => { map.guid = newGuid(); refreshMeta(); toast('New map ID generated.'); };
+
+  $('nav-shape').onchange = async () => {
+    const shape = $('nav-shape').value;
+    $('nav-r-row').style.display = shape === 'circle' ? '' : 'none';
+    $('nav-w-row').style.display = shape === 'rect' ? '' : 'none';
+    $('nav-d-row').style.display = shape === 'rect' ? '' : 'none';
+    if (shape !== 'keep') await regenerateNav();
+  };
+  for (const id of ['nav-r', 'nav-w', 'nav-d']) {
+    $(id).onchange = () => { if ($('nav-shape').value !== 'keep') regenerateNav(); };
+  }
+}
+
+async function regenerateNav() {
+  const shape = $('nav-shape').value;
+  if (shape === 'keep') return;
+  const mask = buildNavMask({
+    shape,
+    radius: parseFloat($('nav-r').value) || 5,
+    width: parseFloat($('nav-w').value) || 7,
+    depth: parseFloat($('nav-d').value) || 7,
+    divisions: map.navCloud.divisions.x,
+  });
+  map.navCloud.encodedPoints = await encodeNavCloud(mask);
+  await vp.setNavCloud(map.navCloud);
+  touchEdited();
+  toast('Play space updated.');
+}
+
+function clampInt(v, lo, hi) {
+  const n = Math.round(parseFloat(v) || lo);
+  return Math.min(hi, Math.max(lo, n));
+}
+
+// -- selection panel --------------------------------------------------------
+
+let selFields = null;
+
+function buildSelectionPanel() {
+  const host = $('sel-body');
+  const list = [...vp.selection];
+  selFields = null;
+  if (!list.length) {
+    host.innerHTML = '<p class="hint">Nothing selected. Click an object, or drag a box across the view.</p>';
+    return;
+  }
+  const multi = list.length > 1;
+  const def = list[0].userData.def;
+
+  host.innerHTML = `
+    <p class="hint" style="margin:0 0 9px">
+      ${multi ? `${list.length} objects selected` : `<b style="color:var(--text)">${escapeHtml(def.label)}</b>
+        <span style="font-family:var(--mono);font-size:10px">${escapeHtml(def.type)}</span>`}
+      ${def.unknown ? '<br><span style="color:var(--accent)">Not in any loaded pack — shown as a marker, but exported unchanged.</span>' : ''}
+    </p>
+    ${vecRow('Position', 'p', multi ? 'Moves the whole selection' : '')}
+    ${vecRow('Rotation', 'r', multi ? 'disabled' : '')}
+    ${vecRow('Scale', 's', multi ? 'disabled' : '')}
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:9px">
+      <button class="btn ghost" id="s-dup">Duplicate</button>
+      <button class="btn ghost" id="s-floor">To floor</button>
+      <button class="btn ghost" id="s-group">Group</button>
+      <button class="btn ghost" id="s-ungroup">Ungroup</button>
+    </div>
+    <button class="btn ghost" id="s-del" style="width:100%;margin-top:5px;color:var(--danger)">Delete</button>
+  `;
+
+  selFields = {
+    p: ['x', 'y', 'z'].map((a) => host.querySelector(`#f-p${a}`)),
+    r: ['x', 'y', 'z'].map((a) => host.querySelector(`#f-r${a}`)),
+    s: ['x', 'y', 'z'].map((a) => host.querySelector(`#f-s${a}`)),
+  };
+  for (const key of ['p', 'r', 's']) {
+    for (const input of selFields[key]) {
+      if (!input) continue;
+      input.onchange = () => applyNumericEdit();
+    }
+  }
+  $('s-dup').onclick = duplicate;
+  $('s-floor').onclick = () => vp.dropToFloor();
+  $('s-group').onclick = groupSelection;
+  $('s-ungroup').onclick = ungroupSelection;
+  $('s-del').onclick = deleteSelection;
+  refreshSelectionValues();
+}
+
+function vecRow(label, key, note) {
+  const dis = note === 'disabled' ? ' disabled' : '';
+  const axes = ['x', 'y', 'z'].map(
+    (a) => `<div class="axis" data-a="${a.toUpperCase()}"><input type="number" step="0.01" id="f-${key}${a}"${dis}></div>`
+  ).join('');
+  return `<div class="field"><span>${label}</span><div class="triple">${axes}</div></div>`;
+}
+
+function refreshSelectionValues() {
+  if (!selFields) return;
+  const list = [...vp.selection];
+  if (!list.length) return;
+  const set = (inputs, v) => {
+    ['x', 'y', 'z'].forEach((a, i) => {
+      const el = inputs[i];
+      if (el && document.activeElement !== el) el.value = round3(v[a]);
+    });
+  };
+  if (list.length === 1) {
+    const mo = vp.toMapObject(list[0]);
+    set(selFields.p, mo.position);
+    set(selFields.r, mo.rotation);
+    set(selFields.s, mo.scale);
+  } else {
+    const c = vp.selectionBounds().getCenter(new THREE.Vector3());
+    set(selFields.p, { x: c.x, y: c.y, z: -c.z });
+    set(selFields.r, { x: 0, y: 0, z: 0 });
+    set(selFields.s, { x: 1, y: 1, z: 1 });
+  }
+}
+
+function round3(v) {
+  return Math.abs(v) < 1e-6 ? 0 : +v.toFixed(4);
+}
+
+function applyNumericEdit() {
+  const list = [...vp.selection];
+  if (!list.length) return;
+  const read = (inputs) => ({
+    x: parseFloat(inputs[0].value) || 0,
+    y: parseFloat(inputs[1].value) || 0,
+    z: parseFloat(inputs[2].value) || 0,
+  });
+
+  if (list.length === 1) {
+    const p = read(selFields.p), r = read(selFields.r), s = read(selFields.s);
+    // The pivot carries the object's world placement while it is selected.
+    vp.pivot.position.set(p.x, p.y, -p.z);
+    vp.pivot.quaternion.fromArray(unityEulerToQuat(r));
+    list[0].scale.set(s.x || 0.001, s.y || 0.001, s.z || 0.001);
+    vp.markDirty(list[0]);
+  } else {
+    const target = read(selFields.p);
+    const c = vp.selectionBounds().getCenter(new THREE.Vector3());
+    vp.pivot.position.add(new THREE.Vector3(target.x - c.x, target.y - c.y, -target.z - c.z));
+    for (const m of list) vp.markDirty(m);
+  }
+  if (vp.floorLock) vp._applyFloorLock();
+  vp.rebuildPivot();
+  commit();
+}
+
+
+// ---------------------------------------------------------------------------
+// Outliner
+// ---------------------------------------------------------------------------
+
+function buildOutliner() {
+  const host = $('outliner');
+  host.innerHTML = '';
+  vp.objects.forEach((m) => {
+    const row = document.createElement('div');
+    row.className = 'row' + (vp.selection.has(m) ? ' on' : '');
+    const dot = document.createElement('i');
+    dot.className = 'dot';
+    dot.style.background = m.userData.def.color;
+    const t = document.createElement('span');
+    t.className = 't';
+    t.textContent = m.userData.def.label;
+    row.append(dot, t);
+    if (m.userData.group) {
+      const g = document.createElement('span');
+      g.className = 'g';
+      g.textContent = m.userData.group.toUpperCase();
+      row.appendChild(g);
+    }
+    row.onclick = (e) => {
+      const picked = vp.expandGroup(m, e.ctrlKey || e.metaKey);
+      if (e.shiftKey) {
+        const next = new Set(vp.selection);
+        for (const o of picked) next.add(o);
+        vp.setSelection([...next]);
+      } else vp.setSelection(picked);
+    };
+    host.appendChild(row);
+  });
+  $('obj-count').textContent = String(vp.objects.length);
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard
+// ---------------------------------------------------------------------------
+
+function wireKeyboard() {
+  addEventListener('keydown', (e) => {
+    const typing = /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement?.tagName || '');
+    if (typing) return;
+    const mod = e.ctrlKey || e.metaKey;
+
+    if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
+    if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); return; }
+    if (mod && e.key.toLowerCase() === 'd') { e.preventDefault(); duplicate(); return; }
+    if (mod && e.key.toLowerCase() === 'a') { e.preventDefault(); vp.selectAll(); return; }
+    if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); exportMap(); return; }
+
+    switch (e.key) {
+      case 'w': case 'W': vp.setGizmoMode('translate'); break;
+      case 'e': case 'E': vp.setGizmoMode('rotate'); break;
+      case 'r': case 'R': vp.setGizmoMode('scale'); break;
+      case 'f': case 'F': vp.frameSelection(); break;
+      case 'g': case 'G': e.shiftKey ? ungroupSelection() : groupSelection(); break;
+      case 'End': vp.dropToFloor(); break;
+      case 'Delete': case 'Backspace': deleteSelection(); break;
+      case 'Escape': vp.setSelection([]); break;
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Drag and drop
+// ---------------------------------------------------------------------------
+
+function wireDragDrop() {
+  const stage = $('stage');
+  let depth = 0;
+
+  stage.addEventListener('dragenter', (e) => { e.preventDefault(); depth++; stage.classList.add('dropping'); });
+  stage.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+  stage.addEventListener('dragleave', () => { if (--depth <= 0) { depth = 0; stage.classList.remove('dropping'); } });
+  stage.addEventListener('drop', (e) => {
+    e.preventDefault();
+    depth = 0;
+    stage.classList.remove('dropping');
+    const type = e.dataTransfer.getData('text/spatial-ops-type');
+    if (type) {
+      placeNew(defOrUnknown(type), vp.groundPoint(e.clientX, e.clientY));
+      return;
+    }
+    const file = e.dataTransfer.files?.[0];
+    if (file) openFile(file);
+  });
+
+  // Dropping a map file anywhere else opens it too.
+  addEventListener('dragover', (e) => e.preventDefault());
+  addEventListener('drop', (e) => {
+    if (e.defaultPrevented) return;
+    e.preventDefault();
+    const file = e.dataTransfer.files?.[0];
+    if (file) openFile(file);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Viewport events
+// ---------------------------------------------------------------------------
+
+function wireViewport() {
+  const box = $('marquee');
+  vp.addEventListener('marquee-move', (e) => {
+    const r = e.detail;
+    box.style.display = 'block';
+    box.style.left = `${r.x1}px`;
+    box.style.top = `${r.y1}px`;
+    box.style.width = `${r.x2 - r.x1}px`;
+    box.style.height = `${r.y2 - r.y1}px`;
+  });
+  vp.addEventListener('marquee-end', () => { box.style.display = 'none'; });
+  vp.addEventListener('selection', () => { buildSelectionPanel(); buildOutliner(); refreshStatus(); });
+  vp.addEventListener('transform', () => { refreshSelectionValues(); refreshStatus(); });
+  vp.addEventListener('commit-end', () => commit());
+  vp.addEventListener('mode', refreshStatus);
+  vp.addEventListener('change', () => { buildOutliner(); refreshStatus(); });
+}
+
+// ---------------------------------------------------------------------------
+// File in / out
+// ---------------------------------------------------------------------------
+
+async function openFile(file) {
+  try {
+    const text = await file.text();
+    const parsed = parseMap(text);
+    map = parsed;
+    vp.clearObjects();
+    for (const mo of parsed.mapObjects) vp.addObject(mo);
+    applyMapMeta();
+    await vp.setNavCloud(map.navCloud);
+    $('nav-shape').value = 'keep';
+    vp.setSelection([]);
+    vp.setView('persp');
+    undoStack = []; redoStack = []; current = snapshot();
+    refreshAll();
+
+    const unknown = new Set(
+      vp.objects.filter((m) => m.userData.def.unknown).map((m) => m.userData.def.type)
+    );
+    let msg = `Loaded "${map.name}" — ${parsed.mapObjects.length} objects.`;
+    if (parsed.version !== MAP_VERSION) msg += ` Map format v${parsed.version}, editor targets v${MAP_VERSION}.`;
+    if (unknown.size) msg += ` ${unknown.size} type(s) not in any loaded pack: ${[...unknown].join(', ')}.`;
+    toast(msg, unknown.size > 0);
+    $('st-file').textContent = file.name;
+  } catch (err) {
+    console.error(err);
+    toast(`Could not read that file: ${err.message}`, true);
+  }
+}
+
+function exportMap() {
+  try {
+    map.editedTime = nowStamp();
+    map.version = map.version || MAP_VERSION;
+    map.mapObjects = vp.objects.map((m) => vp.toMapObject(m));
+    const text = serializeMap(map);
+    const name = mapFileName(map.name, map.guid);
+    const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    $('st-file').textContent = name;
+    toast(`Exported ${name} — ${map.mapObjects.length} objects. Copy it into the game's maps folder with no file extension.`);
+  } catch (err) {
+    console.error(err);
+    toast(`Export failed: ${err.message}`, true);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Refresh
+// ---------------------------------------------------------------------------
+
+function applyMapMeta() {
+  $('bx').value = map.mapBoundsSize.x;
+  $('by').value = map.mapBoundsSize.y;
+  $('bz').value = map.mapBoundsSize.z;
+  vp.setBounds(map.mapBoundsSize);
+  refreshMeta();
+}
+
+function refreshMeta() {
+  $('m-name').value = map.name;
+  $('m-author').value = map.author || '';
+  $('m-guid').value = map.guid;
+  $('fname').textContent = mapFileName(map.name, map.guid);
+}
+
+function refreshAll() {
+  buildOutliner();
+  buildSelectionPanel();
+  refreshMeta();
+  refreshStatus();
+  $('b-undo').disabled = !undoStack.length;
+  $('b-redo').disabled = !redoStack.length;
+}
+
+function refreshStatus() {
+  const n = vp.selection.size;
+  $('sel-count').textContent = n ? `${n} selected` : 'none';
+  $('st-mode').textContent =
+    `${vp.gizmoMode.toUpperCase()} · ${vp.gizmoSpace.toUpperCase()} · ` +
+    `grid ${vp.snap.translate ? vp.snap.translate + 'm' : 'off'} · ` +
+    `angle ${vp.snap.rotate ? vp.snap.rotate + '°' : 'off'}`;
+  $('st-sel').textContent = `${vp.objects.length} objects · ${n} selected`;
+  $('b-undo').disabled = !undoStack.length;
+  $('b-redo').disabled = !redoStack.length;
+  for (const mode of ['translate', 'rotate', 'scale']) {
+    $(`m-${mode}`).classList.toggle('on', vp.gizmoMode === mode);
+  }
+
+  const b = map ? map.mapBoundsSize : { x: 0, y: 0, z: 0 };
+  let extra = '';
+  if (n) {
+    const s = vp.selectionBounds().getSize(new THREE.Vector3());
+    extra = `<br>SEL <b>${s.x.toFixed(2)} × ${s.y.toFixed(2)} × ${s.z.toFixed(2)}</b> m`;
+  }
+  $('readout').innerHTML =
+    `ARENA <b>${b.x} × ${b.y} × ${b.z}</b> m<br>OBJECTS <b>${vp.objects.length}</b>${extra}`;
+}
+
+// ---------------------------------------------------------------------------
+
+let toastTimer = null;
+function toast(msg, bad = false) {
+  const el = $('toast');
+  el.textContent = msg;
+  el.className = 'show' + (bad ? ' bad' : '');
+  $('st-msg').textContent = msg;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.className = ''; }, 5200);
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+</script>
+</body>
+</html>

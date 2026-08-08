@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spatial Ops — Map Editor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0A0F14; --panel:#101A22; --panel2:#16222C; --raise:#1D2C37;
+  --line:#22323E; --line-soft:#1A2731;
+  --text:#D6E3EB; --dim:#7A93A4; --faint:#4E6675;
+  --accent:#E8C547; --accent-dim:#8A7727;
+  --cyan:#4EC9E0; --green:#5AD6A0; --danger:#E0574B;
+  --hud:"Barlow Condensed",'Arial Narrow',sans-serif;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{
+  background:var(--bg); color:var(--text); font-family:var(--sans); font-size:13px;
+  overflow:hidden; -webkit-font-smoothing:antialiased;
+}
+button,input,select{font:inherit;color:inherit}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:var(--raise);border-radius:5px}
+::-webkit-scrollbar-track{background:transparent}
+
+/* ---------- shell ---------- */
+#app{display:grid;grid-template-rows:46px 1fr 24px;grid-template-columns:252px 1fr 304px;height:100%}
+#topbar{grid-column:1/-1;display:flex;align-items:center;gap:14px;padding:0 12px;
+  background:var(--panel);border-bottom:1px solid var(--line)}
+#statusbar{grid-column:1/-1;display:flex;align-items:center;gap:16px;padding:0 12px;
+  background:var(--panel);border-top:1px solid var(--line);
+  font-family:var(--mono);font-size:10.5px;color:var(--dim);letter-spacing:.02em}
+aside{background:var(--panel);overflow:hidden;display:flex;flex-direction:column;min-height:0}
+#library{border-right:1px solid var(--line)}
+#inspector{border-left:1px solid var(--line)}
+#stage{position:relative;min-width:0;background:
+  radial-gradient(120% 90% at 50% 0%, #16222C 0%, #0A0F14 70%)}
+canvas{display:block;width:100%;height:100%;outline:none}
+
+/* ---------- brand ---------- */
+.brand{display:flex;align-items:baseline;gap:8px;padding-right:12px;border-right:1px solid var(--line);height:100%}
+.brand b{font-family:var(--hud);font-weight:700;font-size:17px;letter-spacing:.14em;
+  text-transform:uppercase;line-height:46px}
+.brand span{font-family:var(--hud);font-size:12px;letter-spacing:.22em;color:var(--accent);
+  text-transform:uppercase}
+
+/* ---------- controls ---------- */
+.grp{display:flex;align-items:center;gap:4px}
+.grp+.grp{padding-left:12px;border-left:1px solid var(--line-soft)}
+.btn{background:var(--panel2);border:1px solid var(--line);border-radius:4px;
+  padding:5px 10px;cursor:pointer;white-space:nowrap;
+  font-family:var(--hud);font-size:13px;font-weight:600;letter-spacing:.08em;text-transform:uppercase}
+.btn:hover{background:var(--raise);border-color:#33495a}
+.btn:active{transform:translateY(1px)}
+.btn.on{background:var(--accent);border-color:var(--accent);color:#14181C}
+.btn.ghost{background:transparent}
+.btn:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.btn[disabled]{opacity:.35;cursor:not-allowed}
+select,input[type=text],input[type=number]{
+  background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:4px 6px;
+  font-family:var(--mono);font-size:11.5px;width:100%}
+input[type=number]{-moz-appearance:textfield}
+input[type=number]::-webkit-outer-spin-button,input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+label.sw{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;
+  font-family:var(--hud);font-size:12.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--dim)}
+label.sw input{accent-color:var(--accent);width:13px;height:13px}
+label.sw:has(input:checked){color:var(--text)}
+
+/* ---------- panel sections ---------- */
+.sec{border-bottom:1px solid var(--line-soft)}
+.sec>h2{margin:0;padding:9px 12px 7px;font-family:var(--hud);font-size:12px;font-weight:600;
+  letter-spacing:.19em;text-transform:uppercase;color:var(--faint);
+  display:flex;justify-content:space-between;align-items:center}
+.sec>h2 .cnt{font-family:var(--mono);font-size:10px;letter-spacing:0;color:var(--faint)}
+.pad{padding:0 12px 12px}
+.scroll{overflow-y:auto;min-height:0;flex:1}
+
+/* ---------- library ---------- */
+#packbar{display:flex;gap:4px;padding:8px 12px;flex-wrap:wrap}
+.pill{background:transparent;border:1px solid var(--line);border-radius:99px;padding:3px 11px;
+  cursor:pointer;font-family:var(--hud);font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--dim)}
+.pill.on{border-color:var(--accent);color:var(--accent)}
+#search{margin:0 12px 8px}
+.cat{font-family:var(--hud);font-size:11.5px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--faint);padding:10px 12px 5px}
+.items{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:0 12px 6px}
+.item{background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:6px 5px 7px;
+  cursor:grab;text-align:center;transition:border-color .12s,background .12s}
+.item:hover{border-color:var(--accent-dim);background:var(--raise)}
+.item:active{cursor:grabbing}
+.item canvas,.item .ph{width:100%;aspect-ratio:1;display:block;border-radius:3px;background:#0D151B}
+.item .nm{margin-top:5px;font-size:10.5px;line-height:1.25;color:var(--dim);word-break:break-word}
+.item:hover .nm{color:var(--text)}
+.item .warn{color:var(--accent);font-family:var(--mono);font-size:9px}
+
+/* ---------- outliner ---------- */
+.row{display:flex;align-items:center;gap:8px;padding:4px 12px;cursor:pointer;font-size:12px}
+.row:hover{background:var(--panel2)}
+.row.on{background:var(--accent-dim);color:#fff}
+.row .dot{width:7px;height:7px;border-radius:2px;flex:none}
+.row .t{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .g{font-family:var(--mono);font-size:9.5px;color:var(--accent);flex:none}
+.row.on .g{color:#fff}
+
+/* ---------- inspector fields ---------- */
+.field{display:grid;grid-template-columns:58px 1fr;align-items:center;gap:8px;margin-bottom:6px}
+.field>span{font-family:var(--hud);font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+.triple{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px}
+.axis{position:relative}
+.axis::before{content:attr(data-a);position:absolute;left:5px;top:50%;transform:translateY(-50%);
+  font-family:var(--mono);font-size:9px;font-weight:600;pointer-events:none}
+.axis[data-a=X]::before{color:#E06C6C}
+.axis[data-a=Y]::before{color:#7FD17F}
+.axis[data-a=Z]::before{color:#6C9BE0}
+.axis input{padding-left:16px}
+.hint{color:var(--faint);font-size:11px;line-height:1.5}
+kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px solid var(--line);
+  border-radius:3px;padding:1px 4px;color:var(--dim)}
+
+/* ---------- viewport HUD ---------- */
+#hud{position:absolute;inset:0;pointer-events:none}
+#hud .corner{position:absolute;width:22px;height:22px;border:1px solid var(--line);opacity:.9}
+#hud .tl{top:10px;left:10px;border-right:0;border-bottom:0}
+#hud .tr{top:10px;right:10px;border-left:0;border-bottom:0}
+#hud .bl{bottom:10px;left:10px;border-right:0;border-top:0}
+#hud .br{bottom:10px;right:10px;border-left:0;border-top:0}
+#readout{position:absolute;left:22px;bottom:20px;font-family:var(--mono);font-size:10.5px;
+  color:var(--faint);line-height:1.75;letter-spacing:.02em}
+#readout b{color:var(--accent);font-weight:500}
+#viewbtns{position:absolute;top:16px;right:20px;display:flex;gap:3px;pointer-events:auto}
+#viewbtns .btn{padding:3px 8px;font-size:11.5px}
+#marquee{position:fixed;border:1px solid var(--accent);background:rgba(232,197,71,.09);
+  pointer-events:none;display:none;z-index:50}
+#drophint{position:absolute;inset:0;display:none;place-items:center;
+  border:2px dashed var(--accent);background:rgba(232,197,71,.05);
+  font-family:var(--hud);font-size:16px;letter-spacing:.2em;text-transform:uppercase;color:var(--accent)}
+#stage.dropping #drophint{display:grid}
+
+/* ---------- toast ---------- */
+#toast{position:fixed;left:50%;bottom:52px;transform:translateX(-50%) translateY(10px);
+  background:var(--raise);border:1px solid var(--line);border-left:3px solid var(--accent);
+  padding:9px 16px;border-radius:4px;font-size:12.5px;opacity:0;transition:.2s;pointer-events:none;z-index:100;max-width:60ch}
+#toast.show{opacity:1;transform:translateX(-50%)}
+#toast.bad{border-left-color:var(--danger)}
+
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <header id="topbar">
+    <div class="brand"><b>Spatial Ops</b><span>Map Editor</span></div>
+
+    <div class="grp">
+      <button class="btn" id="b-new">New</button>
+      <button class="btn" id="b-open">Open</button>
+      <button class="btn" id="b-save">Export</button>
+    </div>
+
+    <div class="grp">
+      <button class="btn" id="m-translate" title="Move (W)">Move</button>
+      <button class="btn" id="m-rotate" title="Rotate (E)">Rotate</button>
+      <button class="btn" id="m-scale" title="Scale (R)">Scale</button>
+      <button class="btn ghost" id="m-space" title="Toggle world/local axes">World</button>
+    </div>
+
+    <div class="grp">
+      <label class="sw" title="Snap movement to a grid"><input type="checkbox" id="snap-t" checked>Grid</label>
+      <select id="snap-t-v" style="width:64px"><option value="0.05">5cm</option><option value="0.1">10cm</option><option value="0.25" selected>25cm</option><option value="0.5">50cm</option><option value="1">1m</option></select>
+      <label class="sw" title="Snap rotation to an angle"><input type="checkbox" id="snap-r" checked>Angle</label>
+      <select id="snap-r-v" style="width:56px"><option value="5">5&deg;</option><option value="15" selected>15&deg;</option><option value="45">45&deg;</option><option value="90">90&deg;</option></select>
+    </div>
+
+    <div class="grp">
+      <label class="sw" title="Scale all axes together"><input type="checkbox" id="uniform" checked>Uniform</label>
+      <label class="sw" title="Keep floor pieces resting on the ground"><input type="checkbox" id="floorlock" checked>Floor</label>
+    </div>
+
+    <div class="grp" style="margin-left:auto">
+      <button class="btn ghost" id="b-undo" title="Undo (Ctrl+Z)">Undo</button>
+      <button class="btn ghost" id="b-redo" title="Redo (Ctrl+Shift+Z)">Redo</button>
+    </div>
+  </header>
+
+  <!-- ---------------- library ---------------- -->
+  <aside id="library">
+    <div class="sec">
+      <h2>Library <span class="cnt" id="lib-count"></span></h2>
+      <div id="packbar"></div>
+      <div id="search"><input type="text" id="q" placeholder="Filter objects"></div>
+    </div>
+    <div class="scroll" id="lib-list"></div>
+    <div class="sec" style="border-bottom:0;border-top:1px solid var(--line-soft)">
+      <div class="pad" style="padding-top:10px">
+        <button class="btn ghost" id="b-import-pack" style="width:100%">Import pack&hellip;</button>
+        <p class="hint" style="margin:8px 0 0">Drag an object into the view to place it, or click to drop it at the centre.</p>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ---------------- viewport ---------------- -->
+  <div id="stage">
+    <canvas id="view"></canvas>
+    <div id="hud">
+      <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+      <div id="readout"></div>
+      <div id="viewbtns">
+        <button class="btn ghost" data-view="top">Top</button>
+        <button class="btn ghost" data-view="front">Front</button>
+        <button class="btn ghost" data-view="side">Side</button>
+        <button class="btn ghost" data-view="persp">3D</button>
+      </div>
+    </div>
+    <div id="drophint">Release to place</div>
+  </div>
+
+  <!-- ---------------- inspector ---------------- -->
+  <aside id="inspector">
+    <div class="scroll">
+
+      <div class="sec">
+        <h2>Selection <span class="cnt" id="sel-count">none</span></h2>
+        <div class="pad" id="sel-body"></div>
+      </div>
+
+      <div class="sec">
+        <h2>Objects <span class="cnt" id="obj-count">0</span></h2>
+        <div id="outliner" style="max-height:210px;overflow-y:auto"></div>
+      </div>
+
+      <div class="sec">
+        <h2>Arena</h2>
+        <div class="pad">
+          <div class="field"><span>Size</span>
+            <div class="triple">
+              <div class="axis" data-a="X"><input type="number" id="bx" min="1" max="60" step="1"></div>
+              <div class="axis" data-a="Y"><input type="number" id="by" min="1" max="20" step="1"></div>
+              <div class="axis" data-a="Z"><input type="number" id="bz" min="1" max="60" step="1"></div>
+            </div>
+          </div>
+          <p class="hint">Whole metres &mdash; the game stores arena bounds as integers. Y is the ceiling height.</p>
+        </div>
+      </div>
+
+      <div class="sec">
+        <h2>Play space</h2>
+        <div class="pad">
+          <div class="field"><span>Shape</span>
+            <select id="nav-shape"><option value="keep">Keep from file</option><option value="circle">Circle</option><option value="rect">Rectangle</option></select>
+          </div>
+          <div class="field" id="nav-r-row"><span>Radius</span><input type="number" id="nav-r" value="5" min="1" max="17" step="0.25"></div>
+          <div class="field" id="nav-w-row" style="display:none"><span>Width</span><input type="number" id="nav-w" value="7" min="1" max="34" step="0.25"></div>
+          <div class="field" id="nav-d-row" style="display:none"><span>Depth</span><input type="number" id="nav-d" value="7" min="1" max="34" step="0.25"></div>
+          <p class="hint">The green outline is the physical room the player walks in, captured by the headset. Leave it as it came unless you know you want to change it.</p>
+        </div>
+      </div>
+
+      <div class="sec">
+        <h2>Map</h2>
+        <div class="pad">
+          <div class="field"><span>Name</span><input type="text" id="m-name"></div>
+          <div class="field"><span>Author</span><input type="text" id="m-author"></div>
+          <div class="field"><span>ID</span><input type="text" id="m-guid" readonly></div>
+          <button class="btn ghost" id="b-newguid" style="width:100%;margin-top:2px">New ID</button>
+          <p class="hint" style="margin-top:8px">Exports as <code id="fname" style="font-family:var(--mono);color:var(--dim)"></code></p>
+        </div>
+      </div>
+
+      <div class="sec" style="border-bottom:0">
+        <h2>Shortcuts</h2>
+        <div class="pad">
+          <p class="hint">
+            <kbd>W</kbd><kbd>E</kbd><kbd>R</kbd> move / rotate / scale &middot;
+            <kbd>G</kbd> group &middot; <kbd>Shift</kbd>+<kbd>G</kbd> ungroup &middot;
+            <kbd>Ctrl</kbd>+<kbd>D</kbd> duplicate &middot; <kbd>F</kbd> frame &middot;
+            <kbd>End</kbd> drop to floor &middot; <kbd>Del</kbd> delete &middot;
+            <kbd>Ctrl</kbd>+<kbd>A</kbd> select all<br><br>
+            Left drag selects, right drag orbits, middle drag pans,
+            <kbd>Alt</kbd>+left orbits. <kbd>Shift</kbd> adds to the selection,
+            <kbd>Ctrl</kbd> picks a single object out of a group.
+          </p>
+        </div>
+      </div>
+
+    </div>
+  </aside>
+
+  <footer id="statusbar">
+    <span id="st-file">No map loaded</span>
+    <span id="st-mode"></span>
+    <span id="st-sel"></span>
+    <span style="margin-left:auto" id="st-msg"></span>
+  </footer>
+</div>
+
+<div id="marquee"></div>
+<div id="toast"></div>
+<input type="file" id="filepick" style="display:none">
+<input type="file" id="packpick" accept=".json,application/json" style="display:none">
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+} }
+</script>
+<script type="module" src="./src/app.js"></script>
+</body>
+</html>
