@@ -8,7 +8,8 @@
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "build": "node build.mjs",
-    "serve": "node serve.mjs"
+    "serve": "node serve.mjs",
+    "read-definitions": "node tools/read-definitions.mjs"
   },
   "engines": { "node": ">=18" }
 }
