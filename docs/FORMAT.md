@@ -192,6 +192,30 @@ variants because there is nothing to snap to in there, whereas here the grid
 does that job. The grounded types stay in the catalog marked `hidden`, so a map
 that already uses them loads, displays and re-exports unchanged.
 
+### Weapon spawners and `specificWeapon`
+
+A `WeaponSpawnPoint` carries one prop saying what it may produce. Every spawner
+in every reference export names exactly one weapon — `Handgun`, `Sniper`, or
+the shorthand `All` — so those values are confirmed.
+
+**More than one weapon per spawner is inferred, not confirmed.** Two things say
+a spawner can hold a set: the rule sets carry a `SingleWeaponPerSpawner`
+boolean, which would be meaningless if a spawner could only ever hold one, and
+the game describes a spawner with no restriction as `All` rather than listing
+everything. What is *not* known is the separator, because nothing the game
+wrote shows two.
+
+The editor writes them semicolon-joined — `"Shotgun;Sniper"` — because that is
+what the game uses for its own multi-valued strings elsewhere in this same file
+format: rule set flags are written `"WeaponSource":"Spawners;Holsters"`. That is
+a different field though, and a .NET `[Flags]` enum serialised by Newtonsoft
+would more likely be `", "`. If a two-weapon spawner turns out not to load in
+game, `WEAPON_SEPARATOR` in `src/packs.js` is the single line to change.
+
+The blast radius is small by construction: untouched objects are written back
+from their original bytes, so this can only reach spawners the user edits, and
+ticking every weapon collapses back to `All` rather than spelling the set out.
+
 ### Base mesh dimensions
 
 The map file only stores scale multipliers, so real mesh sizes cannot be

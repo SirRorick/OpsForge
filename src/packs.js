@@ -76,6 +76,74 @@ export const PACK_GROUPS = [
   { id: 'objectives', name: 'Mode Objectives' },
 ];
 
+// ---------------------------------------------------------------------------
+// Weapon spawners
+// ---------------------------------------------------------------------------
+// One spawner, not ten. A WeaponSpawnPoint carries a `specificWeapon` prop
+// saying what it may produce, and the game picks at random from what is listed
+// — the `SingleWeaponPerSpawner` rule exists precisely because a spawner can
+// hold more than one.
+//
+// **The multi-weapon encoding is inferred, not confirmed.** Every spawner in
+// every reference export names exactly one weapon, so nothing the game wrote
+// shows two. The separator here is the one the game uses for its own
+// multi-valued strings elsewhere in this same file format — rule set flags are
+// written `"WeaponSource":"Spawners;Holsters"` — but that is a different field,
+// and a .NET [Flags] enum would more likely be `", "`. If a map with two
+// weapons turns out not to load in game, WEAPON_SEPARATOR is the one line to
+// change. Anything the editor did not touch is written back from its original
+// bytes, so this can only affect spawners the user actually edits.
+
+/** Selectable weapons, in the order the library shows them. */
+export const WEAPONS = [
+  'Handgun', 'SMG', 'Shotgun', 'Sniper', 'RPG',
+  'Grenade', 'Flashbang', 'RiotShield', 'Healthpack',
+];
+
+/**
+ * Sliced sprite per weapon. Not derivable: the dump spells the grenade
+ * "granade" and calls the riot shield a shield.
+ */
+export const WEAPON_ICONS = {
+  Handgun: 'Icon_handgun_silhouette',
+  SMG: 'Icon_smg_silhouette',
+  Shotgun: 'Icon_shotgun_silhouette',
+  Sniper: 'Icon_sniper_silhouette',
+  RPG: 'Icon_rpg_silhouette',
+  Grenade: 'Icon_granade_silhouette',
+  Flashbang: 'Icon_flashbang_silhouette',
+  RiotShield: 'Icon_shield_silhouette',
+  Healthpack: 'Icon_healthpack_silhouette',
+};
+
+/** The game's own shorthand for "any of them", and what it writes for it. */
+export const WEAPON_ANY = 'All';
+
+export const WEAPON_SEPARATOR = ';';
+
+/**
+ * `specificWeapon` -> the weapons it offers. Unrecognised names are kept rather
+ * than dropped, so a weapon added by a future game update survives an edit to
+ * the same spawner.
+ */
+export function parseWeapons(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw || raw === WEAPON_ANY) return [...WEAPONS];
+  return raw.split(WEAPON_SEPARATOR).map((s) => s.trim()).filter(Boolean);
+}
+
+/**
+ * The inverse. Everything selected collapses back to `All` rather than being
+ * spelled out, because that is what the game itself writes for a spawner with
+ * no restriction, and it is the only multi-weapon value known to load.
+ */
+export function formatWeapons(list) {
+  const chosen = [...new Set(list.filter(Boolean))];
+  if (!chosen.length) return WEAPON_ANY;
+  const coversAll = WEAPONS.every((w) => chosen.includes(w)) && chosen.length === WEAPONS.length;
+  return coversAll ? WEAPON_ANY : chosen.join(WEAPON_SEPARATOR);
+}
+
 export const BUILTIN_PACKS = [
   {
     id: "default", name: "Default", group: "virtual", schema: PACK_SCHEMA_VERSION,
@@ -754,59 +822,11 @@ export const BUILTIN_PACKS = [
   {
     id: "gameplay", name: "Gameplay Objects", group: "gameplay", schema: PACK_SCHEMA_VERSION,
     objects: [
-    { type: "WeaponSpawnPoint", key: "WeaponSpawnPoint:All", objectType: "WeaponSpawnPoint",
-      props: { specificWeapon: "All" }, label: "Any Weapon", category: "Weapon Spawns",
+    { type: "WeaponSpawnPoint", objectType: "WeaponSpawnPoint",
+      props: { specificWeapon: "All" }, label: "Weapon Spawn", category: "Weapon Spawns",
       shape: "spawnAll", size: [0.46, 0.5, 0.46], pivot: "base", rotationAxes: "y", floor: true,
       color: "#E8C547", defaultScale: [1, 1, 1], uncertain: true,
       model: "WeaponSpawnPoint", texture: "initialShadingGroup_Diffuse.png", icon: "icon_gears_weaponspawner" },
-    { type: "WeaponSpawnPoint", key: "WeaponSpawnPoint:Flashbang",
-      objectType: "WeaponSpawnPoint", props: { specificWeapon: "Flashbang" },
-      label: "Flashbang", category: "Weapon Spawns", shape: "spawnFlashbang",
-      size: [0.46, 0.5, 0.46], pivot: "base", rotationAxes: "y", floor: true, color: "#D8C77A",
-      defaultScale: [1, 1, 1], uncertain: true,
-      model: "WeaponSpawnPoint", texture: "initialShadingGroup_Diffuse.png", icon: "Icon_flashbang_silhouette" },
-    { type: "WeaponSpawnPoint", key: "WeaponSpawnPoint:Grenade", objectType: "WeaponSpawnPoint",
-      props: { specificWeapon: "Grenade" }, label: "Grenade", category: "Weapon Spawns",
-      shape: "spawnGrenade", size: [0.46, 0.5, 0.46], pivot: "base", rotationAxes: "y",
-      floor: true, color: "#7FB77E", defaultScale: [1, 1, 1], uncertain: true,
-      model: "WeaponSpawnPoint", texture: "initialShadingGroup_Diffuse.png", icon: "Icon_granade_silhouette" },
-    { type: "WeaponSpawnPoint", key: "WeaponSpawnPoint:Handgun", objectType: "WeaponSpawnPoint",
-      props: { specificWeapon: "Handgun" }, label: "Handgun", category: "Weapon Spawns",
-      shape: "spawnHandgun", size: [0.46, 0.5, 0.46], pivot: "base", rotationAxes: "y",
-      floor: true, color: "#4EC9E0", defaultScale: [1, 1, 1], uncertain: true,
-      model: "WeaponSpawnPoint", texture: "initialShadingGroup_Diffuse.png", icon: "Icon_handgun_silhouette" },
-    { type: "WeaponSpawnPoint", key: "WeaponSpawnPoint:Healthpack",
-      objectType: "WeaponSpawnPoint", props: { specificWeapon: "Healthpack" },
-      label: "Health Pack", category: "Weapon Spawns", shape: "spawnHealthpack",
-      size: [0.46, 0.5, 0.46], pivot: "base", rotationAxes: "y", floor: true, color: "#5AD6A0",
-      defaultScale: [1, 1, 1], uncertain: true,
-      model: "WeaponSpawnPoint", texture: "initialShadingGroup_Diffuse.png", icon: "Icon_healthpack_silhouette" },
-    { type: "WeaponSpawnPoint", key: "WeaponSpawnPoint:RiotShield",
-      objectType: "WeaponSpawnPoint", props: { specificWeapon: "RiotShield" },
-      label: "Riot Shield", category: "Weapon Spawns", shape: "spawnRiotShield",
-      size: [0.46, 0.5, 0.46], pivot: "base", rotationAxes: "y", floor: true, color: "#9AA7B4",
-      defaultScale: [1, 1, 1], uncertain: true,
-      model: "WeaponSpawnPoint", texture: "initialShadingGroup_Diffuse.png", icon: "Icon_shield_silhouette" },
-    { type: "WeaponSpawnPoint", key: "WeaponSpawnPoint:RPG", objectType: "WeaponSpawnPoint",
-      props: { specificWeapon: "RPG" }, label: "RPG", category: "Weapon Spawns",
-      shape: "spawnRpg", size: [0.46, 0.5, 0.46], pivot: "base", rotationAxes: "y", floor: true,
-      color: "#4EC9E0", defaultScale: [1, 1, 1], uncertain: true,
-      model: "WeaponSpawnPoint", texture: "initialShadingGroup_Diffuse.png", icon: "Icon_rpg_silhouette" },
-    { type: "WeaponSpawnPoint", key: "WeaponSpawnPoint:Shotgun", objectType: "WeaponSpawnPoint",
-      props: { specificWeapon: "Shotgun" }, label: "Shotgun", category: "Weapon Spawns",
-      shape: "spawnShotgun", size: [0.46, 0.5, 0.46], pivot: "base", rotationAxes: "y",
-      floor: true, color: "#4EC9E0", defaultScale: [1, 1, 1], uncertain: true,
-      model: "WeaponSpawnPoint", texture: "initialShadingGroup_Diffuse.png", icon: "Icon_shotgun_silhouette" },
-    { type: "WeaponSpawnPoint", key: "WeaponSpawnPoint:SMG", objectType: "WeaponSpawnPoint",
-      props: { specificWeapon: "SMG" }, label: "SMG", category: "Weapon Spawns",
-      shape: "spawnSmg", size: [0.46, 0.5, 0.46], pivot: "base", rotationAxes: "y", floor: true,
-      color: "#4EC9E0", defaultScale: [1, 1, 1], uncertain: true,
-      model: "WeaponSpawnPoint", texture: "initialShadingGroup_Diffuse.png", icon: "Icon_smg_silhouette" },
-    { type: "WeaponSpawnPoint", key: "WeaponSpawnPoint:Sniper", objectType: "WeaponSpawnPoint",
-      props: { specificWeapon: "Sniper" }, label: "Sniper", category: "Weapon Spawns",
-      shape: "spawnSniper", size: [0.46, 0.5, 0.46], pivot: "base", rotationAxes: "y",
-      floor: true, color: "#4EC9E0", defaultScale: [1, 1, 1], uncertain: true,
-      model: "WeaponSpawnPoint", texture: "initialShadingGroup_Diffuse.png", icon: "Icon_sniper_silhouette" },
     { type: "DamageBox", objectType: "DamageBox", props: { style: "Red" }, label: "Damage Box",
       category: "Hazards", shape: "damageBox", size: [1, 1, 1], pivot: "center",
       rotationAxes: "xyz", floor: false, color: "#E0574B", defaultScale: [1, 1, 1],

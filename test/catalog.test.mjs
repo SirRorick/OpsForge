@@ -110,7 +110,9 @@ test('catalog keys are unique', () => {
     assert.ok(!seen.has(def.key), `duplicate catalog key ${def.key}`);
     seen.add(def.key);
   }
-  assert.ok(seen.size > 170, `expected the full library, found ${seen.size}`);
+  // The ten weapon spawners collapsed into one entry whose weapon set is
+  // edited after placing, so the library is nine shorter than the roster.
+  assert.ok(seen.size > 160, `expected the full library, found ${seen.size}`);
 });
 
 test('entries sharing a type are told apart by their props', () => {

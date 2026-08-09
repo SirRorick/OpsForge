@@ -8,7 +8,8 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { geometryFor } from './placeholders.js';
-import { defFor, modelUrl } from './catalog.js';
+import { defFor, modelUrl, iconUrl } from './catalog.js';
+import { WEAPON_ICONS, WEAPON_ANY, parseWeapons } from './packs.js';
 import { convertPosition, unityEulerToQuat, quatToUnityEuler } from './unity.js';
 import { decodeNavCloud, navIndexToWorld } from './format.js';
 
@@ -144,6 +145,7 @@ export class Viewport extends EventTarget {
     this._edgeCache = new Map();
     this._materials = new Map();
     this._modelCache = new Map();
+    this._badges = new Map();
     this._gltf = new GLTFLoader();
 
     this._initRenderer();
@@ -302,6 +304,7 @@ export class Viewport extends EventTarget {
     mesh.scale.set(mo.scale.x, mo.scale.y, mo.scale.z);
     this.scene.add(mesh);
     this.objects.push(mesh);
+    this._refreshWeaponBadge(mesh);
     if (def.model) this._swapInModel(mesh, def);
     return mesh;
   }
@@ -353,6 +356,7 @@ export class Viewport extends EventTarget {
   removeObjects(meshes) {
     for (const m of meshes) {
       this._setOutline(m, false);
+      this._dropWeaponBadge(m);
       m.removeFromParent();
       const i = this.objects.indexOf(m);
       if (i >= 0) this.objects.splice(i, 1);
@@ -366,7 +370,10 @@ export class Viewport extends EventTarget {
   clearObjects() {
     if (this.placing) this._endPlacement(false);
     this.setSelection([]);
-    for (const m of this.objects) m.removeFromParent();
+    for (const m of this.objects) {
+      this._dropWeaponBadge(m);
+      m.removeFromParent();
+    }
     this.objects.length = 0;
     this.emit('change');
   }
@@ -409,6 +416,7 @@ export class Viewport extends EventTarget {
       mesh.material = this.materialFor(def);
       this._refreshOutline(mesh);
     }
+    this._refreshWeaponBadge(mesh);
     this.markDirty(mesh);
     this.emit('change');
   }
@@ -904,8 +912,126 @@ export class Viewport extends EventTarget {
     this.renderer.setSize(r.width, r.height, false);
   }
 
+  // -- weapon spawner badge -------------------------------------------------
+  // A spawner's whole configuration is one prop, and a crate looks the same
+  // whatever it holds, so the set is drawn above it. Kept as a scene-level
+  // sprite rather than a child of the mesh: a child inherits the object's
+  // scale, and a spawner stretched to 3 m would stretch its label with it.
+
+  /** Build or refresh the badge for one spawner, and drop it if it has none. */
+  _refreshWeaponBadge(mesh) {
+    const value = mesh.userData.props?.specificWeapon;
+    if (value === undefined) return;
+
+    let badge = this._badges.get(mesh);
+    if (!badge) {
+      const texture = new THREE.CanvasTexture(document.createElement('canvas'));
+      texture.colorSpace = THREE.SRGBColorSpace;
+      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: texture, transparent: true, depthTest: false, sizeAttenuation: true,
+      }));
+      sprite.renderOrder = 10;
+      this.scene.add(sprite);
+      badge = { sprite, texture, value: null };
+      this._badges.set(mesh, badge);
+    }
+    if (badge.value === value) return;
+    badge.value = value;
+    this._drawBadge(badge, parseWeapons(value), value === WEAPON_ANY);
+  }
+
+  /** Paint the icon strip. Icons decode late, so it repaints as they arrive. */
+  _drawBadge(badge, weapons, isAny) {
+    const CELL = 64, PAD = 6;
+    const shown = weapons.slice(0, 6);
+    const cols = Math.max(1, shown.length);
+    const canvas = badge.texture.image;
+    const width = cols * CELL + PAD * 2;
+    const height = CELL + PAD * 2 + (isAny || weapons.length > shown.length ? 20 : 0);
+
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+      // Resizing a canvas behind a live texture leaves the old bitmap on the
+      // GPU, so the sprite would wear the previous weapon set stretched to the
+      // new shape. Hand the material a fresh texture instead.
+      badge.texture.dispose();
+      badge.texture = new THREE.CanvasTexture(canvas);
+      badge.texture.colorSpace = THREE.SRGBColorSpace;
+      badge.sprite.material.map = badge.texture;
+      badge.sprite.material.needsUpdate = true;
+    }
+
+    const paint = () => {
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = 'rgba(10,15,20,0.78)';
+      ctx.strokeStyle = 'rgba(232,197,71,0.55)';
+      ctx.lineWidth = 2;
+      const r = 8;
+      ctx.beginPath();
+      ctx.roundRect(1, 1, canvas.width - 2, canvas.height - 2, r);
+      ctx.fill();
+      ctx.stroke();
+      shown.forEach((w, i) => {
+        const img = badge.images?.[w];
+        if (img?.complete && img.naturalWidth) {
+          ctx.drawImage(img, PAD + i * CELL, PAD, CELL, CELL);
+        }
+      });
+      if (isAny || weapons.length > shown.length) {
+        ctx.fillStyle = '#E8C547';
+        ctx.font = '600 15px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(isAny ? 'ANY' : `+${weapons.length - shown.length}`,
+          canvas.width / 2, canvas.height - 7);
+      }
+      badge.texture.needsUpdate = true;
+      // Height fixed, width follows the icon count, so one weapon reads as a
+      // small tag rather than a banner.
+      const H = 0.22;
+      badge.sprite.scale.set(H * (canvas.width / canvas.height), H, 1);
+    };
+
+    badge.images = {};
+    for (const w of shown) {
+      const url = iconUrl({ icon: WEAPON_ICONS[w] });
+      if (!url) continue;
+      const img = new Image();
+      img.onload = paint;
+      img.src = url;
+      badge.images[w] = img;
+    }
+    paint();
+  }
+
+  _dropWeaponBadge(mesh) {
+    const badge = this._badges.get(mesh);
+    if (!badge) return;
+    this.scene.remove(badge.sprite);
+    badge.sprite.material.map?.dispose();
+    badge.sprite.material.dispose();
+    this._badges.delete(mesh);
+  }
+
+  /** Float each badge just above its object, in world space. */
+  _placeBadges() {
+    if (!this._badges.size) return;
+    const box = new THREE.Box3();
+    for (const [mesh, badge] of this._badges) {
+      box.setFromObject(mesh);
+      if (box.isEmpty()) continue;
+      badge.sprite.position.set(
+        (box.min.x + box.max.x) / 2,
+        box.max.y + 0.28,
+        (box.min.z + box.max.z) / 2,
+      );
+    }
+  }
+
   _frame() {
     this.orbit.update();
+    this._placeBadges();
     this.renderer.render(this.scene, this.camera);
   }
 }

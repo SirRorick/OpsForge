@@ -82,13 +82,27 @@ label.sw:has(input:checked){color:var(--text)}
 .scroll{overflow-y:auto;min-height:0;flex:1}
 
 /* ---------- library ---------- */
-#packbar{display:flex;gap:4px;padding:8px 12px;flex-wrap:wrap}
+#packbar{display:flex;gap:4px;padding:4px 12px 9px;flex-wrap:wrap}
 .pill{background:transparent;border:1px solid var(--line);border-radius:99px;padding:3px 11px;
   cursor:pointer;font-family:var(--hud);font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--dim)}
+.pill:hover{border-color:#33495a;color:var(--text)}
 .pill.on{border-color:var(--accent);color:var(--accent)}
 #search{margin:0 12px 8px}
 .cat{font-family:var(--hud);font-size:11.5px;letter-spacing:.18em;text-transform:uppercase;
   color:var(--faint);padding:10px 12px 5px}
+
+/* top-level library sections, mirroring the in-game grouping.
+   Not .grp — the toolbar already owns that class and it is a flex row. */
+.libsec-h{display:flex;align-items:center;gap:7px;width:100%;background:transparent;border:0;
+  border-top:1px solid var(--line-soft);padding:9px 12px 8px;cursor:pointer;text-align:left;
+  font-family:var(--hud);font-size:12.5px;font-weight:600;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--dim)}
+.libsec-h:hover{color:var(--text);background:var(--panel2)}
+.libsec-h .tw{color:var(--accent);font-size:10px;width:9px;flex:none}
+.libsec-h .n{margin-left:auto;font-family:var(--mono);font-size:10px;letter-spacing:0;color:var(--faint)}
+.libsec.open>.libsec-h{color:var(--text)}
+.libsec:not(.open)>.libsec-body{display:none}
+.libsec:first-child>.libsec-h{border-top:0}
 .items{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:0 12px 6px}
 .item{background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:6px 5px 7px;
   cursor:grab;text-align:center;transition:border-color .12s,background .12s}
@@ -111,6 +125,19 @@ label.sw:has(input:checked){color:var(--text)}
 /* ---------- inspector fields ---------- */
 .field{display:grid;grid-template-columns:58px 1fr;align-items:center;gap:8px;margin-bottom:6px}
 .field>span{font-family:var(--hud);font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+/* Weapon spawner: a set of toggles, not a value. */
+.wfield{grid-template-columns:1fr}
+.wgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-top:2px}
+.wchip{display:flex;flex-direction:column;align-items:center;gap:2px;padding:5px 2px 4px;
+  border:1px solid var(--line);border-radius:4px;background:var(--panel2);cursor:pointer;
+  font-family:var(--hud);font-size:10px;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--faint);user-select:none}
+.wchip:hover{border-color:var(--line-soft);color:var(--dim)}
+.wchip.on{border-color:var(--accent-dim);background:var(--raise);color:var(--accent)}
+.wchip input{display:none}
+.wchip img{width:26px;height:26px;object-fit:contain;opacity:.45;filter:grayscale(1)}
+.wchip.on img{opacity:1;filter:none}
+.whint{margin-top:5px;font-size:11px;line-height:1.4;color:var(--faint)}
 .triple{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px}
 .axis{position:relative}
 .axis::before{content:attr(data-a);position:absolute;left:5px;top:50%;transform:translateY(-50%);
@@ -120,6 +147,23 @@ label.sw:has(input:checked){color:var(--text)}
 .axis[data-a=Z]::before{color:#6C9BE0}
 .axis input{padding-left:16px}
 .hint{color:var(--faint);font-size:11px;line-height:1.5}
+
+/* ---------- rule sets ---------- */
+#mode-tabs{display:flex;gap:3px;padding:0 12px 9px;flex-wrap:wrap}
+.rule{display:grid;grid-template-columns:1fr 82px;align-items:center;gap:8px;margin-bottom:5px}
+.rule>label{font-size:11.5px;color:var(--dim);line-height:1.3}
+.rule.set>label{color:var(--text)}
+.rule.set>label::after{content:"•";color:var(--accent);font-size:14px;margin-left:5px;vertical-align:-1px}
+.rule .val{display:flex;align-items:center;gap:5px;justify-content:flex-end}
+.rule .val input[type=number],.rule .val input[type=text]{width:100%;text-align:right}
+.rule .val .u{font-family:var(--mono);font-size:9.5px;color:var(--faint);flex:none}
+.rule .val input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px;margin:0 34px 0 0}
+.rule-cat{font-family:var(--hud);font-size:11px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--faint);margin:12px 0 6px;padding-top:8px;border-top:1px solid var(--line-soft)}
+.rule-cat:first-child{margin-top:0;padding-top:0;border-top:0}
+.flagset{display:flex;gap:10px;flex-wrap:wrap;margin:2px 0 8px}
+.flagset label{display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--dim);cursor:pointer}
+.flagset input{accent-color:var(--accent);width:13px;height:13px}
 kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px solid var(--line);
   border-radius:3px;padding:1px 4px;color:var(--dim)}
 
@@ -193,14 +237,12 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
   <aside id="library">
     <div class="sec">
       <h2>Library <span class="cnt" id="lib-count"></span></h2>
-      <div id="packbar"></div>
       <div id="search"><input type="text" id="q" placeholder="Filter objects"></div>
     </div>
     <div class="scroll" id="lib-list"></div>
     <div class="sec" style="border-bottom:0;border-top:1px solid var(--line-soft)">
       <div class="pad" style="padding-top:10px">
-        <button class="btn ghost" id="b-import-pack" style="width:100%">Import pack&hellip;</button>
-        <p class="hint" style="margin:8px 0 0">Drag an object into the view to place it, or click to drop it at the centre.</p>
+        <p class="hint" style="margin:0">Drag an object into the view to place it, or click to drop it at the centre.</p>
       </div>
     </div>
   </aside>
@@ -263,6 +305,12 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
       </div>
 
       <div class="sec">
+        <h2>Rules <span class="cnt" id="rules-count"></span></h2>
+        <div id="mode-tabs"></div>
+        <div class="pad" id="rules-body"></div>
+      </div>
+
+      <div class="sec">
         <h2>Map</h2>
         <div class="pad">
           <div class="field"><span>Name</span><input type="text" id="m-name"></div>
@@ -279,10 +327,12 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
           <p class="hint">
             <kbd>W</kbd><kbd>E</kbd><kbd>R</kbd> move / rotate / scale &middot;
             <kbd>G</kbd> group &middot; <kbd>Shift</kbd>+<kbd>G</kbd> ungroup &middot;
-            <kbd>Ctrl</kbd>+<kbd>D</kbd> duplicate &middot; <kbd>F</kbd> frame &middot;
+            <kbd>Ctrl</kbd>+<kbd>D</kbd> duplicate &middot;
+            <kbd>Ctrl</kbd>+<kbd>C</kbd>/<kbd>V</kbd> copy / paste under the cursor &middot;
+            <kbd>F</kbd> frame &middot;
             <kbd>End</kbd> drop to floor &middot; <kbd>Del</kbd> delete &middot;
             <kbd>Ctrl</kbd>+<kbd>A</kbd> select all<br><br>
-            Left drag selects, right drag orbits, middle drag pans,
+            Left drag selects, middle drag orbits, right drag pans,
             <kbd>Alt</kbd>+left orbits. <kbd>Shift</kbd> adds to the selection,
             <kbd>Ctrl</kbd> picks a single object out of a group.
           </p>
@@ -303,7 +353,6 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
 <div id="marquee"></div>
 <div id="toast"></div>
 <input type="file" id="filepick" style="display:none">
-<input type="file" id="packpick" accept=".json,application/json" style="display:none">
 
 <script type="importmap">
 { "imports": {

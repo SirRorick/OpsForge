@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { parseMap, serializeMap } from '../src/format.js';
 import { defFor, getByKey, getPacks } from '../src/catalog.js';
+import { WEAPONS, WEAPON_ICONS, parseWeapons, formatWeapons } from '../src/packs.js';
 
 const REF = fileURLToPath(new URL('../reference/', import.meta.url));
 
@@ -136,21 +137,37 @@ test('the scale the editor places at is the scale the game used', () => {
   }
 });
 
-test('weapon and enemy spawners resolve to the right variant', () => {
-  const weapon = defFor({ type: 'WeaponSpawnPoint', props: { specificWeapon: 'Sniper' } });
-  assert.equal(weapon.key, 'WeaponSpawnPoint:Sniper');
-  assert.equal(weapon.label, 'Sniper');
+test('every weapon spawner resolves to the one entry', () => {
+  // There is a single spawner in the library; which weapons it offers is a
+  // property of the placed object, not a different object.
+  const one = getByKey('WeaponSpawnPoint');
+  assert.ok(one, 'the weapon spawner entry is missing');
+  for (const value of ['Sniper', 'All', 'Shotgun;Sniper', 'LaserRifle']) {
+    const def = defFor({ type: 'WeaponSpawnPoint', props: { specificWeapon: value } });
+    assert.equal(def.key, 'WeaponSpawnPoint', `${value} resolved to ${def.key}`);
+    assert.ok(!def.unknown, `${value} became an unknown marker`);
+  }
 
   const enemy = defFor({ type: 'EnemySpawnPoint', props: { enemyTypes: 'All', behaviour: 'Stationary' } });
   assert.equal(enemy.key, 'EnemySpawnPoint:Stationary');
+});
 
-  // A value from a game update we have never seen still has to land somewhere
-  // editable rather than becoming an unknown marker.
-  const future = defFor({ type: 'WeaponSpawnPoint', props: { specificWeapon: 'LaserRifle' } });
-  assert.equal(future.type, 'WeaponSpawnPoint');
-  assert.ok(!future.unknown);
+test('a spawner\'s weapon set round-trips through the wire format', () => {
+  assert.deepEqual(parseWeapons('All'), WEAPONS);
+  assert.deepEqual(parseWeapons('Shotgun;Sniper'), ['Shotgun', 'Sniper']);
+  assert.equal(formatWeapons(['Shotgun', 'Sniper']), 'Shotgun;Sniper');
 
-  assert.equal(getByKey('WeaponSpawnPoint:Handgun').props.specificWeapon, 'Handgun');
+  // Everything ticked is written the way the game writes it, not spelled out.
+  assert.equal(formatWeapons(WEAPONS), 'All');
+  // And an empty set is never written; it means "any" again.
+  assert.equal(formatWeapons([]), 'All');
+
+  // A weapon a future update adds survives an edit to the same spawner.
+  const future = parseWeapons('Shotgun;LaserRifle');
+  assert.deepEqual(future, ['Shotgun', 'LaserRifle']);
+  assert.equal(formatWeapons(future), 'Shotgun;LaserRifle');
+
+  for (const w of WEAPONS) assert.match(WEAPON_ICONS[w] ?? '', /^Icon_/, `${w} has no icon`);
 });
 
 test('changing a spawner\'s weapon rewrites that object and nothing else', () => {

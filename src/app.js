@@ -9,7 +9,9 @@ import {
   buildNavMask, encodeNavCloud, MAP_VERSION,
 } from './format.js';
 import { getPacks, registerPack, categoriesOf, packsInGroup, getByKey, iconUrl } from './catalog.js';
-import { PACK_GROUPS } from './packs.js';
+import {
+  PACK_GROUPS, WEAPONS, WEAPON_ICONS, WEAPON_ANY, parseWeapons, formatWeapons,
+} from './packs.js';
 import {
   fieldsFor, unknownKeys, setValue, parseFlags, joinFlags, overrideCount,
   INT, BOOL, ENUM, FLAGS,
@@ -656,12 +658,35 @@ function propSuggestions(key) {
   return [...out];
 }
 
+/**
+ * A spawner offers a set, not a value: tick several and the game picks one at
+ * random each time it fills. Rendered as toggles rather than a text field
+ * because the wire format is a joined string nobody should have to type, and
+ * because the set is what the user is actually choosing.
+ */
+function weaponRow(value) {
+  const chosen = new Set(parseWeapons(value));
+  // Union, so a weapon from a future game update still shows and stays ticked.
+  const all = [...new Set([...WEAPONS, ...chosen])];
+  const chips = all.map((w) => {
+    const icon = iconUrl({ icon: WEAPON_ICONS[w] });
+    const art = icon ? `<img src="${escapeHtml(icon)}" alt="" loading="lazy">` : '';
+    return `<label class="wchip${chosen.has(w) ? ' on' : ''}">
+      <input type="checkbox" data-weapon="${escapeHtml(w)}"${chosen.has(w) ? ' checked' : ''}>
+      ${art}<span>${escapeHtml(w)}</span></label>`;
+  }).join('');
+  return `<div class="field wfield"><span>Weapons</span>
+    <div class="wgrid" id="f-weapons">${chips}</div>
+    <div class="whint" id="f-weapons-hint"></div></div>`;
+}
+
 function propRows(mesh) {
   const props = mesh.userData.props || {};
   const keys = Object.keys(props);
   if (!keys.length) return '';
   return keys
     .map((key, i) => {
+      if (key === 'specificWeapon') return weaponRow(props[key]);
       const label = PROP_LABELS[key] || key;
       const list = propSuggestions(key);
       const opts = list.map((v) => `<option value="${escapeHtml(v)}">`).join('');
@@ -673,9 +698,45 @@ function propRows(mesh) {
     .join('');
 }
 
+function wireWeaponRow(mesh) {
+  const host = $('f-weapons');
+  if (!host) return;
+  const hint = $('f-weapons-hint');
+  const boxes = [...host.querySelectorAll('input[type=checkbox]')];
+
+  const describe = (list, written) => {
+    if (written === WEAPON_ANY) return `Any weapon — the game writes "${WEAPON_ANY}".`;
+    if (list.length === 1) return `Always spawns a ${list[0]}.`;
+    return `${list.length} weapons — the game picks one at random. Written "${written}".`;
+  };
+
+  const refresh = () => {
+    const chosen = boxes.filter((b) => b.checked).map((b) => b.dataset.weapon);
+    for (const b of boxes) b.closest('.wchip').classList.toggle('on', b.checked);
+    hint.textContent = describe(chosen, formatWeapons(chosen));
+  };
+
+  for (const box of boxes) {
+    box.onchange = () => {
+      let chosen = boxes.filter((b) => b.checked).map((b) => b.dataset.weapon);
+      // Never write an empty set: unticking the last one means "any" again.
+      if (!chosen.length) {
+        for (const b of boxes) b.checked = true;
+        chosen = boxes.map((b) => b.dataset.weapon);
+      }
+      refresh();
+      vp.setProp(mesh, 'specificWeapon', formatWeapons(chosen));
+      commit();
+    };
+  }
+  refresh();
+}
+
 function wirePropRows(mesh) {
+  wireWeaponRow(mesh);
   const keys = Object.keys(mesh.userData.props || {});
   keys.forEach((key, i) => {
+    if (key === 'specificWeapon') return;
     const input = $(`f-prop${i}`);
     if (!input) return;
     input.onchange = () => {
