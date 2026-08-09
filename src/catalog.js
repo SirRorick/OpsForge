@@ -32,6 +32,8 @@ export function registerPack(pack) {
       floor: true,
       defaultScale: [1, 1, 1],
       icon: null,
+      model: null,
+      texture: null,
       ...raw,
       key: raw.key || raw.type,
       pack: pack.id,

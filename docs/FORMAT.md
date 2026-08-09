@@ -344,6 +344,34 @@ texture is not in the dump. Three details govern whether the result is correct:
   `Icon_BoxSolid`, one per theme, and `LabRats_Briefing` and `Labrats_Briefing`
   differ only in case, which on Windows is not a difference at all.
 
+### Matching the whole library
+
+`npm run match-assets` ties all 178 catalog entries to a prefab, a texture and
+an icon, and says how each was reached so a guess never passes as a fact. All
+178 resolve to a prefab and an icon; 170 resolve to a texture, the other eight
+being objects whose GLB embeds no image at all (the damage boxes, the jumbotron,
+the flag spawns, the pigeon, the MYKEA sofa).
+
+Textures are the one part that is not name-matched. A GLB embeds its images in
+the BIN chunk with no filename attached, so each embedded PNG is hashed and
+looked up against a hash of every file in `Textures/` — an identity rather than
+a resemblance. Only base-colour maps are embedded; the `_Normal` and `_ORM`
+siblings sitting beside them in `Textures/` have to be reached through the
+material name instead.
+
+Prefab names need four theme rewrites (`MYKEA`→`Indoor`, `Graffiti`→
+`StreetStyle`, `HatchetCorp`→`HatCo`, `Paintball`→`PaintBall`), a rule for the
+colour themes, which reskin the Default meshes as `Default<Base><Colour>Visual`,
+and a table for the rest. Some of that table had to be settled by measuring,
+because the names actively mislead: MYKEA's `IndoorBarrierUVisualCouch` is a
+2 m barrier panel rather than the sofa it sounds like, the sofa is the 1.66 m
+`IndoorBarrierGroundedVisualCouch`, the cushion is a 1.0 × 0.17 × 0.5 mat, and
+the ottoman is a 0.5 m cube called `IndoorCover1x1`. Ten entries remain
+**reasoned rather than read** and are listed as `inferred` by the tool — chiefly
+the crystals, where the art numbers them `01..03` and the type strings describe
+them, with nothing in the dump linking the two. `Small` is settled by footprint;
+`Circle` against `HalfCircle` only by which is rounder.
+
 The icon names are their own vocabulary too, and cannot be derived from the
 type string. `Icon_BarrierNormal` is `BarrierFull` and `Icon_BarrierUWall` is
 `BarrierU`. Both `Cilinder` and `Cylinder` spellings appear, and they are two

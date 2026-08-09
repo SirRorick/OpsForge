@@ -11,7 +11,8 @@
     "serve": "node serve.mjs",
     "read-definitions": "node tools/read-definitions.mjs",
     "slice-icons": "node tools/slice-icons.mjs",
-    "measure-prefabs": "node tools/measure-prefabs.mjs"
+    "measure-prefabs": "node tools/measure-prefabs.mjs",
+    "match-assets": "node tools/match-assets.mjs"
   },
   "engines": { "node": ">=18" }
 }
