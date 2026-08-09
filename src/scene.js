@@ -25,9 +25,21 @@ const warnedModels = new Set();
 // a pane hanging in the air that vanishes when you orbit past it.
 const FURNITURE = /manipulator|collider|hologram|ghost|outline|lockspawner|vfx/i;
 
+/**
+ * The one hologram worth keeping. Every other `*Hologram*` is a shell of the
+ * object it sits on, a couple of centimetres proud of the surface; the enemy
+ * spawner's is a different thing entirely — a preview of the bot that will
+ * spawn there, standing on the pad, which is the only figure the prefab has.
+ */
+const BOT_PREVIEW = /bot.*hologram/i;
+
 /** True when the node, or any ancestor, is editor furniture rather than art. */
 function isFurniture(node) {
-  for (let n = node; n; n = n.parent) if (FURNITURE.test(n.name || '')) return true;
+  for (let n = node; n; n = n.parent) {
+    const name = n.name || '';
+    if (BOT_PREVIEW.test(name)) return false;
+    if (FURNITURE.test(name)) return true;
+  }
   return false;
 }
 
@@ -90,17 +102,21 @@ function translucency(opacity) {
  */
 const displayMaterials = new Map();
 
-function displayMaterial(material, tint, opacity = 1) {
-  if (Array.isArray(material)) return material.map((m) => displayMaterial(m, tint, opacity));
+function displayMaterial(material, tint, opacity = 1, force = false) {
+  if (Array.isArray(material)) return material.map((m) => displayMaterial(m, tint, opacity, force));
   if (!material) return material;
-  const key = `${material.uuid}|${tint ?? ''}|${opacity}`;
+  const key = `${material.uuid}|${tint ?? ''}|${opacity}|${force}`;
   if (displayMaterials.has(key)) return displayMaterials.get(key);
   const out = material.clone();
   if (out.metalness !== undefined && !out.envMap) {
     out.metalness = Math.min(out.metalness, 0.25);
     out.roughness = Math.max(out.roughness ?? 0.5, 0.45);
   }
-  if (tint && !out.map && out.color?.getHex() === 0xffffff) out.color.set(tint);
+  // `force` is for prefabs whose art is deliberately colourless and gets its
+  // team colour from a shader the export could not carry — the player spawn
+  // zones are a white gradient that Unity tints blue or orange. Multiplying a
+  // greyscale map by the catalog colour is what that shader did.
+  if (tint && (force || (!out.map && out.color?.getHex() === 0xffffff))) out.color.set(tint);
   Object.assign(out, translucency(opacity));
   displayMaterials.set(key, out);
   return out;
@@ -112,7 +128,7 @@ function displayMaterial(material, tint, opacity = 1) {
  * position and normal first; if a merge still fails, the largest single part is
  * a better stand-in than nothing.
  */
-function mergeForDisplay(parts, tint, opacity) {
+function mergeForDisplay(parts, tint, opacity, force) {
   // Some prefabs carry vertex colours on the visible mesh and not on the rest —
   // the solid primitives do, the props do not. GLTFLoader turns that into
   // material.vertexColors, so a part that loses the attribute renders black.
@@ -146,13 +162,13 @@ function mergeForDisplay(parts, tint, opacity) {
     // useGroups keeps one draw group per part, so the prefab's own materials
     // survive as a material array and the object arrives textured.
     const merged = mergeGeometries(trimmed, true);
-    if (merged) return { geometry: merged, materials: parts.map((p) => displayMaterial(p.material, tint, opacity)) };
+    if (merged) return { geometry: merged, materials: parts.map((p) => displayMaterial(p.material, tint, opacity, force)) };
   } catch { /* fall through to the largest part */ }
   let best = 0;
   trimmed.forEach((g, i) => {
     if (g.getAttribute('position').count > trimmed[best].getAttribute('position').count) best = i;
   });
-  return { geometry: trimmed[best], materials: displayMaterial(parts[best].material, tint, opacity) };
+  return { geometry: trimmed[best], materials: displayMaterial(parts[best].material, tint, opacity, force) };
 }
 
 export class Viewport extends EventTarget {
@@ -349,7 +365,7 @@ export class Viewport extends EventTarget {
     try {
       // Two entries can share a prefab and not a pivot, and the normalisation
       // below depends on both.
-      const cacheKey = `${def.model}|${def.pivot}|${def.size[1]}|${def.color}|${def.opacity ?? 1}`;
+      const cacheKey = `${def.model}|${def.pivot}|${def.size[1]}|${def.color}|${def.opacity ?? 1}|${def.tintModel}`;
       let model = this._modelCache.get(cacheKey);
       if (!model) {
         const gltf = await this._gltf.loadAsync(url);
@@ -366,7 +382,7 @@ export class Viewport extends EventTarget {
           found.push({ geometry, material: n.material });
         });
         if (!found.length) return;
-        model = mergeForDisplay(found, def.color, def.opacity ?? 1);
+        model = mergeForDisplay(found, def.color, def.opacity ?? 1, def.tintModel === true);
         seatOnFloor(model.geometry, def);
         this._modelCache.set(cacheKey, model);
       }

@@ -12,7 +12,10 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { parseMap, serializeMap } from '../src/format.js';
 import { defFor, getByKey, getPacks } from '../src/catalog.js';
-import { WEAPONS, WEAPON_ICONS, parseWeapons, formatWeapons } from '../src/packs.js';
+import {
+  WEAPONS, WEAPON_ICONS, parseWeapons, formatWeapons,
+  ENEMY_TYPES, ENEMY_BEHAVIOURS, parseEnemyTypes, formatEnemyTypes,
+} from '../src/packs.js';
 
 const REF = fileURLToPath(new URL('../reference/', import.meta.url));
 
@@ -148,8 +151,22 @@ test('every weapon spawner resolves to the one entry', () => {
     assert.ok(!def.unknown, `${value} became an unknown marker`);
   }
 
-  const enemy = defFor({ type: 'EnemySpawnPoint', props: { enemyTypes: 'All', behaviour: 'Stationary' } });
-  assert.equal(enemy.key, 'EnemySpawnPoint:Stationary');
+  // Enemy spawners collapsed the same way: behaviour and enemy types are
+  // properties of the placed object, not three different library entries.
+  for (const behaviour of ENEMY_BEHAVIOURS) {
+    const enemy = defFor({ type: 'EnemySpawnPoint', props: { enemyTypes: 'All', behaviour } });
+    assert.equal(enemy.key, 'EnemySpawnPoint', `${behaviour} resolved to ${enemy.key}`);
+  }
+});
+
+test('an enemy spawner\'s type set round-trips through the wire format', () => {
+  assert.deepEqual(parseEnemyTypes('All'), ENEMY_TYPES);
+  assert.deepEqual(parseEnemyTypes('Sniper;Drone'), ['Sniper', 'Drone']);
+  assert.equal(formatEnemyTypes(['Sniper', 'Drone']), 'Sniper;Drone');
+  assert.equal(formatEnemyTypes(ENEMY_TYPES), 'All');
+  assert.equal(formatEnemyTypes([]), 'All');
+  // The game's own misspelling, which must not be corrected.
+  assert.ok(ENEMY_BEHAVIOURS.includes('Aggresive'));
 });
 
 test('a spawner\'s weapon set round-trips through the wire format', () => {

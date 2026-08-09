@@ -25,6 +25,8 @@
 //   icon          sliced sprite name, without extension; see tools/slice-icons.mjs
 //   model         prefab basename in reference/GameAssets/Prefabs, without .glb
 //   texture       base-colour map in reference/GameAssets/Textures
+//   tintModel     multiply the prefab's own texture by `color`, for art that
+//                 ships colourless and is tinted per team by a Unity shader
 //   opacity       < 1 draws the object translucent, for volumes you need to
 //                 see through — the damage boxes mark a region, not a solid
 //   uncertain     `size` is an estimate, not a confirmed mesh dimension
@@ -144,6 +146,51 @@ export function formatWeapons(list) {
   if (!chosen.length) return WEAPON_ANY;
   const coversAll = WEAPONS.every((w) => chosen.includes(w)) && chosen.length === WEAPONS.length;
   return coversAll ? WEAPON_ANY : chosen.join(WEAPON_SEPARATOR);
+}
+
+// ---------------------------------------------------------------------------
+// Enemy spawners
+// ---------------------------------------------------------------------------
+// Same shape as the weapon spawners: one library entry, and what it may produce
+// is edited after placing. `behaviour` picks how the spawned enemies act and
+// `enemyTypes` which of them may appear.
+//
+// The three behaviours are confirmed — the reference maps use Default,
+// Aggresive and Stationary, and the misspelling is the game's, not a typo to
+// fix.
+//
+// The type *names* come from the spawner prefab's own in-VR panel, which ships
+// a toggle per enemy: BotToggle_Handgun, BotToggle_HandgunShield,
+// BotToggle_SMGCorrupted and so on, beside a Dropdown_BotBehaviour. That is the
+// game's own list rather than a guess, and it is why `HandgunShield` is spelled
+// that way and why the Corrupted variants are here at all.
+//
+// What is still **not** confirmed is how several of them are written into a map
+// file: every reference spawner says `All`. The separator is the same inference
+// as for the weapons, and shares WEAPON_SEPARATOR deliberately — if one turns
+// out to be wrong then so is the other.
+
+export const ENEMY_BEHAVIOURS = ['Default', 'Aggresive', 'Stationary'];
+
+export const ENEMY_TYPES = [
+  'Handgun', 'SMG', 'Shotgun', 'Sniper', 'RPG', 'HandgunShield', 'Drone', 'Chopper',
+  'HandgunCorrupted', 'SMGCorrupted', 'ShotgunCorrupted', 'SniperCorrupted', 'RPGCorrupted',
+];
+
+export const ENEMY_ANY = 'All';
+
+export function parseEnemyTypes(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw || raw === ENEMY_ANY) return [...ENEMY_TYPES];
+  return raw.split(WEAPON_SEPARATOR).map((s) => s.trim()).filter(Boolean);
+}
+
+export function formatEnemyTypes(list) {
+  const chosen = [...new Set(list.filter(Boolean))];
+  if (!chosen.length) return ENEMY_ANY;
+  const coversAll = ENEMY_TYPES.every((t) => chosen.includes(t))
+    && chosen.length === ENEMY_TYPES.length;
+  return coversAll ? ENEMY_ANY : chosen.join(WEAPON_SEPARATOR);
 }
 
 export const BUILTIN_PACKS = [
@@ -864,27 +911,15 @@ export const BUILTIN_PACKS = [
     { type: "PlayerSpawnZoneTeam1", label: "Player Spawn Zone Team 1", category: "Spawn Zones",
       shape: "spawnZone", size: [1.4, 1, 1.4], pivot: "base", rotationAxes: "y", floor: true,
       color: "#4A90D9", defaultScale: [1, 1, 1], uncertain: true,
-      model: "PlayerSpawnZoneTeam1", texture: "TPgradientVerticalConcave00 1.png", icon: "Icon_SpawnZoneTeam1" },
+      model: "PlayerSpawnZoneTeam1", texture: "TPgradientVerticalConcave00 1.png", tintModel: true, icon: "Icon_SpawnZoneTeam1" },
     { type: "PlayerSpawnZoneTeam2", label: "Player Spawn Zone Team 2", category: "Spawn Zones",
       shape: "spawnZone", size: [1.4, 1, 1.4], pivot: "base", rotationAxes: "y", floor: true,
       color: "#E08A3C", defaultScale: [1, 1, 1], uncertain: true,
-      model: "PlayerSpawnZoneTeam2", texture: "TPgradientVerticalConcave00 1.png", icon: "Icon_SpawnZoneTeam2" },
-    { type: "EnemySpawnPoint", key: "EnemySpawnPoint:Default", objectType: "EnemySpawnPoint",
+      model: "PlayerSpawnZoneTeam2", texture: "TPgradientVerticalConcave00 1.png", tintModel: true, icon: "Icon_SpawnZoneTeam2" },
+    { type: "EnemySpawnPoint", objectType: "EnemySpawnPoint",
       props: { enemyTypes: "All", behaviour: "Default" }, label: "Enemy Spawn",
       category: "Enemy Spawns", shape: "enemySpawn", size: [0.7, 1.1, 0.7], pivot: "base",
       rotationAxes: "y", floor: true, color: "#C0553F", defaultScale: [1, 1, 1],
-      uncertain: true,
-      model: "EnemySpawnPoint", texture: "EnemySpawner_Diffuse.png", icon: "Icon_Enemy_Spawner" },
-    { type: "EnemySpawnPoint", key: "EnemySpawnPoint:Aggresive", objectType: "EnemySpawnPoint",
-      props: { enemyTypes: "All", behaviour: "Aggresive" }, label: "Enemy Spawn (Aggresive)",
-      category: "Enemy Spawns", shape: "enemySpawn", size: [0.7, 1.1, 0.7], pivot: "base",
-      rotationAxes: "y", floor: true, color: "#E0574B", defaultScale: [1, 1, 1],
-      uncertain: true,
-      model: "EnemySpawnPoint", texture: "EnemySpawner_Diffuse.png", icon: "Icon_Enemy_Spawner" },
-    { type: "EnemySpawnPoint", key: "EnemySpawnPoint:Stationary", objectType: "EnemySpawnPoint",
-      props: { enemyTypes: "All", behaviour: "Stationary" }, label: "Enemy Spawn (Stationary)",
-      category: "Enemy Spawns", shape: "enemySpawn", size: [0.7, 1.1, 0.7], pivot: "base",
-      rotationAxes: "y", floor: true, color: "#8A6A5A", defaultScale: [1, 1, 1],
       uncertain: true,
       model: "EnemySpawnPoint", texture: "EnemySpawner_Diffuse.png", icon: "Icon_Enemy_Spawner" },
     { type: "DominationZoneA", label: "Domination Zone A", category: "Domination",
