@@ -139,7 +139,11 @@ label.sw:has(input:checked){color:var(--text)}
 .wchip input{display:none}
 .wchip img{width:26px;height:26px;object-fit:contain;opacity:.45;filter:grayscale(1)}
 .wchip.on img{opacity:1;filter:none}
-.whint{margin-top:5px;font-size:11px;line-height:1.4;color:var(--faint)}
+/* The hint quotes the value that gets written, which is semicolon-joined and
+   so is one unbreakable token — eight weapons is 62 characters with nowhere to
+   wrap, and it pushed the panel off the side of the screen. */
+.whint{margin-top:5px;font-size:11px;line-height:1.4;color:var(--faint);
+  overflow-wrap:anywhere}
 .triple{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px}
 .axis{position:relative}
 .axis::before{content:attr(data-a);position:absolute;left:5px;top:50%;transform:translateY(-50%);

@@ -727,7 +727,12 @@ function wireWeaponRow(mesh) {
   const describe = (list, written) => {
     if (written === WEAPON_ANY) return `Any weapon — the game writes "${WEAPON_ANY}".`;
     if (list.length === 1) return `Always spawns a ${list[0]}.`;
-    return `${list.length} weapons — the game picks one at random. Written "${written}".`;
+    // The written value is one unbreakable token, so offer the line breaker a
+    // zero-width space after each separator: it wraps at the semicolons rather
+    // than through the middle of "RiotShield". Display only — the value stored
+    // on the object is untouched.
+    const wrappable = written.replaceAll(';', ';​');
+    return `${list.length} weapons — the game picks one at random. Written "${wrappable}".`;
   };
 
   const refresh = () => {
