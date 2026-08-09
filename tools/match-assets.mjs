@@ -238,6 +238,7 @@ const ICONS_BY_KEY = {
   DamageBoxTeam2: 'Icon_DamageBoxTeam2', ExplosiveBarrel: 'Icon_ExplosiveBarrel',
   Jumbotron: 'Icon_JumbotronSingleScreen', Minigun: 'Icon_Minigun',
   EnemySpawnPoint: 'Icon_Enemy_Spawner',
+  WeaponSpawnPoint: 'icon_weapons_Shotgunspawner',
 
   DominationZoneA: 'Icon_FlagA', DominationZoneB: 'Icon_FlagB', DominationZoneC: 'Icon_FlagC',
   PlayerSpawnZoneTeam1: 'Icon_SpawnZoneTeam1', PlayerSpawnZoneTeam2: 'Icon_SpawnZoneTeam2',

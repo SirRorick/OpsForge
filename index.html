@@ -108,7 +108,9 @@ label.sw:has(input:checked){color:var(--text)}
   cursor:grab;text-align:center;transition:border-color .12s,background .12s}
 .item:hover{border-color:var(--accent-dim);background:var(--raise)}
 .item:active{cursor:grabbing}
-.item canvas,.item .ph{width:100%;aspect-ratio:1;display:block;border-radius:3px;background:#0D151B}
+/* height:auto is load-bearing: the global canvas rule above sets height:100%,
+   which wins over aspect-ratio and squashed every thumbnail vertically. */
+.item canvas,.item .ph{width:100%;height:auto;aspect-ratio:1;display:block;border-radius:3px;background:#0D151B}
 .item .nm{margin-top:5px;font-size:10.5px;line-height:1.25;color:var(--dim);word-break:break-word}
 .item:hover .nm{color:var(--text)}
 .item .warn{color:var(--accent);font-family:var(--mono);font-size:9px}

@@ -29,7 +29,8 @@ let activeMode = 0;                         // rule set tab
 let undoStack = [], redoStack = [], current = null;
 let groupSeq = 1;
 let clipboard = [];         // copied objects as values, independent of the meshes
-let placeReturn = [];       // selection to fall back to if a paste is cancelled
+let placeReturn = [];       // selection to fall back to if a placement is cancelled
+let placingLabel = null;    // set while a library pick-up is following the cursor
 
 // ---------------------------------------------------------------------------
 // Boot
@@ -277,7 +278,7 @@ function libraryItem(def) {
     nm.appendChild(w);
   }
   el.appendChild(nm);
-  el.onclick = () => placeNew(def, vp.orbit.target.clone().setY(0));
+  el.onclick = () => pickUpNew(def);
   el.ondragstart = (ev) => {
     ev.dataTransfer.setData('text/spatial-ops-key', def.key);
     ev.dataTransfer.effectAllowed = 'copy';
@@ -354,14 +355,14 @@ function thumbnail(def) {
 // Placing, duplicating, grouping
 // ---------------------------------------------------------------------------
 
-function placeNew(def, worldPoint) {
+function newObject(def, worldPoint) {
   vp.cancelPlacement();   // reaching for the library abandons a pending paste
   // The scale a piece is placed at comes from the catalog, not from 1,1,1: a
   // solid cylinder is 0.5 x 2 x 0.5 in every map the game wrote, and a tunnel
   // is 1 x 2 x 1.
   const [sx, sy, sz] = def.defaultScale;
   const y = def.pivot === 'center' ? (def.size[1] * sy) / 2 : 0;
-  const mesh = vp.addObject({
+  return vp.addObject({
     $type: def.objectType,
     type: def.type,
     props: def.props ? { ...def.props } : undefined,
@@ -370,9 +371,27 @@ function placeNew(def, worldPoint) {
     scale: { x: sx, y: sy, z: sz },
     dirty: true,
   });
+}
+
+/** Dropped onto a spot in the view: it lands there and stays. */
+function placeNew(def, worldPoint) {
+  const mesh = newObject(def, worldPoint);
   vp.setSelection([mesh]);
   commit();
   toast(`Placed ${def.label}.`);
+}
+
+/**
+ * Clicked in the library: the piece comes out on the cursor and follows it
+ * until a click drops it, the same as a paste. Dropping it in the middle of the
+ * view and making the user drag it there was the odd one out.
+ */
+function pickUpNew(def) {
+  const mesh = newObject(def, vp.orbit.target.clone().setY(0));
+  placeReturn = [...vp.selection];
+  placingLabel = def.label;
+  vp.beginPlacement([mesh]);
+  toast(`Click to place ${def.label}. Esc cancels.`);
 }
 
 function round(v) {
@@ -454,6 +473,7 @@ function paste() {
     return mesh;
   });
   placeReturn = [...vp.selection];
+  placingLabel = null;
   vp.beginPlacement(made);
   toast('Click to place. Esc cancels.');
 }
@@ -718,11 +738,13 @@ function wireWeaponRow(mesh) {
 
   for (const box of boxes) {
     box.onchange = () => {
-      let chosen = boxes.filter((b) => b.checked).map((b) => b.dataset.weapon);
-      // Never write an empty set: unticking the last one means "any" again.
+      const chosen = boxes.filter((b) => b.checked).map((b) => b.dataset.weapon);
+      // One weapon is the minimum, so the last one simply will not come off
+      // rather than silently turning the spawner back into "any".
       if (!chosen.length) {
-        for (const b of boxes) b.checked = true;
-        chosen = boxes.map((b) => b.dataset.weapon);
+        box.checked = true;
+        hint.textContent = 'A spawner needs at least one weapon.';
+        return;
       }
       refresh();
       vp.setProp(mesh, 'specificWeapon', formatWeapons(chosen));
@@ -1126,15 +1148,19 @@ function wireViewport() {
   vp.addEventListener('commit-end', () => commit());
   vp.addEventListener('placement-end', (e) => {
     const { committed, meshes } = e.detail;
+    const fresh = placingLabel;   // a library pick-up rather than a paste
+    placingLabel = null;
     if (committed) {
       commit();
-      toast(`Pasted ${meshes.length} object${meshes.length === 1 ? '' : 's'}.`);
+      toast(fresh
+        ? `Placed ${fresh}.`
+        : `Pasted ${meshes.length} object${meshes.length === 1 ? '' : 's'}.`);
       return;
     }
     vp.removeObjects(meshes);
     vp.setSelection(placeReturn.filter((m) => vp.objects.includes(m)));
     refreshAll();
-    toast('Paste cancelled.');
+    toast(fresh ? 'Placement cancelled.' : 'Paste cancelled.');
   });
   vp.addEventListener('mode', refreshStatus);
   vp.addEventListener('change', () => { buildOutliner(); refreshStatus(); });

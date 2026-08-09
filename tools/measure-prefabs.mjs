@@ -101,7 +101,7 @@ const apply = (m, [x, y, z]) => [
  * LOD1 and below are the same shape at lower detail, and being simplified they
  * measure slightly *smaller*, so they are dropped in favour of LOD0.
  */
-const NOT_THE_OBJECT = /manipulator|collider|hologram|ghost|outline|lockspawner/i;
+const NOT_THE_OBJECT = /manipulator|collider|hologram|ghost|outline|lockspawner|vfx/i;
 const LOWER_LOD = /_LOD[1-9]\d*$/i;
 
 const isFurniture = (name = '') => NOT_THE_OBJECT.test(name) || LOWER_LOD.test(name);

@@ -20,7 +20,10 @@ const CYAN = 0x4ec9e0;
 // A missing asset is normal, not an error, so each one is mentioned once.
 const warnedModels = new Set();
 
-const FURNITURE = /manipulator|collider|hologram|ghost|outline|lockspawner/i;
+// `vfx` covers the runtime effects the spawners carry: the weapon spawner's
+// SpawnBoxVFX holds a single-sided LightQuad two metres by four, which reads as
+// a pane hanging in the air that vanishes when you orbit past it.
+const FURNITURE = /manipulator|collider|hologram|ghost|outline|lockspawner|vfx/i;
 
 /** True when the node, or any ancestor, is editor furniture rather than art. */
 function isFurniture(node) {

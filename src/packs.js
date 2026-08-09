@@ -824,9 +824,9 @@ export const BUILTIN_PACKS = [
     objects: [
     { type: "WeaponSpawnPoint", objectType: "WeaponSpawnPoint",
       props: { specificWeapon: "All" }, label: "Weapon Spawn", category: "Weapon Spawns",
-      shape: "spawnAll", size: [0.46, 0.5, 0.46], pivot: "base", rotationAxes: "y", floor: true,
-      color: "#E8C547", defaultScale: [1, 1, 1], uncertain: true,
-      model: "WeaponSpawnPoint", texture: "initialShadingGroup_Diffuse.png", icon: "icon_gears_weaponspawner" },
+      shape: "spawnAll", size: [0.449, 0.344, 0.222], pivot: "base", rotationAxes: "y", floor: true,
+      color: "#E8C547", defaultScale: [1, 1, 1],
+      model: "WeaponSpawnPoint", texture: "initialShadingGroup_Diffuse.png", icon: "icon_weapons_Shotgunspawner" },
     { type: "DamageBox", objectType: "DamageBox", props: { style: "Red" }, label: "Damage Box",
       category: "Hazards", shape: "damageBox", size: [1, 1, 1], pivot: "center",
       rotationAxes: "xyz", floor: false, color: "#E0574B", defaultScale: [1, 1, 1],
