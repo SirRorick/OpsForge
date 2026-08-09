@@ -189,22 +189,33 @@ const builders = {
   },
 
   // Two panels meeting at a right angle, occupying the -x / -z quadrant edges.
+  // An L in plan, wrapping the +x/+z corner, with the two arms running along
+  // the +z and +x edges. Read off the real mesh rather than guessed: sampling
+  // BarrierCorner90_LOD0's vertices leaves the -x/-z quadrant completely empty,
+  // and the object's origin sits at the corner where the arms meet, not in the
+  // middle of the footprint. The old builder put the corner diagonally opposite
+  // and centred it, which read as a piece rotated 180 degrees and sitting 44 cm
+  // from where the game puts it.
   barrierCorner: () => {
     const t = 0.12;
     return merge([
-      box(1, 1, t, 0, 0.5, -0.5 + t / 2),
-      box(t, 1, 1 - t, -0.5 + t / 2, 0.5, t / 2),
-      box(0.1, 1.04, 0.1, -0.45, 0.52, -0.45),
+      box(1, 1, t, 0, 0.5, 0.5 - t / 2),
+      box(t, 1, 1 - t, 0.5 - t / 2, 0.5, -t / 2),
+      box(0.1, 1.04, 0.1, 0.45, 0.52, 0.45),
     ]);
   },
 
-  // Three panels forming a U opening toward +z.
+  // Not a U in plan: a single flat panel with a horseshoe cut out of it, which
+  // is what Icon_BarrierUWall draws and what the 1.03 x 0.26 m footprint says.
+  // The old builder made a three-sided enclosure a metre deep.
   barrierU: () => {
     const t = 0.12;
+    const jamb = 0.26;          // solid either side of the opening
     return merge([
-      box(1, 1, t, 0, 0.5, -0.5 + t / 2),
-      box(t, 1, 1 - t, -0.5 + t / 2, 0.5, t / 2),
-      box(t, 1, 1 - t, 0.5 - t / 2, 0.5, t / 2),
+      box(jamb, 1, t, -(0.5 - jamb / 2), 0.5, 0),
+      box(jamb, 1, t, 0.5 - jamb / 2, 0.5, 0),
+      box(1, 0.34, t, 0, 0.83, 0),          // lintel over the opening
+      box(1, 0.12, t, 0, 0.06, 0),          // sill under it
     ]);
   },
 
