@@ -59,6 +59,17 @@ function seatOnFloor(geometry, def) {
 }
 
 /**
+ * Settings for an object the catalog marks translucent. A damage box marks a
+ * region rather than filling it, so you have to see what is inside. Depth
+ * writing is off so whatever sits behind still draws, and both faces render so
+ * the far walls of the volume are visible from outside.
+ */
+function translucency(opacity) {
+  if (opacity >= 1) return {};
+  return { transparent: true, opacity, depthWrite: false, side: THREE.DoubleSide };
+}
+
+/**
  * A prefab material as this viewport can light it.
  *
  * Two corrections, both because glTF cannot carry what Unity meant.
@@ -79,10 +90,10 @@ function seatOnFloor(geometry, def) {
  */
 const displayMaterials = new Map();
 
-function displayMaterial(material, tint) {
-  if (Array.isArray(material)) return material.map((m) => displayMaterial(m, tint));
+function displayMaterial(material, tint, opacity = 1) {
+  if (Array.isArray(material)) return material.map((m) => displayMaterial(m, tint, opacity));
   if (!material) return material;
-  const key = `${material.uuid}|${tint ?? ''}`;
+  const key = `${material.uuid}|${tint ?? ''}|${opacity}`;
   if (displayMaterials.has(key)) return displayMaterials.get(key);
   const out = material.clone();
   if (out.metalness !== undefined && !out.envMap) {
@@ -90,6 +101,7 @@ function displayMaterial(material, tint) {
     out.roughness = Math.max(out.roughness ?? 0.5, 0.45);
   }
   if (tint && !out.map && out.color?.getHex() === 0xffffff) out.color.set(tint);
+  Object.assign(out, translucency(opacity));
   displayMaterials.set(key, out);
   return out;
 }
@@ -100,7 +112,7 @@ function displayMaterial(material, tint) {
  * position and normal first; if a merge still fails, the largest single part is
  * a better stand-in than nothing.
  */
-function mergeForDisplay(parts, tint) {
+function mergeForDisplay(parts, tint, opacity) {
   // Some prefabs carry vertex colours on the visible mesh and not on the rest —
   // the solid primitives do, the props do not. GLTFLoader turns that into
   // material.vertexColors, so a part that loses the attribute renders black.
@@ -134,13 +146,13 @@ function mergeForDisplay(parts, tint) {
     // useGroups keeps one draw group per part, so the prefab's own materials
     // survive as a material array and the object arrives textured.
     const merged = mergeGeometries(trimmed, true);
-    if (merged) return { geometry: merged, materials: parts.map((p) => displayMaterial(p.material, tint)) };
+    if (merged) return { geometry: merged, materials: parts.map((p) => displayMaterial(p.material, tint, opacity)) };
   } catch { /* fall through to the largest part */ }
   let best = 0;
   trimmed.forEach((g, i) => {
     if (g.getAttribute('position').count > trimmed[best].getAttribute('position').count) best = i;
   });
-  return { geometry: trimmed[best], materials: displayMaterial(parts[best].material, tint) };
+  return { geometry: trimmed[best], materials: displayMaterial(parts[best].material, tint, opacity) };
 }
 
 export class Viewport extends EventTarget {
@@ -278,7 +290,8 @@ export class Viewport extends EventTarget {
   // -- object lifecycle -----------------------------------------------------
 
   materialFor(def) {
-    const key = def.color + (def.unknown ? '!' : '');
+    const opacity = def.opacity ?? 1;
+    const key = `${def.color}|${opacity}${def.unknown ? '!' : ''}`;
     if (!this._materials.has(key)) {
       this._materials.set(
         key,
@@ -287,6 +300,7 @@ export class Viewport extends EventTarget {
           roughness: 0.82,
           metalness: 0.04,
           flatShading: false,
+          ...translucency(opacity),
         })
       );
     }
@@ -335,7 +349,7 @@ export class Viewport extends EventTarget {
     try {
       // Two entries can share a prefab and not a pivot, and the normalisation
       // below depends on both.
-      const cacheKey = `${def.model}|${def.pivot}|${def.size[1]}|${def.color}`;
+      const cacheKey = `${def.model}|${def.pivot}|${def.size[1]}|${def.color}|${def.opacity ?? 1}`;
       let model = this._modelCache.get(cacheKey);
       if (!model) {
         const gltf = await this._gltf.loadAsync(url);
@@ -352,7 +366,7 @@ export class Viewport extends EventTarget {
           found.push({ geometry, material: n.material });
         });
         if (!found.length) return;
-        model = mergeForDisplay(found, def.color);
+        model = mergeForDisplay(found, def.color, def.opacity ?? 1);
         seatOnFloor(model.geometry, def);
         this._modelCache.set(cacheKey, model);
       }

@@ -25,6 +25,8 @@
 //   icon          sliced sprite name, without extension; see tools/slice-icons.mjs
 //   model         prefab basename in reference/GameAssets/Prefabs, without .glb
 //   texture       base-colour map in reference/GameAssets/Textures
+//   opacity       < 1 draws the object translucent, for volumes you need to
+//                 see through — the damage boxes mark a region, not a solid
 //   uncertain     `size` is an estimate, not a confirmed mesh dimension
 //   hidden        loads and exports normally but is not offered in the library
 //
@@ -830,17 +832,17 @@ export const BUILTIN_PACKS = [
     { type: "DamageBox", objectType: "DamageBox", props: { style: "Red" }, label: "Damage Box",
       category: "Hazards", shape: "damageBox", size: [1, 1, 1], pivot: "center",
       rotationAxes: "xyz", floor: false, color: "#E0574B", defaultScale: [1, 1, 1],
-      uncertain: true,
+      uncertain: true, opacity: 0.25,
       model: "DamageBox", icon: "Icon_DamageBox" },
     { type: "DamageBoxTeam1", objectType: "DamageBox", props: { style: "Blue" },
       label: "Damage Box Team 1", category: "Hazards", shape: "damageBox", size: [1, 1, 1],
       pivot: "center", rotationAxes: "xyz", floor: false, color: "#4A90D9",
-      defaultScale: [1, 1, 1], uncertain: true,
+      defaultScale: [1, 1, 1], uncertain: true, opacity: 0.25,
       model: "DamageBoxTeam1", icon: "Icon_DamageBoxTeam1" },
     { type: "DamageBoxTeam2", objectType: "DamageBox", props: { style: "Orange" },
       label: "Damage Box Team 2", category: "Hazards", shape: "damageBox", size: [1, 1, 1],
       pivot: "center", rotationAxes: "xyz", floor: false, color: "#E08A3C",
-      defaultScale: [1, 1, 1], uncertain: true,
+      defaultScale: [1, 1, 1], uncertain: true, opacity: 0.25,
       model: "DamageBoxTeam2", icon: "Icon_DamageBoxTeam2" },
     { type: "ExplosiveBarrel", label: "Explosive Barrel", category: "Hazards",
       shape: "explosiveBarrel", size: [0.56, 0.86, 0.56], pivot: "base", rotationAxes: "y",

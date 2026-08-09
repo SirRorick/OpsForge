@@ -56,6 +56,7 @@ export function registerPack(pack) {
       icon: null,
       model: null,
       texture: null,
+      opacity: 1,
       ...raw,
       key: raw.key || raw.type,
       pack: pack.id,
