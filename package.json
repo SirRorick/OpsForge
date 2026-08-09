@@ -9,7 +9,8 @@
     "test": "node --test test/*.test.mjs",
     "build": "node build.mjs",
     "serve": "node serve.mjs",
-    "read-definitions": "node tools/read-definitions.mjs"
+    "read-definitions": "node tools/read-definitions.mjs",
+    "slice-icons": "node tools/slice-icons.mjs"
   },
   "engines": { "node": ">=18" }
 }

@@ -127,16 +127,28 @@ const spriteNames = () =>
 /**
  * Icons are not named after their type, and the mismatches are not derivable —
  * `Icon_BarrierNormal` is BarrierFull, `Icon_BarrierUWall` is BarrierU, and the
- * atlas carries both the `Cilinder` misspelling and `Cylinder`. Anything not
+ * dump carries both the `Cilinder` misspelling and `Cylinder`. Anything not
  * listed here falls back to an exact `Icon_<type>` match, and an entry that
  * resolves to no existing sprite is reported rather than assumed.
+ *
+ * The two spellings are two different icon sets, not a typo to be normalised:
+ * `Cilinder` belongs to the 512px photographic renders in ItemIconsAtlas, which
+ * is the library set the Default pack draws from, while `Cylinder` belongs to a
+ * 256px schematic set in SolidIconsAtlas that carries one variant per theme.
+ * Each name below was checked by eye against the sliced PNG.
+ *
+ * These are slice-icons.mjs output names, so where several sprites share an
+ * m_Name the asset filename is used — `Icon_BoxSolid_1` is the Default box, one
+ * of five distinct sprites all called `Icon_BoxSolid`.
  */
 const ICON_ALIASES = {
   BarrierFull: 'Icon_BarrierNormal',
   BarrierU: 'Icon_BarrierUWall',
-  CylinderSolid: 'Icon_CylinderSolid',
-  CylinderSolidGrounded: 'Icon_CylinderSolidGrounded',
-  BoxSolidGrounded: 'Icon_BoxGroundedSolid',
+  BoxSolid: 'Icon_BoxSolid_1',
+  BoxSolidGrounded: 'Icon_BoxSolid_grounded',
+  CylinderSolid: 'Icon_CilinderSolid',
+  CylinderSolidGrounded: 'Icon_CilinderSolid_grounded',
+  WallSolid: 'Icon_WallSolid_1',
   Tunnel: 'Icon_TunnelSolid',
   DestructibleCrate: 'Icon_CrateDestructable',
   DefaultElectricityBox: 'Icon_ElectricityBoxDefault',
