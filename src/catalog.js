@@ -14,6 +14,28 @@
 
 import { BUILTIN_PACKS } from './packs.js';
 
+/**
+ * Where the game asset dump lives, relative to the page.
+ *
+ * `model` and `icon` in a pack are bare asset names, not paths, because that is
+ * what the dump calls them and tools/match-assets.mjs reports. Resolving them
+ * here keeps the packs portable if the dump moves, and keeps the whole thing
+ * optional: the dump is gitignored and absent for anyone who has not extracted
+ * it, so both loaders below fall back rather than fail. That fallback is the
+ * reason the single-file dist/ build still works with no assets at all.
+ */
+export const ASSET_BASE = 'reference/GameAssets/';
+
+/** URL of an entry's prefab mesh, or null when it has none. */
+export function modelUrl(def, base = ASSET_BASE) {
+  return def?.model ? `${base}Prefabs/${def.model}.glb` : null;
+}
+
+/** URL of an entry's sliced library icon, or null when it has none. */
+export function iconUrl(def, base = ASSET_BASE) {
+  return def?.icon ? `${base}Icons/${def.icon}.png` : null;
+}
+
 const packs = new Map();
 const byKey = new Map();
 const byType = new Map();   // type -> defs sharing it, in registration order

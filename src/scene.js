@@ -6,13 +6,126 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { geometryFor } from './placeholders.js';
-import { defOrUnknown } from './catalog.js';
+import { defFor, modelUrl } from './catalog.js';
 import { convertPosition, unityEulerToQuat, quatToUnityEuler } from './unity.js';
 import { decodeNavCloud, navIndexToWorld } from './format.js';
 
 const ACCENT = 0xe8c547;
 const CYAN = 0x4ec9e0;
+
+// -- prefab meshes -----------------------------------------------------------
+// A missing asset is normal, not an error, so each one is mentioned once.
+const warnedModels = new Set();
+
+const FURNITURE = /manipulator|collider|hologram|ghost|outline|lockspawner/i;
+
+/** True when the node, or any ancestor, is editor furniture rather than art. */
+function isFurniture(node) {
+  for (let n = node; n; n = n.parent) if (FURNITURE.test(n.name || '')) return true;
+  return false;
+}
+
+const lowerLod = (node) => /_LOD[1-9]\d*$/i.test(node.name || '');
+
+/**
+ * Sit a loaded prefab on the cell floor, exactly, the way geometryFor does for
+ * the placeholders.
+ *
+ * The prefabs are not authored to the floor — the crate's mesh starts a
+ * millimetre below it, the barriers six millimetres above. Floor lock drops a
+ * selection until its bounding box rests on y = 0, so a model that misses by
+ * any amount shifts the object on every edit and writes that shift into the
+ * exported map. That is the invariant that makes an untouched map survive
+ * select-all plus a no-op edit byte for byte, and swapping in raw prefab
+ * geometry breaks all thirteen reference maps without this.
+ *
+ * Only the Y origin moves. Nothing is rescaled, so the mesh keeps its real
+ * dimensions: a `center` pivot only needs its box to start half a nominal unit
+ * below the origin, which is what the game's own placements imply, and the
+ * couple of millimetres a mesh falls short of that unit stay at the top where
+ * they cost nothing.
+ */
+function seatOnFloor(geometry, def) {
+  geometry.computeBoundingBox();
+  geometry.translate(0, -geometry.boundingBox.min.y, 0);
+  if (def.pivot === 'center') geometry.translate(0, -def.size[1] / 2, 0);
+  geometry.computeBoundingBox();
+}
+
+/**
+ * A prefab material as this viewport can light it.
+ *
+ * The solid primitives ship as full metals, and a metal with no environment to
+ * reflect has nothing to be lit by, so it renders pitch black under the two
+ * lights here. Clamping metalness is the cheap half of what an environment map
+ * would do and keeps the editor's flat, readable look; the colour map, which is
+ * the part worth having, is untouched.
+ */
+const displayMaterials = new WeakMap();
+
+function displayMaterial(material) {
+  if (Array.isArray(material)) return material.map(displayMaterial);
+  if (!material) return material;
+  if (displayMaterials.has(material)) return displayMaterials.get(material);
+  const out = material.clone();
+  if (out.metalness !== undefined && !out.envMap) {
+    out.metalness = Math.min(out.metalness, 0.25);
+    out.roughness = Math.max(out.roughness ?? 0.5, 0.45);
+  }
+  displayMaterials.set(material, out);
+  return out;
+}
+
+/**
+ * One geometry for the whole prefab. Merging needs every part to carry the same
+ * attributes, which is not guaranteed across a prefab's meshes, so trim each to
+ * position and normal first; if a merge still fails, the largest single part is
+ * a better stand-in than nothing.
+ */
+function mergeForDisplay(parts) {
+  // Some prefabs carry vertex colours on the visible mesh and not on the rest —
+  // the solid primitives do, the props do not. GLTFLoader turns that into
+  // material.vertexColors, so a part that loses the attribute renders black.
+  // Anything missing one gets opaque white, which multiplies to no change.
+  const colours = parts.map(({ geometry }) => geometry.getAttribute('color'));
+  const colourSize = colours.find(Boolean)?.itemSize ?? 0;
+
+  const trimmed = parts.map(({ geometry }, i) => {
+    // Non-indexed throughout, or a mix of indexed and not refuses to merge.
+    const g = geometry.index ? geometry.toNonIndexed() : geometry;
+    const out = new THREE.BufferGeometry();
+    const position = g.getAttribute('position');
+    out.setAttribute('position', position);
+    const normal = g.getAttribute('normal');
+    if (normal) out.setAttribute('normal', normal);
+    // Every part needs the same attributes to merge, and the parts without UVs
+    // are the ones whose material has no map to sample anyway.
+    const uv = g.getAttribute('uv');
+    out.setAttribute('uv', uv ?? new THREE.BufferAttribute(new Float32Array(position.count * 2), 2));
+    if (colourSize) {
+      const colour = g.getAttribute('color');
+      out.setAttribute('color', colour && colour.itemSize === colourSize
+        ? colour
+        : new THREE.BufferAttribute(
+          new Float32Array(position.count * colourSize).fill(1), colourSize));
+    }
+    if (!normal) out.computeVertexNormals();
+    return out;
+  });
+  try {
+    // useGroups keeps one draw group per part, so the prefab's own materials
+    // survive as a material array and the object arrives textured.
+    const merged = mergeGeometries(trimmed, true);
+    if (merged) return { geometry: merged, materials: parts.map((p) => displayMaterial(p.material)) };
+  } catch { /* fall through to the largest part */ }
+  let best = 0;
+  trimmed.forEach((g, i) => {
+    if (g.getAttribute('position').count > trimmed[best].getAttribute('position').count) best = i;
+  });
+  return { geometry: trimmed[best], materials: displayMaterial(parts[best].material) };
+}
 
 export class Viewport extends EventTarget {
   constructor(canvas) {
@@ -25,6 +138,8 @@ export class Viewport extends EventTarget {
     this.snap = { translate: 0.25, rotate: 15, scale: 0 };
     this.gizmoMode = 'translate';
     this.gizmoSpace = 'world';
+    this.placing = null;
+    this._pointer = null;
     this._nextId = 1;
     this._edgeCache = new Map();
     this._materials = new Map();
@@ -106,11 +221,11 @@ export class Viewport extends EventTarget {
     this.orbit.dampingFactor = 0.08;
     this.orbit.maxPolarAngle = Math.PI * 0.499;
     this.orbit.target.set(0, 0.75, 0);
-    // Left is reserved for selection. Right orbits, middle pans, Alt+Left orbits.
+    // Left is reserved for selection. Middle orbits, right pans, Alt+Left orbits.
     this.orbit.mouseButtons = {
       LEFT: null,
-      MIDDLE: THREE.MOUSE.PAN,
-      RIGHT: THREE.MOUSE.ROTATE,
+      MIDDLE: THREE.MOUSE.ROTATE,
+      RIGHT: THREE.MOUSE.PAN,
     };
     this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
@@ -166,13 +281,18 @@ export class Viewport extends EventTarget {
    * file, so nothing is lost on the way in or out.
    */
   addObject(mo) {
-    const def = defOrUnknown(mo.type);
+    const def = defFor(mo);
     const mesh = new THREE.Mesh(geometryFor(def), this.materialFor(def));
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     mesh.userData = {
       id: this._nextId++,
       def,
+      // The subtype and its extra fields belong to the object, not the catalog
+      // entry: a spawner whose weapon the user changed still has to export the
+      // value it actually carries.
+      objectType: mo.$type || def.objectType || 'MapObject',
+      props: { ...(def.props || {}), ...(mo.props || {}) },
       raw: mo.raw || null,
       dirty: !!mo.dirty,
       group: null,
@@ -186,30 +306,47 @@ export class Viewport extends EventTarget {
     return mesh;
   }
 
-  /** Replace the placeholder with a real asset once one is configured. */
+  /**
+   * Replace the placeholder with the real prefab mesh, if the asset dump is
+   * present. It is gitignored and optional, so a miss keeps the placeholder and
+   * says so once rather than failing.
+   */
   async _swapInModel(mesh, def) {
+    const url = modelUrl(def);
+    if (!url) return;
     try {
-      let geo = this._modelCache.get(def.model);
-      if (!geo) {
-        const gltf = await this._gltf.loadAsync(def.model);
+      // Two entries can share a prefab and not a pivot, and the normalisation
+      // below depends on both.
+      const cacheKey = `${def.model}|${def.pivot}|${def.size[1]}`;
+      let model = this._modelCache.get(cacheKey);
+      if (!model) {
+        const gltf = await this._gltf.loadAsync(url);
         const found = [];
         gltf.scene.updateWorldMatrix(true, true);
         gltf.scene.traverse((n) => {
-          if (n.isMesh) {
-            const g = n.geometry.clone();
-            g.applyMatrix4(n.matrixWorld);
-            found.push(g);
-          }
+          // Most of a prefab is not the object: drag handles, a hologram shell
+          // a couple of centimetres proud of the surface, collider proxies, an
+          // outline, and lower LODs. Including them makes every primitive
+          // 1.25 m. See tools/measure-prefabs.mjs, which filters identically.
+          if (!n.isMesh || isFurniture(n) || lowerLod(n)) return;
+          const geometry = n.geometry.clone();
+          geometry.applyMatrix4(n.matrixWorld);
+          found.push({ geometry, material: n.material });
         });
         if (!found.length) return;
-        geo = found[0];
-        this._modelCache.set(def.model, geo);
+        model = mergeForDisplay(found);
+        seatOnFloor(model.geometry, def);
+        this._modelCache.set(cacheKey, model);
       }
-      mesh.geometry = geo;
+      mesh.geometry = model.geometry;
+      mesh.material = model.materials;
       this._refreshOutline(mesh);
       this.emit('change');
     } catch (err) {
-      console.warn(`Could not load model for ${def.type}, keeping placeholder.`, err);
+      if (!warnedModels.has(def.model)) {
+        warnedModels.add(def.model);
+        console.warn(`No model for ${def.type} at ${url}, keeping placeholder.`, err.message ?? err);
+      }
     }
   }
 
@@ -227,6 +364,7 @@ export class Viewport extends EventTarget {
   }
 
   clearObjects() {
+    if (this.placing) this._endPlacement(false);
     this.setSelection([]);
     for (const m of this.objects) m.removeFromParent();
     this.objects.length = 0;
@@ -244,15 +382,35 @@ export class Viewport extends EventTarget {
     const q = new THREE.Quaternion();
     const s = new THREE.Vector3();
     mesh.matrixWorld.decompose(p, q, s);
+    const { def, objectType, props } = mesh.userData;
     return {
-      $type: 'MapObject',
-      type: mesh.userData.def.type,
+      $type: objectType || 'MapObject',
+      type: def.type,
+      props: props && Object.keys(props).length ? { ...props } : undefined,
       position: { x: p.x, y: p.y, z: -p.z },
       rotation: quatToUnityEuler(q.toArray()),
       scale: { x: s.x, y: s.y, z: s.z },
       raw: mesh.userData.raw,
       dirty: mesh.userData.dirty,
     };
+  }
+
+  /**
+   * Change one of a subtype's extra fields — which weapon a spawner holds,
+   * how an enemy spawn behaves. Swapping the value can mean a different
+   * catalog entry and so a different placeholder, so the mesh is re-skinned.
+   */
+  setProp(mesh, key, value) {
+    mesh.userData.props = { ...mesh.userData.props, [key]: value };
+    const def = defFor({ type: mesh.userData.def.type, props: mesh.userData.props });
+    if (def !== mesh.userData.def) {
+      mesh.userData.def = def;
+      mesh.geometry = geometryFor(def);
+      mesh.material = this.materialFor(def);
+      this._refreshOutline(mesh);
+    }
+    this.markDirty(mesh);
+    this.emit('change');
   }
 
   // -- selection ------------------------------------------------------------
@@ -462,11 +620,13 @@ export class Viewport extends EventTarget {
       // this.gizmo.axis is set while a handle is hovered; TransformControls
       // registers its listeners first, so this reliably wins.
       if (e.button !== 0 || e.altKey || this.gizmo.dragging || this.gizmo.axis) return;
+      if (this.placing) return;   // that click drops what is being placed
       down = { x: e.clientX, y: e.clientY, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey };
       this.emit('marquee-start', down);
     });
 
     addEventListener('pointermove', (e) => {
+      this._pointer = { clientX: e.clientX, clientY: e.clientY };
       if (!down) return;
       const dx = e.clientX - down.x;
       const dy = e.clientY - down.y;
@@ -550,6 +710,73 @@ export class Viewport extends EventTarget {
     } else {
       this.setSelection([...expanded]);
     }
+  }
+
+  // -- follow-the-cursor placement ------------------------------------------
+
+  /**
+   * Carry `meshes` under the pointer until a left click drops them. They ride
+   * on the pivot like any other selection, so this only has to move the pivot
+   * and floor lock keeps working unchanged. Ends by emitting 'placement-end'
+   * with { committed, meshes }; a cancelled placement leaves the meshes in the
+   * scene for the caller to dispose of.
+   */
+  beginPlacement(meshes) {
+    if (this.placing) this._endPlacement(false);
+    if (!meshes.length) return;
+
+    this.setSelection(meshes);
+    // The gizmo would swallow the click that drops them, and there is nothing
+    // worth transforming until they have landed.
+    this.gizmo.detach();
+
+    const centre = this.selectionBounds().getCenter(new THREE.Vector3());
+    // Constant offset from the point under the cursor to the pivot, so the
+    // group keeps its own layout and its heights while it follows.
+    const lead = this.pivot.position.clone().sub(new THREE.Vector3(centre.x, 0, centre.z));
+
+    const move = (e) => {
+      const g = this.groundPoint(e.clientX, e.clientY);
+      const s = this.snap.translate;
+      if (s) {
+        g.x = Math.round(g.x / s) * s;
+        g.z = Math.round(g.z / s) * s;
+      }
+      this.pivot.position.copy(g).add(lead);
+      if (this.floorLock) this._applyFloorLock();
+      this.emit('transform');
+    };
+    const drop = (e) => { if (e.button === 0) this._endPlacement(true); };
+
+    this.canvas.addEventListener('pointermove', move);
+    this.canvas.addEventListener('pointerup', drop);
+    this.canvas.style.cursor = 'copy';
+    this.placing = {
+      meshes,
+      dispose: () => {
+        this.canvas.removeEventListener('pointermove', move);
+        this.canvas.removeEventListener('pointerup', drop);
+      },
+    };
+    // Until the mouse moves they stay where they were created.
+    if (this._pointer) move(this._pointer);
+  }
+
+  cancelPlacement() {
+    this._endPlacement(false);
+  }
+
+  _endPlacement(committed) {
+    if (!this.placing) return;
+    const { meshes, dispose } = this.placing;
+    this.placing = null;
+    dispose();
+    this.canvas.style.cursor = '';
+    if (committed) {
+      for (const m of meshes) this.markDirty(m);
+      this.rebuildPivot();
+    }
+    this.emit('placement-end', { committed, meshes });
   }
 
   /** Where a screen point meets the ground plane, for drag-and-drop placement. */
