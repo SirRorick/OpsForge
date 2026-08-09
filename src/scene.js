@@ -61,24 +61,36 @@ function seatOnFloor(geometry, def) {
 /**
  * A prefab material as this viewport can light it.
  *
+ * Two corrections, both because glTF cannot carry what Unity meant.
+ *
  * The solid primitives ship as full metals, and a metal with no environment to
  * reflect has nothing to be lit by, so it renders pitch black under the two
  * lights here. Clamping metalness is the cheap half of what an environment map
- * would do and keeps the editor's flat, readable look; the colour map, which is
- * the part worth having, is untouched.
+ * would do and keeps the editor's flat, readable look.
+ *
+ * And some prefabs carry no colour at all. The damage boxes are the clearest
+ * case: their material is `{"name":"MATDamageBoxRed","pbrMetallicRoughness":{}}`
+ * — no texture and no baseColorFactor either, so the glTF default of pure white
+ * applies and all three teams render as identical white cubes. The colour
+ * survived only in the material's *name*, because Unity's own shader had
+ * nothing to map onto glTF's PBR. Where a material brings neither a map nor a
+ * colour, the catalog's tint is the only thing that knows red from blue, so it
+ * stands in. Anything that does carry colour is left alone.
  */
-const displayMaterials = new WeakMap();
+const displayMaterials = new Map();
 
-function displayMaterial(material) {
-  if (Array.isArray(material)) return material.map(displayMaterial);
+function displayMaterial(material, tint) {
+  if (Array.isArray(material)) return material.map((m) => displayMaterial(m, tint));
   if (!material) return material;
-  if (displayMaterials.has(material)) return displayMaterials.get(material);
+  const key = `${material.uuid}|${tint ?? ''}`;
+  if (displayMaterials.has(key)) return displayMaterials.get(key);
   const out = material.clone();
   if (out.metalness !== undefined && !out.envMap) {
     out.metalness = Math.min(out.metalness, 0.25);
     out.roughness = Math.max(out.roughness ?? 0.5, 0.45);
   }
-  displayMaterials.set(material, out);
+  if (tint && !out.map && out.color?.getHex() === 0xffffff) out.color.set(tint);
+  displayMaterials.set(key, out);
   return out;
 }
 
@@ -88,7 +100,7 @@ function displayMaterial(material) {
  * position and normal first; if a merge still fails, the largest single part is
  * a better stand-in than nothing.
  */
-function mergeForDisplay(parts) {
+function mergeForDisplay(parts, tint) {
   // Some prefabs carry vertex colours on the visible mesh and not on the rest —
   // the solid primitives do, the props do not. GLTFLoader turns that into
   // material.vertexColors, so a part that loses the attribute renders black.
@@ -122,13 +134,13 @@ function mergeForDisplay(parts) {
     // useGroups keeps one draw group per part, so the prefab's own materials
     // survive as a material array and the object arrives textured.
     const merged = mergeGeometries(trimmed, true);
-    if (merged) return { geometry: merged, materials: parts.map((p) => displayMaterial(p.material)) };
+    if (merged) return { geometry: merged, materials: parts.map((p) => displayMaterial(p.material, tint)) };
   } catch { /* fall through to the largest part */ }
   let best = 0;
   trimmed.forEach((g, i) => {
     if (g.getAttribute('position').count > trimmed[best].getAttribute('position').count) best = i;
   });
-  return { geometry: trimmed[best], materials: displayMaterial(parts[best].material) };
+  return { geometry: trimmed[best], materials: displayMaterial(parts[best].material, tint) };
 }
 
 export class Viewport extends EventTarget {
@@ -323,7 +335,7 @@ export class Viewport extends EventTarget {
     try {
       // Two entries can share a prefab and not a pivot, and the normalisation
       // below depends on both.
-      const cacheKey = `${def.model}|${def.pivot}|${def.size[1]}`;
+      const cacheKey = `${def.model}|${def.pivot}|${def.size[1]}|${def.color}`;
       let model = this._modelCache.get(cacheKey);
       if (!model) {
         const gltf = await this._gltf.loadAsync(url);
@@ -340,7 +352,7 @@ export class Viewport extends EventTarget {
           found.push({ geometry, material: n.material });
         });
         if (!found.length) return;
-        model = mergeForDisplay(found);
+        model = mergeForDisplay(found, def.color);
         seatOnFloor(model.geometry, def);
         this._modelCache.set(cacheKey, model);
       }
