@@ -82,6 +82,18 @@ function translucency(opacity) {
 }
 
 /**
+ * A flat marker whose texture is mostly transparent — the domination zones are
+ * one quad wearing "Circle Outline 1024px - Stroke 10px.png". glTF only marks a
+ * material as cut out when the exporter said so, and this one did not, so the
+ * alpha channel was ignored and the ring drew as a solid white square.
+ */
+function cutout() {
+  return {
+    transparent: true, alphaTest: 0.05, depthWrite: false, side: THREE.DoubleSide,
+  };
+}
+
+/**
  * A prefab material as this viewport can light it.
  *
  * Two corrections, both because glTF cannot carry what Unity meant.
@@ -102,10 +114,10 @@ function translucency(opacity) {
  */
 const displayMaterials = new Map();
 
-function displayMaterial(material, tint, opacity = 1, force = false) {
-  if (Array.isArray(material)) return material.map((m) => displayMaterial(m, tint, opacity, force));
+function displayMaterial(material, tint, opacity = 1, force = false, cut = false) {
+  if (Array.isArray(material)) return material.map((m) => displayMaterial(m, tint, opacity, force, cut));
   if (!material) return material;
-  const key = `${material.uuid}|${tint ?? ''}|${opacity}|${force}`;
+  const key = `${material.uuid}|${tint ?? ''}|${opacity}|${force}|${cut}`;
   if (displayMaterials.has(key)) return displayMaterials.get(key);
   const out = material.clone();
   if (out.metalness !== undefined && !out.envMap) {
@@ -118,6 +130,7 @@ function displayMaterial(material, tint, opacity = 1, force = false) {
   // greyscale map by the catalog colour is what that shader did.
   if (tint && (force || (!out.map && out.color?.getHex() === 0xffffff))) out.color.set(tint);
   Object.assign(out, translucency(opacity));
+  if (cut) Object.assign(out, cutout());
   displayMaterials.set(key, out);
   return out;
 }
@@ -128,7 +141,7 @@ function displayMaterial(material, tint, opacity = 1, force = false) {
  * position and normal first; if a merge still fails, the largest single part is
  * a better stand-in than nothing.
  */
-function mergeForDisplay(parts, tint, opacity, force) {
+function mergeForDisplay(parts, tint, opacity, force, cut) {
   // Some prefabs carry vertex colours on the visible mesh and not on the rest —
   // the solid primitives do, the props do not. GLTFLoader turns that into
   // material.vertexColors, so a part that loses the attribute renders black.
@@ -162,13 +175,13 @@ function mergeForDisplay(parts, tint, opacity, force) {
     // useGroups keeps one draw group per part, so the prefab's own materials
     // survive as a material array and the object arrives textured.
     const merged = mergeGeometries(trimmed, true);
-    if (merged) return { geometry: merged, materials: parts.map((p) => displayMaterial(p.material, tint, opacity, force)) };
+    if (merged) return { geometry: merged, materials: parts.map((p) => displayMaterial(p.material, tint, opacity, force, cut)) };
   } catch { /* fall through to the largest part */ }
   let best = 0;
   trimmed.forEach((g, i) => {
     if (g.getAttribute('position').count > trimmed[best].getAttribute('position').count) best = i;
   });
-  return { geometry: trimmed[best], materials: displayMaterial(parts[best].material, tint, opacity, force) };
+  return { geometry: trimmed[best], materials: displayMaterial(parts[best].material, tint, opacity, force, cut) };
 }
 
 export class Viewport extends EventTarget {
@@ -189,6 +202,7 @@ export class Viewport extends EventTarget {
     this._materials = new Map();
     this._modelCache = new Map();
     this._badges = new Map();
+    this._fixedParts = new Map();
     this._gltf = new GLTFLoader();
 
     this._initRenderer();
@@ -355,6 +369,59 @@ export class Viewport extends EventTarget {
   }
 
   /**
+   * Part of a prefab that must not stretch when the object is resized.
+   *
+   * A player spawn zone is a floor area you drag out to whatever size the team
+   * needs, with a machine standing at one corner of it. The map object's scale
+   * is the size of the *area*; the machine keeps its own size and rides the
+   * corner. Merging the two and scaling the lot would stretch the machine along
+   * with the floor.
+   *
+   * The fixed part is a child of the object, so it follows position, rotation
+   * and the corner as the area grows, and its scale is inverted each frame to
+   * cancel the parent's.
+   */
+  _splitFixedPart(mesh, def, parts) {
+    const pattern = def.fixedParts;
+    if (!pattern) return { scaled: parts, fixed: [] };
+    const re = new RegExp(pattern, 'i');
+    const scaled = [], fixed = [];
+    for (const p of parts) (re.test(p.path) ? fixed : scaled).push(p);
+    // All of it fixed, or none of it, means the split has nothing to say.
+    return scaled.length && fixed.length ? { scaled, fixed } : { scaled: parts, fixed: [] };
+  }
+
+  _attachFixedPart(mesh, def, fixed, dropY) {
+    this._dropFixedPart(mesh);
+    if (!fixed.length) return;
+    const model = mergeForDisplay(fixed, def.color, def.opacity ?? 1, def.tintModel === true,
+      def.cutout === true);
+    model.geometry.translate(0, dropY, 0);
+    const child = new THREE.Mesh(model.geometry, model.materials);
+    child.userData.fixedScale = true;
+    mesh.add(child);
+    this._fixedParts.set(mesh, child);
+  }
+
+  _dropFixedPart(mesh) {
+    const child = this._fixedParts.get(mesh);
+    if (!child) return;
+    child.removeFromParent();
+    this._fixedParts.delete(mesh);
+  }
+
+  /** Cancel the parent's scale on every fixed part, once per frame. */
+  _holdFixedParts() {
+    for (const [mesh, child] of this._fixedParts) {
+      child.scale.set(
+        1 / (mesh.scale.x || 1e-6),
+        1 / (mesh.scale.y || 1e-6),
+        1 / (mesh.scale.z || 1e-6),
+      );
+    }
+  }
+
+  /**
    * Replace the placeholder with the real prefab mesh, if the asset dump is
    * present. It is gitignored and optional, so a miss keeps the placeholder and
    * says so once rather than failing.
@@ -365,7 +432,8 @@ export class Viewport extends EventTarget {
     try {
       // Two entries can share a prefab and not a pivot, and the normalisation
       // below depends on both.
-      const cacheKey = `${def.model}|${def.pivot}|${def.size[1]}|${def.color}|${def.opacity ?? 1}|${def.tintModel}`;
+      const cacheKey = `${def.model}|${def.pivot}|${def.size[1]}|${def.color}|${def.opacity ?? 1}` +
+        `|${def.tintModel}|${def.fixedParts ?? ''}|${def.cutout}`;
       let model = this._modelCache.get(cacheKey);
       if (!model) {
         const gltf = await this._gltf.loadAsync(url);
@@ -379,15 +447,28 @@ export class Viewport extends EventTarget {
           if (!n.isMesh || isFurniture(n) || lowerLod(n)) return;
           const geometry = n.geometry.clone();
           geometry.applyMatrix4(n.matrixWorld);
-          found.push({ geometry, material: n.material });
+          const path = [];
+          for (let p = n; p; p = p.parent) path.unshift(p.name || '');
+          found.push({ geometry, material: n.material, path: path.join('/') });
         });
         if (!found.length) return;
-        model = mergeForDisplay(found, def.color, def.opacity ?? 1, def.tintModel === true);
-        seatOnFloor(model.geometry, def);
+
+        const { scaled, fixed } = this._splitFixedPart(mesh, def, found);
+        const whole = mergeForDisplay(scaled, def.color, def.opacity ?? 1, def.tintModel === true,
+          def.cutout === true);
+        // Seat on the floor using the whole object's extent, then move the
+        // fixed part by the same amount so it does not drift off the area.
+        const before = new THREE.Box3().setFromBufferAttribute(
+          whole.geometry.getAttribute('position')).min.y;
+        seatOnFloor(whole.geometry, def);
+        const after = new THREE.Box3().setFromBufferAttribute(
+          whole.geometry.getAttribute('position')).min.y;
+        model = { ...whole, fixed, dropY: after - before };
         this._modelCache.set(cacheKey, model);
       }
       mesh.geometry = model.geometry;
       mesh.material = model.materials;
+      this._attachFixedPart(mesh, def, model.fixed, model.dropY);
       this._refreshOutline(mesh);
       this.emit('change');
     } catch (err) {
@@ -402,6 +483,8 @@ export class Viewport extends EventTarget {
     for (const m of meshes) {
       this._setOutline(m, false);
       this._dropWeaponBadge(m);
+      this._dropFixedPart(m);
+      this._dropFixedPart(m);
       m.removeFromParent();
       const i = this.objects.indexOf(m);
       if (i >= 0) this.objects.splice(i, 1);
@@ -963,9 +1046,12 @@ export class Viewport extends EventTarget {
   // sprite rather than a child of the mesh: a child inherits the object's
   // scale, and a spawner stretched to 3 m would stretch its label with it.
 
-  /** Build or refresh the badge for one spawner, and drop it if it has none. */
+  /** Build or refresh the badge for one object, and drop it if it has none. */
   _refreshWeaponBadge(mesh) {
-    const value = mesh.userData.props?.specificWeapon;
+    // A domination zone is a ring painted on the floor, which says nothing
+    // about which of the three it is; the letter is the whole identity.
+    const letter = mesh.userData.def?.badge;
+    const value = letter ?? mesh.userData.props?.specificWeapon;
     if (value === undefined) return;
 
     let badge = this._badges.get(mesh);
@@ -982,7 +1068,37 @@ export class Viewport extends EventTarget {
     }
     if (badge.value === value) return;
     badge.value = value;
-    this._drawBadge(badge, parseWeapons(value), value === WEAPON_ANY);
+    if (letter) this._drawLetterBadge(badge, letter, mesh.userData.def.color);
+    else this._drawBadge(badge, parseWeapons(value), value === WEAPON_ANY);
+  }
+
+  /** Paint a single big letter, for the domination zones. */
+  _drawLetterBadge(badge, letter, colour) {
+    const canvas = badge.texture.image;
+    if (canvas.width !== 128 || canvas.height !== 128) {
+      canvas.width = canvas.height = 128;
+      badge.texture.dispose();
+      badge.texture = new THREE.CanvasTexture(canvas);
+      badge.texture.colorSpace = THREE.SRGBColorSpace;
+      badge.sprite.material.map = badge.texture;
+      badge.sprite.material.needsUpdate = true;
+    }
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, 128, 128);
+    ctx.fillStyle = 'rgba(10,15,20,0.78)';
+    ctx.strokeStyle = colour ?? '#E8C547';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.roundRect(2, 2, 124, 124, 16);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = colour ?? '#E8C547';
+    ctx.font = '700 82px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(letter, 64, 70);
+    badge.texture.needsUpdate = true;
+    badge.sprite.scale.set(0.3, 0.3, 1);
   }
 
   /** Paint the icon strip. Icons decode late, so it repaints as they arrive. */
@@ -1076,6 +1192,7 @@ export class Viewport extends EventTarget {
 
   _frame() {
     this.orbit.update();
+    this._holdFixedParts();
     this._placeBadges();
     this.renderer.render(this.scene, this.camera);
   }

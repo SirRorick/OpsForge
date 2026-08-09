@@ -25,6 +25,12 @@
 //   icon          sliced sprite name, without extension; see tools/slice-icons.mjs
 //   model         prefab basename in reference/GameAssets/Prefabs, without .glb
 //   texture       base-colour map in reference/GameAssets/Textures
+//   fixedParts    regex naming prefab nodes that keep their own size when the
+//                 object is resized — a spawn zone's machine rides the corner
+//                 of the area it stands on rather than stretching with it
+//   cutout        the prefab's texture is mostly transparent and the export
+//                 forgot to say so — a ground ring drawn on one flat quad
+//   badge         short text floated above the object in the viewport
 //   tintModel     multiply the prefab's own texture by `color`, for art that
 //                 ships colourless and is tinted per team by a Unity shader
 //   opacity       < 1 draws the object translucent, for volumes you need to
@@ -911,11 +917,11 @@ export const BUILTIN_PACKS = [
     { type: "PlayerSpawnZoneTeam1", label: "Player Spawn Zone Team 1", category: "Spawn Zones",
       shape: "spawnZone", size: [1.4, 1, 1.4], pivot: "base", rotationAxes: "y", floor: true,
       color: "#4A90D9", defaultScale: [1, 1, 1], uncertain: true,
-      model: "PlayerSpawnZoneTeam1", texture: "TPgradientVerticalConcave00 1.png", tintModel: true, icon: "Icon_SpawnZoneTeam1" },
+      model: "PlayerSpawnZoneTeam1", texture: "TPgradientVerticalConcave00 1.png", tintModel: true, fixedParts: "Radio|SpawnPointMachine", icon: "Icon_SpawnZoneTeam1" },
     { type: "PlayerSpawnZoneTeam2", label: "Player Spawn Zone Team 2", category: "Spawn Zones",
       shape: "spawnZone", size: [1.4, 1, 1.4], pivot: "base", rotationAxes: "y", floor: true,
       color: "#E08A3C", defaultScale: [1, 1, 1], uncertain: true,
-      model: "PlayerSpawnZoneTeam2", texture: "TPgradientVerticalConcave00 1.png", tintModel: true, icon: "Icon_SpawnZoneTeam2" },
+      model: "PlayerSpawnZoneTeam2", texture: "TPgradientVerticalConcave00 1.png", tintModel: true, fixedParts: "Radio|SpawnPointMachine", icon: "Icon_SpawnZoneTeam2" },
     { type: "EnemySpawnPoint", objectType: "EnemySpawnPoint",
       props: { enemyTypes: "All", behaviour: "Default" }, label: "Enemy Spawn",
       category: "Enemy Spawns", shape: "enemySpawn", size: [0.7, 1.1, 0.7], pivot: "base",
@@ -925,15 +931,15 @@ export const BUILTIN_PACKS = [
     { type: "DominationZoneA", label: "Domination Zone A", category: "Domination",
       shape: "dominationZoneA", size: [1.5, 1, 1.5], pivot: "base", rotationAxes: "y",
       floor: true, color: "#E8C547", defaultScale: [1, 1, 1], uncertain: true,
-      model: "DominationZoneA", texture: "Circle Outline 1024px - Stroke 10px.png", icon: "Icon_FlagA" },
+      model: "DominationZoneA", texture: "Circle Outline 1024px - Stroke 10px.png", tintModel: true, cutout: true, badge: "A", icon: "Icon_FlagA" },
     { type: "DominationZoneB", label: "Domination Zone B", category: "Domination",
       shape: "dominationZoneB", size: [1.5, 1, 1.5], pivot: "base", rotationAxes: "y",
       floor: true, color: "#B98FD6", defaultScale: [1, 1, 1], uncertain: true,
-      model: "DominationZoneB", texture: "Circle Outline 1024px - Stroke 10px.png", icon: "Icon_FlagB" },
+      model: "DominationZoneB", texture: "Circle Outline 1024px - Stroke 10px.png", tintModel: true, cutout: true, badge: "B", icon: "Icon_FlagB" },
     { type: "DominationZoneC", label: "Domination Zone C", category: "Domination",
       shape: "dominationZoneC", size: [1.5, 1, 1.5], pivot: "base", rotationAxes: "y",
       floor: true, color: "#5AD6A0", defaultScale: [1, 1, 1], uncertain: true,
-      model: "DominationZoneC", texture: "Circle Outline 1024px - Stroke 10px.png", icon: "Icon_FlagC" },
+      model: "DominationZoneC", texture: "Circle Outline 1024px - Stroke 10px.png", tintModel: true, cutout: true, badge: "C", icon: "Icon_FlagC" },
     { type: "CaptureFlagSpawnTeam1", label: "Capture Flag Spawn Team 1",
       category: "Capture The Flag", shape: "flagSpawn", size: [0.6, 1.8, 0.6], pivot: "base",
       rotationAxes: "y", floor: true, color: "#4A90D9", defaultScale: [1, 1, 1],
