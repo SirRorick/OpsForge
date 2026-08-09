@@ -1,9 +1,12 @@
 # Normalise line endings so Windows checkouts don't change file bytes.
 * text=auto eol=lf
 
-# The map fixture must survive byte for byte; the format tests compare exact
-# bytes, and any line-ending translation would corrupt it.
+# The map fixture and the reference exports must survive byte for byte; the
+# format tests compare exact bytes, and any line-ending translation would
+# corrupt them.
 test/fixtures/** -text -diff
+reference/** -text -diff
+reference/**/*.md text eol=lf
 
 *.png binary
 *.jpg binary
