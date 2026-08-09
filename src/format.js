@@ -10,6 +10,8 @@
 // loaded and re-exported byte for byte.
 // ---------------------------------------------------------------------------
 
+import { defaultRuleSets } from './rules.js';
+
 export const MAP_VERSION = 4;
 export const DOTNET_MIN_DATE = '0001-01-01T00:00:00';
 
@@ -106,6 +108,29 @@ function dict(o) {
   return `{${keys.map((k) => `${J(k)}:${JSON.stringify(o[k])}`).join(',')}}`;
 }
 
+// -- map object subtypes ----------------------------------------------------
+// Most objects are a bare `MapObject`, but three subtypes carry extra fields,
+// and the game writes them between "$type" and "type". Key order has to match
+// or an untouched map stops re-exporting byte for byte, so the extras are kept
+// in a `props` object and written in the order below.
+
+export const BASE_OBJECT_KEYS = ['$type', 'type', 'position', 'rotation', 'scale'];
+
+export const OBJECT_PROP_KEYS = {
+  WeaponSpawnPoint: ['specificWeapon'],
+  DamageBox: ['style'],
+  EnemySpawnPoint: ['enemyTypes', 'behaviour'],
+};
+
+/**
+ * Extra keys for a `$type`, in file order. A subtype we have never seen falls
+ * back to whatever the object itself carries, so a future game update adds
+ * fields without this module needing to know about them.
+ */
+export function propKeysFor($type, props) {
+  return OBJECT_PROP_KEYS[$type] || Object.keys(props || {});
+}
+
 // -- Serialise --------------------------------------------------------------
 
 export function serializeMap(map) {
@@ -138,8 +163,13 @@ export function serializeMap(map) {
 
   const mo = (map.mapObjects || []).map((o) => {
     if (o.raw && !o.dirty) return o.raw; // untouched -> byte-identical passthrough
+    const $type = o.$type ?? 'MapObject';
+    const extras = propKeysFor($type, o.props)
+      .filter((k) => o.props?.[k] !== undefined)
+      .map((k) => `${J(k)}:${JSON.stringify(o.props[k])},`)
+      .join('');
     return (
-      `{"$type":${J(o.$type ?? 'MapObject')},"type":${J(o.type)},` +
+      `{"$type":${J($type)},${extras}"type":${J(o.type)},` +
       `"position":${vec3(o.position)},"rotation":${vec3(o.rotation)},` +
       `"scale":${vec3(o.scale)}}`
     );
@@ -170,15 +200,25 @@ export function parseMap(text) {
   }
 
   const rawObjects = extractRawMapObjects(text);
-  const mapObjects = data.mapObjects.map((o, i) => ({
-    $type: o.$type || 'MapObject',
-    type: o.type,
-    position: { ...o.position },
-    rotation: { ...o.rotation },
-    scale: { ...o.scale },
-    raw: rawObjects[i] || null,
-    dirty: false,
-  }));
+  const mapObjects = data.mapObjects.map((o, i) => {
+    // Anything that is not one of the five base keys belongs to a subtype.
+    // Collecting them generically means a field we have never seen still
+    // survives a round trip instead of being silently dropped on edit.
+    const props = {};
+    for (const k of Object.keys(o)) {
+      if (!BASE_OBJECT_KEYS.includes(k)) props[k] = o[k];
+    }
+    return {
+      $type: o.$type || 'MapObject',
+      type: o.type,
+      props,
+      position: { ...o.position },
+      rotation: { ...o.rotation },
+      scale: { ...o.scale },
+      raw: rawObjects[i] || null,
+      dirty: false,
+    };
+  });
 
   return {
     guid: isGuidN(data.guid) ? data.guid : newGuid(),
@@ -190,7 +230,7 @@ export function parseMap(text) {
     editedTime: data.editedTime ?? nowStamp(),
     playedTime: data.playedTime ?? DOTNET_MIN_DATE,
     mapBoundsSize: { ...data.mapBoundsSize },
-    ruleSets: data.ruleSets || [],
+    ruleSets: (data.ruleSets || []).map(normalizeRuleSet),
     anchors: data.anchors || [],
     mapObjects,
     navCloud: data.navCloud
@@ -204,6 +244,23 @@ export function parseMap(text) {
       : defaultNavCloudStub(),
     hasArUcoAnchor: !!data.hasArUcoAnchor,
     unknownVersion: data.version !== MAP_VERSION ? data.version : null,
+  };
+}
+
+/**
+ * Give a rule set its four value dictionaries whether or not the file had
+ * them, so the editor can write into one without checking first. An empty
+ * dictionary means "every setting is at the game's default": the game only
+ * serialises values that were changed away from it.
+ */
+function normalizeRuleSet(r) {
+  return {
+    name: r.name ?? '',
+    type: r.type ?? 'FreeForAll',
+    intValues: { ...(r.intValues || {}) },
+    boolValues: { ...(r.boolValues || {}) },
+    enumValues: { ...(r.enumValues || {}) },
+    flagsValues: { ...(r.flagsValues || {}) },
   };
 }
 
@@ -321,7 +378,7 @@ export async function newMap({ name = 'New Map', author = '' } = {}) {
     editedTime: ts,
     playedTime: DOTNET_MIN_DATE,
     mapBoundsSize: { x: 7, y: 3, z: 7 },
-    ruleSets: DEFAULT_RULESETS.map((r) => ({ ...r, intValues: {}, boolValues: {}, enumValues: {}, flagsValues: {} })),
+    ruleSets: defaultRuleSets(),
     anchors: [],
     mapObjects: [],
     navCloud: await defaultNavCloud(5),
@@ -329,10 +386,3 @@ export async function newMap({ name = 'New Map', author = '' } = {}) {
   };
 }
 
-export const DEFAULT_RULESETS = [
-  { name: 'Free For All', type: 'FreeForAll' },
-  { name: 'Co-op Survival', type: 'Survival' },
-  { name: 'Team Deathmatch', type: 'TeamDeathMatch' },
-  { name: 'Capture The Flag', type: 'CaptureTheFlag' },
-  { name: 'Domination', type: 'Domination' },
-];
