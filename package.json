@@ -10,7 +10,8 @@
     "build": "node build.mjs",
     "serve": "node serve.mjs",
     "read-definitions": "node tools/read-definitions.mjs",
-    "slice-icons": "node tools/slice-icons.mjs"
+    "slice-icons": "node tools/slice-icons.mjs",
+    "measure-prefabs": "node tools/measure-prefabs.mjs"
   },
   "engines": { "node": ">=18" }
 }

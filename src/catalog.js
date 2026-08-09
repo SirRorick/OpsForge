@@ -1,127 +1,46 @@
 // ---------------------------------------------------------------------------
 // Object catalog
 // ---------------------------------------------------------------------------
-// A pack is data, not code. Everything the editor knows about a game object
-// lives in one of these entries, so adding a new pack means adding a JSON file
-// and nothing else. Swap `model` in once real .glb assets are available and the
-// placeholder is ignored.
+// A pack is data, not code: see packs.js for the built-in ones and for what
+// every field means. This module is only the registry and the lookups, so
+// adding a pack means adding data and nothing else. Swap `model` in once real
+// .glb assets are available and the placeholder is ignored.
 //
-// Fields
-//   type          exact string written to the map file. This is the contract.
-//   label         what the library shows
-//   category      library grouping inside the pack
-//   shape         placeholder generator id (see placeholders.js)
-//   size          [w, h, d] in metres of the base mesh at scale 1,1,1
-//   pivot         'base'   -> mesh sits on y = 0, origin at floor level
-//                 'center' -> origin at the middle of the mesh
-//   rotationAxes  'y'   -> yaw only (floor pieces)
-//                 'xyz' -> free
-//   floor         true if the piece is expected to rest on the ground
-//   color         placeholder tint
-//   uncertain     dimensions are inferred, not confirmed by the developers
+// Most objects are identified by their `type` alone. A few library entries
+// share a type and differ only by the extra fields the subtype writes —
+// WeaponSpawnPoint carries `specificWeapon`, EnemySpawnPoint carries
+// `behaviour` — so lookups take the whole map object, not just the type.
 // ---------------------------------------------------------------------------
 
-export const PACK_SCHEMA_VERSION = 1;
-
-// Pivot and floor behaviour below are read straight off the sample map:
-// every Barrier/Crate sits at y = 0 (base pivot), while the *Solid primitives
-// and Tunnel sit at y = scale.y / 2 (centre pivot resting on the floor).
-export const DEFAULT_PACK = {
-  id: 'default',
-  name: 'Default',
-  schema: PACK_SCHEMA_VERSION,
-  objects: [
-    // -- Barriers -----------------------------------------------------------
-    {
-      type: 'BarrierLow', label: 'Barrier Low', category: 'Barriers',
-      shape: 'barrier', size: [1.0, 0.6, 0.12], pivot: 'base',
-      rotationAxes: 'y', floor: true, color: '#8B99A6', uncertain: true,
-    },
-    {
-      type: 'BarrierFull', label: 'Barrier Full', category: 'Barriers',
-      shape: 'barrier', size: [1.0, 1.4, 0.12], pivot: 'base',
-      rotationAxes: 'y', floor: true, color: '#8B99A6', uncertain: true,
-    },
-    {
-      type: 'BarrierWindow', label: 'Barrier Window', category: 'Barriers',
-      shape: 'barrierWindow', size: [1.0, 1.4, 0.12], pivot: 'base',
-      rotationAxes: 'y', floor: true, color: '#8B99A6', uncertain: true,
-    },
-    {
-      type: 'BarrierCorner', label: 'Barrier Corner', category: 'Barriers',
-      shape: 'barrierCorner', size: [1.0, 1.4, 1.0], pivot: 'base',
-      rotationAxes: 'y', floor: true, color: '#8B99A6', uncertain: true,
-    },
-    {
-      type: 'BarrierU', label: 'Barrier U', category: 'Barriers',
-      shape: 'barrierU', size: [1.0, 1.4, 1.0], pivot: 'base',
-      rotationAxes: 'y', floor: true, color: '#8B99A6', uncertain: true,
-    },
-
-    // -- Props --------------------------------------------------------------
-    {
-      type: 'Crate', label: 'Crate', category: 'Props',
-      shape: 'crate', size: [0.6, 0.6, 0.6], pivot: 'base',
-      rotationAxes: 'y', floor: true, color: '#A8794A', uncertain: true,
-    },
-    {
-      type: 'DestructibleCrate', label: 'Destructible Crate', category: 'Props',
-      shape: 'crate', size: [0.6, 0.6, 0.6], pivot: 'base',
-      rotationAxes: 'y', floor: true, color: '#B85C36', uncertain: true,
-    },
-    {
-      type: 'DefaultElectricityBox', label: 'Electricity Box', category: 'Props',
-      shape: 'electricityBox', size: [0.4, 0.6, 0.28], pivot: 'base',
-      rotationAxes: 'y', floor: true, color: '#5C8A6B', uncertain: true,
-    },
-    {
-      type: 'Tunnel', label: 'Tunnel', category: 'Props',
-      shape: 'tunnel', size: [1.0, 1.0, 1.0], pivot: 'center',
-      rotationAxes: 'y', floor: true, color: '#7C8794', uncertain: true,
-    },
-
-    // -- Primitives ---------------------------------------------------------
-    // Confirmed by the sample: BoxSolidGrounded at y 0.5 with scale.y 1, and
-    // CylinderSolid at y 1 with scale.y 2, both resting exactly on the floor.
-    {
-      type: 'BoxSolid', label: 'Box', category: 'Primitives',
-      shape: 'box', size: [1, 1, 1], pivot: 'center',
-      rotationAxes: 'xyz', floor: false, color: '#6E7C8A',
-    },
-    {
-      type: 'BoxSolidGrounded', label: 'Box (Grounded)', category: 'Primitives',
-      shape: 'box', size: [1, 1, 1], pivot: 'center',
-      rotationAxes: 'y', floor: true, color: '#6E7C8A',
-    },
-    {
-      type: 'CylinderSolid', label: 'Cylinder', category: 'Primitives',
-      shape: 'cylinder', size: [1, 1, 1], pivot: 'center',
-      rotationAxes: 'xyz', floor: false, color: '#6E7C8A',
-    },
-    {
-      type: 'CylinderSolidGrounded', label: 'Cylinder (Grounded)', category: 'Primitives',
-      shape: 'cylinder', size: [1, 1, 1], pivot: 'center',
-      rotationAxes: 'y', floor: true, color: '#6E7C8A',
-    },
-    {
-      type: 'WallSolid', label: 'Wall', category: 'Primitives',
-      shape: 'box', size: [1, 1, 0.1], pivot: 'center',
-      rotationAxes: 'y', floor: true, color: '#6E7C8A', uncertain: true,
-    },
-  ],
-};
-
-// ---------------------------------------------------------------------------
+import { BUILTIN_PACKS } from './packs.js';
 
 const packs = new Map();
-const byType = new Map();
+const byKey = new Map();
+const byType = new Map();   // type -> defs sharing it, in registration order
 
 export function registerPack(pack) {
   if (!pack || !pack.id || !Array.isArray(pack.objects)) {
     throw new Error('A pack needs an id and an objects array.');
   }
   packs.set(pack.id, pack);
-  for (const def of pack.objects) byType.set(def.type, { ...def, pack: pack.id });
+  for (const raw of pack.objects) {
+    const def = {
+      objectType: 'MapObject',
+      props: null,
+      pivot: 'base',
+      rotationAxes: 'y',
+      floor: true,
+      defaultScale: [1, 1, 1],
+      icon: null,
+      ...raw,
+      key: raw.key || raw.type,
+      pack: pack.id,
+      group: pack.group || 'virtual',
+    };
+    byKey.set(def.key, def);
+    if (!byType.has(def.type)) byType.set(def.type, []);
+    byType.get(def.type).push(def);
+  }
   return pack;
 }
 
@@ -129,18 +48,58 @@ export function getPacks() {
   return [...packs.values()];
 }
 
-export function getDef(type) {
-  return byType.get(type) || null;
+export function getPack(id) {
+  return packs.get(id) || null;
+}
+
+/** Packs belonging to one top-level library section, in registration order. */
+export function packsInGroup(group) {
+  return [...packs.values()].filter((p) => (p.group || 'virtual') === group);
+}
+
+/** Look an entry up by its unique catalog key. */
+export function getByKey(key) {
+  return byKey.get(key) || null;
 }
 
 /**
- * Definition for a type the catalog has never seen. Loading a map that uses a
- * pack you have not installed should still work, so unknown types get a clearly
+ * First entry registered for a `type`. Enough for the types that have only one
+ * entry; prefer `defFor` when a map object is in hand.
+ */
+export function getDef(type) {
+  const list = byType.get(type);
+  return list ? list[0] : null;
+}
+
+/**
+ * Definition for a map object as it appears in a file. Where several entries
+ * share a type, the one whose `props` all match wins — that is how a Handgun
+ * spawner is told apart from a Sniper one. An unrecognised prop value still
+ * resolves to the generic entry for that type, so the object stays editable
+ * and its own value is preserved on export.
+ */
+export function defFor(mapObject) {
+  const list = byType.get(mapObject.type);
+  if (!list) return unknownDef(mapObject.type);
+  if (list.length === 1) return list[0];
+  const props = mapObject.props || {};
+  const hit = list.find(
+    (d) => d.props && Object.entries(d.props).every(([k, v]) => props[k] === v)
+  );
+  return hit || list[0];
+}
+
+/**
+ * Definition for a type the catalog has never seen. Loading a map built on a
+ * pack you do not have should still work, so unknown types get a clearly
  * marked stand-in rather than being dropped on the floor.
  */
 export function unknownDef(type) {
   return {
+    key: `unknown:${type}`,
     type,
+    objectType: 'MapObject',
+    props: null,
     label: type,
     category: 'Unrecognised',
     shape: 'unknown',
@@ -149,8 +108,10 @@ export function unknownDef(type) {
     rotationAxes: 'xyz',
     floor: false,
     color: '#C0407A',
+    defaultScale: [1, 1, 1],
     unknown: true,
     pack: 'unrecognised',
+    group: 'virtual',
   };
 }
 
@@ -158,13 +119,18 @@ export function defOrUnknown(type) {
   return getDef(type) || unknownDef(type);
 }
 
+/** Library entries of a pack, grouped by category, hidden ones left out. */
 export function categoriesOf(pack) {
   const out = new Map();
   for (const def of pack.objects) {
+    if (def.hidden) continue;
     if (!out.has(def.category)) out.set(def.category, []);
-    out.get(def.category).push(def);
+    out.get(def.category).push(byKey.get(def.key || def.type) || def);
   }
   return out;
 }
 
-registerPack(DEFAULT_PACK);
+for (const pack of BUILTIN_PACKS) registerPack(pack);
+
+/** The pack the library opens on. */
+export const DEFAULT_PACK = getPack('default');

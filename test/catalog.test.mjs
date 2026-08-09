@@ -6,7 +6,8 @@ import { readFileSync } from 'node:fs';
 import {
   decodeNavCloud, encodeNavCloud, buildNavMask, navIndexToWorld, NAV_SPACING,
 } from '../src/format.js';
-import { DEFAULT_PACK, getDef, defOrUnknown } from '../src/catalog.js';
+import { getPacks, getPack, getDef, getByKey, defOrUnknown, packsInGroup, categoriesOf } from '../src/catalog.js';
+import { PACK_GROUPS } from '../src/packs.js';
 
 const FIXTURE = new URL('./fixtures/Default_f1d7dd74461f492aa897773d77451a78', import.meta.url);
 const fixture = JSON.parse(readFileSync(FIXTURE, 'utf8'));
@@ -72,16 +73,97 @@ test('the Default pack covers every type in the fixture', () => {
   }
 });
 
+const allDefs = getPacks().flatMap((p) => p.objects.map((d) => getByKey(d.key || d.type)));
+
 test('every catalog entry has the fields the editor relies on', () => {
-  for (const def of DEFAULT_PACK.objects) {
-    for (const key of ['type', 'label', 'category', 'shape', 'size', 'pivot', 'rotationAxes', 'color']) {
-      assert.ok(def[key] !== undefined, `${def.type} is missing ${key}`);
+  for (const def of allDefs) {
+    for (const key of ['type', 'key', 'label', 'category', 'shape', 'size', 'pivot', 'rotationAxes', 'color', 'defaultScale']) {
+      assert.ok(def[key] !== undefined, `${def.key} is missing ${key}`);
     }
-    assert.equal(def.size.length, 3, `${def.type} size must be [w, h, d]`);
-    assert.ok(def.size.every((v) => v > 0), `${def.type} has a non-positive dimension`);
+    assert.equal(def.size.length, 3, `${def.key} size must be [w, h, d]`);
+    assert.ok(def.size.every((v) => v > 0), `${def.key} has a non-positive dimension`);
+    assert.equal(def.defaultScale.length, 3);
+    assert.ok(def.defaultScale.every((v) => v > 0), `${def.key} has a non-positive default scale`);
     assert.ok(['base', 'center'].includes(def.pivot));
     assert.ok(['y', 'xyz'].includes(def.rotationAxes));
     assert.match(def.color, /^#[0-9a-fA-F]{6}$/);
+  }
+});
+
+test('the Default pack is measured, not estimated, and carries its icons', () => {
+  // Its sizes come from the prefab GLBs and its icons from the sprite atlases,
+  // so nothing in it should still be flagged as an estimate. The icon names are
+  // slice-icons.mjs output names; the PNGs themselves live in the gitignored
+  // asset dump, so only the wiring can be checked here.
+  const def = getPack('default');
+  assert.ok(def, 'the Default pack is missing');
+  for (const raw of def.objects) {
+    const entry = getByKey(raw.key || raw.type);
+    assert.ok(!entry.uncertain, `${entry.key} is still marked uncertain`);
+    assert.match(entry.icon ?? '', /^Icon_/, `${entry.key} has no icon`);
+  }
+});
+
+test('catalog keys are unique', () => {
+  const seen = new Set();
+  for (const def of allDefs) {
+    assert.ok(!seen.has(def.key), `duplicate catalog key ${def.key}`);
+    seen.add(def.key);
+  }
+  assert.ok(seen.size > 170, `expected the full library, found ${seen.size}`);
+});
+
+test('entries sharing a type are told apart by their props', () => {
+  // Ten weapon spawners share one `type`; without distinguishing props the
+  // library would show ten identical entries and loading a map would pick the
+  // wrong one for nine of them.
+  const byType = new Map();
+  for (const def of allDefs) {
+    if (!byType.has(def.type)) byType.set(def.type, []);
+    byType.get(def.type).push(def);
+  }
+  for (const [type, defs] of byType) {
+    if (defs.length === 1) continue;
+    for (const def of defs) {
+      assert.ok(def.props, `${type} has ${defs.length} entries so each needs props`);
+    }
+    const seen = new Set(defs.map((d) => JSON.stringify(d.props)));
+    assert.equal(seen.size, defs.length, `${type} has entries with identical props`);
+  }
+});
+
+test('every pack belongs to a library section and every section has packs', () => {
+  const ids = PACK_GROUPS.map((g) => g.id);
+  for (const pack of getPacks()) {
+    assert.ok(ids.includes(pack.group), `pack ${pack.id} has group "${pack.group}"`);
+  }
+  for (const id of ids) {
+    assert.ok(packsInGroup(id).length, `library section ${id} has no packs`);
+  }
+});
+
+test('the library hides the grounded primitives but still loads them', () => {
+  // The VR editor needs them because there is no grid to snap to; here the
+  // plain solid does the same job. Old maps must still open, though.
+  const grounded = getDef('BoxSolidGrounded');
+  assert.ok(grounded, 'BoxSolidGrounded must stay loadable');
+  assert.equal(grounded.hidden, true);
+
+  const shown = [...categoriesOf(getPacks().find((p) => p.id === 'default')).values()].flat();
+  assert.ok(!shown.some((d) => /Grounded$/.test(d.type)), 'a grounded primitive is in the library');
+  assert.ok(shown.some((d) => d.type === 'BoxSolid'), 'the plain solid box should be offered');
+});
+
+test('every shape names a builder that exists', () => {
+  // placeholders.js imports three.js, so it cannot be loaded here. Reading the
+  // builder names out of the source still catches the mistake that matters: a
+  // typo in a `shape` silently turning an object into a pink unknown marker.
+  const src = readFileSync(new URL('../src/placeholders.js', import.meta.url), 'utf8');
+  const block = src.slice(src.indexOf('const builders = {'), src.indexOf('\n};', src.indexOf('const builders = {')));
+  const builders = new Set([...block.matchAll(/^ {2}([A-Za-z]\w*):/gm)].map((m) => m[1]));
+  assert.ok(builders.size > 50, `only found ${builders.size} builders, the parse is probably wrong`);
+  for (const def of allDefs) {
+    assert.ok(builders.has(def.shape), `${def.key} wants shape "${def.shape}", which has no builder`);
   }
 });
 
