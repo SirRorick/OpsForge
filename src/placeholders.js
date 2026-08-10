@@ -79,8 +79,8 @@ function ring(r, t, x = 0, y = 0, z = 0, seg = 24) {
 }
 
 // No toNonIndexed here: PolyhedronGeometry, which this extends, is already
-// non-indexed and three.js warns on the console if you ask twice. CLAUDE.md
-// says to watch that console for failed merges, so it has to stay quiet.
+// non-indexed and three.js warns on the console if you ask twice. The console
+// needs to stay quiet here since that's also where failed merges get reported.
 function octa(r, x = 0, y = 0, z = 0) {
   const g = new THREE.OctahedronGeometry(r, 0);
   g.translate(x, y, z);

@@ -26,3 +26,6 @@ assets/Prefabs/*
 # plus the icons, zipped up for a GitHub release and rebuilt on demand.
 dist/spatial-ops-map-editor/
 test/
+
+# Development notes for Claude Code — kept locally, not published.
+CLAUDE.md

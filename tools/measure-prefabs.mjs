@@ -15,8 +15,8 @@
 //
 // Where the origin sits inside that box is the object's pivot, and it is
 // reported rather than assumed — `base` means the box bottom is at y = 0,
-// `center` means the origin is in the middle. CLAUDE.md requires pivots to come
-// from the catalog rather than from guessing, so this is the evidence for them.
+// `center` means the origin is in the middle. Pivots come from the catalog
+// rather than from guessing, so this is the evidence for them.
 //
 // glTF is right-handed Y-up and Unity is left-handed Y-up, so an exporter
 // mirrors Z. That flips the sign of the Z bounds but not the box's size, and

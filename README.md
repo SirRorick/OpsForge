@@ -150,8 +150,6 @@ npm run build   # regenerate dist/ after changing src/
 Works identically on Windows, macOS and Linux.
 
 `dist/` is generated — edit `src/` and rebuild rather than touching it.
-[CLAUDE.md](CLAUDE.md) records the format invariants that must not be broken;
-it is worth reading before your first change whether or not you use Claude Code.
 
 ## What is verified
 
@@ -177,7 +175,6 @@ still guesswork.
 
 ```
 index.html    markup and styling
-CLAUDE.md     format invariants and project conventions
 src/
   format.js       map file parse and serialise, GUIDs, nav cloud codec
   unity.js        Unity <-> three.js coordinate and rotation conversion
@@ -216,3 +213,5 @@ names, transforms and rule settings, and nothing about the room anyone is
 playing in.
 
 The editor is not affiliated with or endorsed by the makers of Spatial Ops.
+
+Developed with the assistance of [Claude Code](https://claude.com/claude-code).
