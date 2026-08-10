@@ -1,10 +1,12 @@
 # Spatial Ops map file format (v4)
 
-Reverse engineered from fourteen v4 map files exported out of the in-game
-editor — one per library group, one per object theme, and one with every rule
-set option deliberately changed. They live in `reference/`. Everything here is
+Reverse engineered from sixteen v4 map files exported out of the in-game
+editor — one per library group, one per object theme, one with every rule set
+option deliberately changed, one with none of them changed, and one holding a
+pair of enemy spawners between them naming every enemy in the game. They live
+in `reference/`. Everything here is
 verified against those files unless marked **unconfirmed**, and the test suite
-re-exports all fourteen byte for byte on every run. Corrections welcome.
+re-exports all sixteen byte for byte on every run. Corrections welcome.
 
 ## The file itself
 
@@ -61,18 +63,27 @@ above; see `src/format.js`.
 
 ## `ruleSets`
 
-Five entries, one per game mode. Types seen: `FreeForAll`, `Survival`,
-`TeamDeathMatch`, `CaptureTheFlag`, `Domination`. Most maps have four empty
-dictionaries per mode:
+A list of rule sets. Each has a free-text `name`, a `type` naming its base mode,
+and four value dictionaries. Types seen: `FreeForAll`, `Survival`,
+`TeamDeathMatch`, `CaptureTheFlag`, `Domination`. Most maps have five entries,
+one per mode, with four empty dictionaries each:
 
 ```json
 {"name":"Free For All","type":"FreeForAll","intValues":{},"boolValues":{},"enumValues":{},"flagsValues":{}}
 ```
 
+The list is addressed by position, not by type: two sets may share a base mode
+and differ only by name, so order is part of the file. **There is no id field** —
+a builder that adds one writes a key the game never wrote.
+
 **An empty dictionary means "every setting is at the game's default", not
-"nothing is set".** The game only serialises settings that were changed. This
-is confirmed by a second export made with every setting deliberately moved off
-its default, which produced a full set of keys:
+"nothing is set".** The game only serialises settings that were changed. Two
+exports pin this down from both ends. `reference/Library/DefaultRules_*` was
+made by opening the rules screen and changing nothing, and every one of its
+five modes comes back with four empty dictionaries — the game does not write
+out the values it is using. `reference/Rules Examples_*` was made with a large
+number of settings deliberately moved off their defaults, and every one of them
+appears:
 
 ```json
 {"name":"Free For All Example","type":"FreeForAll",
@@ -86,14 +97,100 @@ its default, which produced a full set of keys:
 ```
 
 Ints are written bare, bools as JSON literals, enums as strings, and flags as
-a semicolon-joined set. `src/rules.js` holds the full per-mode key list; the
-editor writes a key only once you change it, and clearing a field removes the
-key again rather than writing a zero.
+a semicolon-joined set. Note the semicolon: it belongs to this serialiser only,
+and the spawner props below use a comma. `src/rules.js` holds the full per-mode
+key list; the editor writes a key only once you change it, and clearing a field
+removes the key again rather than writing a zero.
 
-**Unconfirmed:** the defaults themselves, the valid range of every number, and
-the full option list for each enum. One export only shows the values it
-happens to use, so the editor does not clamp numbers and treats the enum
-options it knows as suggestions rather than a closed list.
+### Where the schema comes from
+
+Three sources, and they are not equally strong.
+
+`reference/rules/spatial-ops-rules-spec.md` is a writeup of the in-game rules
+screen — every field, its control, its default, its range, and the conditions
+that nest one rule under another. Every default and every stepper range in
+`src/rules.js` comes from it, and nothing else to hand records a single one of
+them.
+
+The reference exports are the only evidence of what the game actually *writes*.
+They confirm 23 of the 46 keys, which dictionary each lives in, and the flags
+encoding. They do **not** cover the other 23: the `Rules Examples` export
+changed a large subset of the rules screen, not all of it, so `ShowVest`, the
+holsters, the per-weapon respawn times and the survival lives fields are absent
+from it.
+
+`reference/GameAssets/Definitions/*Rule.asset` is one asset per rule. The
+MonoBehaviours are stripped to their names — no values — but the names and the
+`m_Script` guids survive, and both are useful. The guid groups the rules by
+class, which settles the dictionary for every key an export never showed: 23
+share the int class, 11 the bool class, the six holsters share one flags class,
+and `WeaponSourceRule` and `AllowedWeaponsRule` have one each. And the name
+gives the key: for all 23 keys an export confirms, **the key is exactly the
+asset name with the `Rule` suffix removed** — `GameDurationRule` →
+`GameDuration`, `SingleWeaponPerSpawnerRule` → `SingleWeaponPerSpawner`, 23 for
+23. The other 23 keys are derived that way, and `src/rules.js` marks them
+`confirmed: false` so the editor can say which is which.
+
+Two spellings in there are worth not tidying. `ShowSpawnZoneArrowInLobby.asset`
+has no `Rule` suffix at all, while its key matches the file. And
+`WeaponRespawnTimeRiotshieldRule` spells the shield with a small s where the
+weapon id itself is `RiotShield` — the two are different strings in the game.
+
+### Sections, defaults and conditions
+
+The screen renders five sections in order: `GAME`, `OBJECTIVES`, `WEAPON`, then
+`WEAPON SPAWNERS` and `HOLSTERS`, the last two only when `WeaponSource` asks for
+them. Three of them are identical in all five modes; only the game and
+objectives sections differ, and section 8 of the spec lists exactly how.
+
+Four rows are conditional on another setting: the two survival lives fields on
+`LifeMode`, `AllowedWeapons` on `EnableAllowedWeapons`, and the respawn block on
+`EnableWeaponRespawnTimePerWeaponType`, which swaps one global field for nine
+per-weapon ones. `WeaponDespawnTime` is present in both states.
+
+`GameDuration` is one integer of seconds, entered on screen as separate minute
+and second steppers. The seconds stepper stops at 59 and does not roll over, and
+the ten-second floor is on the total, so 0m 0s through 0m 9s are not reachable.
+
+Three numeric ceilings are narrower than the general 10000 and are the ones to
+lose in a refactor: penalty time at 100, domination objective at 100, and the
+two co-op lives fields at 20 and 100.
+
+Ranges bound what the editor *writes*, never what it reads. The `Rules Examples`
+export carries `DominationObjective: 101` against a stated ceiling of 100, so
+clamping on load would rewrite a file the game itself produced. A loaded value
+outside its range is flagged in the panel and left alone.
+
+`fallback` in `src/rules.js` is the game's own value for an untouched setting.
+It is display only: the editor shows it greyed inside each control and never
+writes it, because the whole point of the sparse dictionaries is that an
+untouched setting stays absent.
+
+### Flags
+
+Multi-select values are semicolon-joined member lists. **A full selection is
+spelled out, not collapsed** — the one flags value any export contains was
+written `"Spawners;Holsters"` rather than `"All"`. `All` is a display
+convention of the in-game dropdown only.
+
+### Still unconfirmed
+
+- **The literal an enum writes for a value no export used.** `Everyone`,
+  `Hard` and `Permadeath` are confirmed; `Off`, `BlueTeam`, `OrangeTeam`,
+  `Individual`, `Team`, `UnlimitedLives`, `Easy` and `Normal` are the spec's
+  option names and are what the editor writes if you pick them.
+- **What a flags field emptied to nothing writes.** `None` is an option the
+  rules screen offers on the holsters and on Allowed Weapons, so it serialises
+  as something; `src/rules.js` writes `"None"`, and an empty string is the other
+  candidate if that turns out not to load.
+- **Whether Survival's game duration defaults to something other than 5m.** The
+  game keeps a separate `GameSurvivalDurationRule.asset` — a second instance of
+  `GameDurationRule`'s class, which is what a differently configured default
+  would look like — and the `Rules Examples` export wrote 240 there against 360
+  in the other four modes while nudging every other number by exactly one
+  stepper step, which points at 3m. The spec says 5m for every mode and that is
+  what the editor shows. `fallbacks: { GameDuration: 180 }` on the Survival mode
+  in `src/rules.js` is the whole change if the rules screen ever settles it.
 
 ## `anchors`
 
@@ -137,6 +234,43 @@ The list of values above is what has been observed, not necessarily the whole
 enum, so the parser collects **any** key that is not one of the five base keys
 and writes it back in place. A field added by a future game update survives a
 round trip without this module knowing it exists.
+
+### `enemyTypes`
+
+A set of thirteen, written **comma-separated with no spaces**, or `All`.
+`reference/Library/Enemies_*` holds one spawner with every type but the handgun
+and one with the handgun alone:
+
+```json
+"enemyTypes":"SMG,Shotgun,Sniper,HandgunShield,Drone,Helicopter,RPG,CorruptedSMG,CorruptedShotgun,CorruptedSniper,CorruptedHandgun,CorruptedRPG"
+"enemyTypes":"Handgun"
+```
+
+Three things worth stating outright, because the spawner prefab suggests
+otherwise on all three:
+
+- **The separator is a comma**, not the semicolon the rule sets use for their
+  flags. Same file, two serialisers.
+- **The names are not the prefab's node names.** The in-VR toggles are
+  `BotToggle_SMGCorrupted` and `BotToggle_Chopper`; the file says
+  `CorruptedSMG` and `Helicopter`. The prefab's `MapEditorUI` children are the
+  ones that match. Where they disagree, the file wins.
+- **The order above is the game's**, and is neither of the prefab's two
+  orderings. `src/packs.js` reproduces it so a spawner the editor rewrites looks
+  like one the game wrote.
+
+The one gap is where `Handgun` sits, since the export listing the other twelve
+is the one with the handgun taken out. It is placed after `Sniper`, because the
+Corrupted block — which is complete — runs SMG, Shotgun, Sniper, Handgun, RPG,
+and the plain block is that same run with HandgunShield, Drone and Helicopter
+inserted before RPG. Immediately before `RPG` would fit equally well; only a set
+holding `Handgun` *and* several others would tell them apart.
+
+The dump also holds a figure of each of them, `<Enemy>BotSpawner.glb`, which is
+what the editor stands on a spawner pad. `EnemySpawnPoint.glb`'s own
+`BotPreview` node is empty — the game instantiates that figure at runtime — and
+its `HandgunBotSpawnerHologram` is a shell of the *pad*, not a bot: 1.08 × 0.30
+× 1.08 against the pad's 1.06 × 0.29 × 1.06.
 
 ### Pivots
 
@@ -205,16 +339,46 @@ the game describes a spawner with no restriction as `All` rather than listing
 everything. What is *not* known is the separator, because nothing the game
 wrote shows two.
 
-The editor writes them semicolon-joined — `"Shotgun;Sniper"` — because that is
-what the game uses for its own multi-valued strings elsewhere in this same file
-format: rule set flags are written `"WeaponSource":"Spawners;Holsters"`. That is
-a different field though, and a .NET `[Flags]` enum serialised by Newtonsoft
-would more likely be `", "`. If a two-weapon spawner turns out not to load in
-game, `WEAPON_SEPARATOR` in `src/packs.js` is the single line to change.
+The editor writes them comma-joined — `"Shotgun,Sniper"` — by analogy with
+`enemyTypes`, which is the same idea on the same kind of object and *is*
+confirmed: an export listing twelve enemy types uses a bare comma with no
+spaces. It deliberately is **not** the semicolon the rule sets use for their
+flags (`"WeaponSource":"Spawners;Holsters"`); that turned out to be a different
+serialiser with its own separator, which is exactly why one field cannot settle
+another. If a two-weapon spawner turns out not to load in game,
+`LIST_SEPARATOR` in `src/packs.js` is the single line to change.
 
 The blast radius is small by construction: untouched objects are written back
 from their original bytes, so this can only reach spawners the user edits, and
 ticking every weapon collapses back to `All` rather than spelling the set out.
+
+### Reading the shape of a prefab
+
+`npm run measure-prefabs` answers how big a prefab is, from the accessor
+`min`/`max` alone and without decoding a vertex. `npm run trace-prefabs` answers
+what shape it is: it decodes the actual triangles and reports the silhouette on
+each plane band by band, the openings cut through it, and cross-sections through
+its middle — all in metres.
+
+That second tool exists because `src/placeholders.js` has to stand in for the
+art in the open-source build, and a stand-in that misses the hole in a barrier
+is not standing in for much. **It reports numbers and converts nothing.** A
+builder is then written from those numbers out of boxes and cylinders, which is
+a measurement of the artists' work in the same sense the `size` field is —
+unlike voxelising the mesh and shipping the voxels, which would not be. Nothing
+under `src/` contains mesh data.
+
+Two things it cannot help with. `CaptureFlagSpawnPointTeam1` and `Team2` hold
+**no meshes at all** — a node hierarchy and UI, with the flag built at runtime —
+and no other prefab in the dump has flag geometry either. And
+`StreetStylePigeon`'s body is a skinned mesh the export dropped, leaving only
+its hologram shell, which is a couple of centimetres proud of the bird.
+
+The tool also settles which themes genuinely differ. Clustering the traced
+silhouettes puts the 167 catalog entries on 66 shapes: the primitives really are
+one mesh across all eleven themes, while the window barrier has four distinct
+forms — a small centred hole, a wide low one, a full-width letterbox, and a tall
+opening — and the U barrier's notch is open at the top rather than being a hole.
 
 ### Base mesh dimensions
 
@@ -243,6 +407,18 @@ copies that measure slightly smaller than LOD0 because they are simplified.
 Measuring the whole prefab makes every primitive 1.25 m — the drag handles
 stand 0.125 m off each face — which flatly contradicts the one metre confirmed
 above. `BoxSolid`'s actual `SolidCubeModel` is exactly ±0.5.
+
+*A prefab's bounding box is not always where the object stands.*
+`measure-prefabs` reports the pivot as `base`, `center` or `offset`, and the two
+player spawn zones come back `offset`: their `SpawnZoneArea` is a one metre cube
+centred on the origin, running `y = -0.5 .. 0.5`, while every other part of the
+prefab — corner beacons, edge links, the machine — sits at `y = 0`. That cube is
+a volume marker rather than a solid, so `src/packs.js` flattens it to a 10 cm
+translucent slab on the floor and takes the measured height less the half metre
+it used to add: 2.363 m for Team 1, 2.399 m for Team 2, which is the machine.
+Nothing about the file depends on this — the game's own stretcher offers only
+`PosX`, `NegX`, `PosZ` and `NegZ` handles and every zone in the exports is
+scaled `y = 1` exactly.
 
 *The mesh and the unit the game scales are not the same thing.* For a
 floor-resting object with a centre pivot the map files settle the unit exactly,

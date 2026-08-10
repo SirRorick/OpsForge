@@ -124,6 +124,59 @@ label.sw:has(input:checked){color:var(--text)}
 .row .g{font-family:var(--mono);font-size:9.5px;color:var(--accent);flex:none}
 .row.on .g{color:#fff}
 
+/* ---------- inspector tabs ---------- */
+#insp-tabs{display:grid;grid-template-columns:repeat(4,1fr);flex:none;
+  border-bottom:1px solid var(--line);background:var(--panel)}
+.itab{background:transparent;border:0;border-bottom:2px solid transparent;padding:9px 4px 7px;
+  cursor:pointer;font-family:var(--hud);font-size:12.5px;font-weight:600;letter-spacing:.13em;
+  text-transform:uppercase;color:var(--faint)}
+.itab:hover{color:var(--dim);background:var(--panel2)}
+.itab.on{color:var(--accent);border-bottom-color:var(--accent)}
+#inspector .pane[hidden]{display:none}
+
+/* ---------- array tool ---------- */
+.arrgrid{display:grid;grid-template-columns:52px 1fr 1fr;gap:5px 6px;align-items:center}
+.arrh{font-family:var(--hud);font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--faint);text-align:center}
+.arrl{font-family:var(--hud);font-size:11.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--dim)}
+.arrl::before{content:attr(data-a);font-family:var(--mono);font-size:9px;font-weight:600;margin-right:5px}
+.arrl[data-a=X]::before{color:#E06C6C}
+.arrl[data-a=Y]::before{color:#7FD17F}
+.arrl[data-a=Z]::before{color:#6C9BE0}
+
+/* ---------- bot grid ---------- */
+.navtools{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:8px}
+.navtools .btn{padding:5px 4px;font-size:12px}
+.navtools .btn.on{background:var(--green);border-color:var(--green);color:#0A0F14}
+
+/* ---------- outliner: groups and locks ---------- */
+.row .tw{color:var(--accent);font-size:9px;width:10px;flex:none;cursor:pointer}
+.row.grouprow .t{font-weight:600}
+.row.child{padding-left:20px}
+.row.child .t{color:var(--dim)}
+/* A locked object cannot be selected at all, so it reads as out of play. */
+.row.locked .t{color:var(--faint);font-style:italic}
+.row.locked .dot{opacity:.4}
+.lockbtn{background:none;border:0;padding:0 2px;cursor:pointer;font-size:10px;line-height:1;
+  opacity:0;flex:none;filter:grayscale(1)}
+.row:hover .lockbtn{opacity:.75}
+.lockbtn.on{opacity:1;filter:none}
+.lockbtn:hover{opacity:1}
+
+/* ---------- right-click menu ---------- */
+.ctxmenu{position:fixed;z-index:60;min-width:168px;padding:4px;border-radius:6px;
+  background:var(--panel2);border:1px solid var(--line);
+  box-shadow:0 10px 28px rgba(0,0,0,.55)}
+.ctxhead{font-family:var(--hud);font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--faint);padding:4px 8px 6px}
+.ctxsep{height:1px;background:var(--line-soft);margin:4px 2px}
+.ctxmenu button{display:flex;width:100%;align-items:center;justify-content:space-between;gap:14px;
+  background:none;border:0;border-radius:4px;padding:5px 8px;cursor:pointer;
+  font-size:12px;color:var(--text);text-align:left}
+.ctxmenu button:hover:not(:disabled){background:var(--raise);color:var(--accent)}
+.ctxmenu button:disabled{color:var(--faint);cursor:default}
+.ctxmenu kbd{font-family:var(--mono);font-size:9px;background:transparent;border:0;color:var(--faint)}
+
 /* ---------- inspector fields ---------- */
 .field{display:grid;grid-template-columns:58px 1fr;align-items:center;gap:8px;margin-bottom:6px}
 .field>span{font-family:var(--hud);font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
@@ -155,21 +208,82 @@ label.sw:has(input:checked){color:var(--text)}
 .hint{color:var(--faint);font-size:11px;line-height:1.5}
 
 /* ---------- rule sets ---------- */
-#mode-tabs{display:flex;gap:3px;padding:0 12px 9px;flex-wrap:wrap}
-.rule{display:grid;grid-template-columns:1fr 82px;align-items:center;gap:8px;margin-bottom:5px}
+#mode-tabs{display:flex;gap:3px;padding:0 12px 9px;flex-wrap:wrap;align-items:center}
+#mode-tabs .pill .n{display:inline-block;margin-left:6px;padding:0 5px;border-radius:99px;
+  background:var(--accent-dim);color:#14181C;font-family:var(--mono);font-size:9px;line-height:14px}
+#mode-tabs .pill.on .n{background:var(--accent)}
+#mode-tabs .add{background:transparent;border:1px dashed var(--line);border-radius:99px;
+  padding:3px 6px 3px 9px;font-family:var(--hud);font-size:11px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--faint);cursor:pointer;max-width:120px}
+#mode-tabs .add:hover{border-color:var(--accent-dim);color:var(--dim)}
+
+/* The set's own identity — what it is called, what it plays, and the five list
+   operations the in-game rules screen has. */
+.rs-head{display:grid;grid-template-columns:1fr auto;gap:5px;align-items:center;
+  margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid var(--line-soft)}
+.rs-name{width:100%}
+.rs-mode{width:100%;grid-column:1}
+.rs-acts{display:flex;gap:2px;grid-column:2;grid-row:1/3;align-self:stretch;align-items:center}
+.rs-act{background:var(--panel2);border:1px solid var(--line);border-radius:4px;
+  min-width:22px;height:24px;padding:0 5px;cursor:pointer;color:var(--dim);font-size:12px;line-height:1}
+.rs-act:hover:not(:disabled){border-color:var(--accent-dim);color:var(--accent)}
+.rs-act:disabled{opacity:.3;cursor:default}
+.rs-act.danger:hover:not(:disabled){border-color:var(--danger);color:var(--danger)}
+.rs-act.armed{border-color:var(--danger);color:var(--danger);font-size:10px;
+  font-family:var(--hud);letter-spacing:.08em;text-transform:uppercase}
+.rs-warn{font-size:11px;line-height:1.5;color:var(--dim);margin:0 0 10px;padding:7px 9px;
+  background:var(--panel2);border-left:2px solid var(--accent-dim);border-radius:0 4px 4px 0}
+
+.rule{display:grid;grid-template-columns:1fr 88px 14px;align-items:center;gap:8px;margin-bottom:5px}
+.rule.wide{grid-template-columns:1fr}
 .rule>label{font-size:11.5px;color:var(--dim);line-height:1.3}
 .rule.set>label{color:var(--text)}
 .rule.set>label::after{content:"•";color:var(--accent);font-size:14px;margin-left:5px;vertical-align:-1px}
+/* A key nothing the game ever wrote has confirmed — derived from the name of
+   its rule asset. Worth marking, not worth shouting about. */
+.rule>label.derived{text-decoration:underline dotted var(--line);text-underline-offset:3px}
+/* Untouched: the control shows the game's own value, dimmed to say the map is
+   not the one choosing it. */
+.rule.default .val,.rule.default .flagset{opacity:.55}
+/* Switched off by a parent setting, but still holding a value that is still in
+   the file — so it stays on screen, faded, with somewhere to clear it. */
+.rule.off{opacity:.45}
+.rule.off>label::before{content:"⊘ ";color:var(--faint)}
+/* A number the in-game stepper could not have produced. Flagged, never clamped. */
+.rule.bad .val input{border-color:var(--danger);color:var(--danger)}
 .rule .val{display:flex;align-items:center;gap:5px;justify-content:flex-end}
 .rule .val input[type=number],.rule .val input[type=text]{width:100%;text-align:right}
+.rule .val select{width:100%;min-width:0}
+.rule .val.dur input{width:100%;min-width:0}
+.rule .val input::placeholder{color:var(--faint);font-style:italic}
 .rule .val .u{font-family:var(--mono);font-size:9.5px;color:var(--faint);flex:none}
 .rule .val input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px;margin:0 34px 0 0}
+.rule .clear{background:none;border:0;padding:0;width:14px;line-height:1;cursor:pointer;
+  color:var(--faint);font-size:15px}
+.rule .clear:hover{color:var(--accent)}
+.rule .clear:disabled{visibility:hidden;cursor:default}
 .rule-cat{font-family:var(--hud);font-size:11px;letter-spacing:.16em;text-transform:uppercase;
   color:var(--faint);margin:12px 0 6px;padding-top:8px;border-top:1px solid var(--line-soft)}
 .rule-cat:first-child{margin-top:0;padding-top:0;border-top:0}
-.flagset{display:flex;gap:10px;flex-wrap:wrap;margin:2px 0 8px}
-.flagset label{display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--dim);cursor:pointer}
-.flagset input{accent-color:var(--accent);width:13px;height:13px}
+.rule-cat em{font-style:normal;letter-spacing:0;text-transform:none;font-family:var(--sans);
+  font-size:10px;color:var(--faint);margin-left:7px;opacity:.8}
+
+/* Flags: a set, drawn as the set it is. */
+.flagset{margin:2px 0 9px}
+.flagbar{display:flex;gap:4px;align-items:center;margin-bottom:5px}
+.flagpick{background:var(--panel2);border:1px solid var(--line);border-radius:99px;
+  padding:2px 9px;cursor:pointer;font-family:var(--hud);font-size:10px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--faint)}
+.flagpick:hover{border-color:var(--accent-dim);color:var(--dim)}
+.flagpick.on{border-color:var(--accent);color:var(--accent)}
+.flagbar .clear{margin-left:auto;background:none;border:0;padding:0;cursor:pointer;
+  color:var(--faint);font-size:15px;line-height:1}
+.flagbar .clear:hover{color:var(--accent)}
+.flagbar .clear:disabled{visibility:hidden;cursor:default}
+.flagrow{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+.flagopt{display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--dim);cursor:pointer}
+.flagopt.on{color:var(--text)}
+.flagopt input{accent-color:var(--accent);width:13px;height:13px}
 kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px solid var(--line);
   border-radius:3px;padding:1px 4px;color:var(--dim)}
 
@@ -215,6 +329,7 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
     </div>
 
     <div class="grp">
+      <button class="btn" id="m-combined" title="Move, rotate and scale in one gizmo (Q)">All</button>
       <button class="btn" id="m-translate" title="Move (W)">Move</button>
       <button class="btn" id="m-rotate" title="Rotate (E)">Rotate</button>
       <button class="btn" id="m-scale" title="Scale (R)">Scale</button>
@@ -231,6 +346,17 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
     <div class="grp">
       <label class="sw" title="Scale all axes together"><input type="checkbox" id="uniform" checked>Uniform</label>
       <label class="sw" title="Keep floor pieces resting on the ground"><input type="checkbox" id="floorlock" checked>Floor</label>
+      <label class="sw" title="Draw the built-in stand-in shapes instead of the game's own models, to check them against each other"><input type="checkbox" id="placeholders">Stand-ins</label>
+    </div>
+
+    <div class="grp">
+      <button class="btn ghost" id="b-mirror" title="Copy the selection to the other side of the map">Mirror</button>
+      <select id="mirror-axis" style="width:52px" title="Which way to mirror">
+        <option value="x">X</option><option value="z">Z</option>
+      </select>
+      <select id="mirror-pack" style="width:104px" title="Draw the mirrored copy from another theme">
+        <option value="">Same pack</option>
+      </select>
     </div>
 
     <div class="grp" style="margin-left:auto">
@@ -271,7 +397,14 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
 
   <!-- ---------------- inspector ---------------- -->
   <aside id="inspector">
-    <div class="scroll">
+    <div id="insp-tabs">
+      <button class="itab on" data-pane="build" title="What you are building with">Build</button>
+      <button class="itab" data-pane="world" title="The arena and the bot grid">World</button>
+      <button class="itab" data-pane="rules" title="Game mode rule sets">Rules</button>
+      <button class="itab" data-pane="map" title="Name, id and shortcuts">Map</button>
+    </div>
+
+    <div class="scroll pane" id="pane-build">
 
       <div class="sec">
         <h2>Selection <span class="cnt" id="sel-count">none</span></h2>
@@ -279,9 +412,34 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
       </div>
 
       <div class="sec">
-        <h2>Objects <span class="cnt" id="obj-count">0</span></h2>
-        <div id="outliner" style="max-height:210px;overflow-y:auto"></div>
+        <h2>Array <span class="cnt" id="arr-count"></span></h2>
+        <div class="pad">
+          <div class="arrgrid">
+            <span></span><span class="arrh">Count</span><span class="arrh">Spacing</span>
+            <span class="arrl" data-a="X">Across</span>
+            <input type="number" id="arr-nx" value="1" min="1" max="100" step="1">
+            <input type="number" id="arr-dx" value="1" step="0.05">
+            <span class="arrl" data-a="Y">Up</span>
+            <input type="number" id="arr-ny" value="1" min="1" max="100" step="1">
+            <input type="number" id="arr-dy" value="1" step="0.05">
+            <span class="arrl" data-a="Z">Deep</span>
+            <input type="number" id="arr-nz" value="1" min="1" max="100" step="1">
+            <input type="number" id="arr-dz" value="1" step="0.05">
+          </div>
+          <button class="btn ghost" id="b-array" style="width:100%;margin-top:8px">Array</button>
+          <p class="hint" style="margin-top:7px">Spacing starts at the selection's own size, so copies sit flush.
+            Widen it for gaps. Steps follow the object's own axes, so a turned piece arrays along its face.</p>
+        </div>
       </div>
+
+      <div class="sec">
+        <h2>Objects <span class="cnt" id="obj-count">0</span></h2>
+        <div id="outliner" style="max-height:300px;overflow-y:auto"></div>
+      </div>
+
+    </div>
+
+    <div class="scroll pane" id="pane-world" hidden>
 
       <div class="sec">
         <h2>Arena</h2>
@@ -298,23 +456,44 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
       </div>
 
       <div class="sec">
-        <h2>Play space</h2>
+        <h2>Bot grid <span class="cnt" id="nav-count"></span></h2>
         <div class="pad">
-          <div class="field"><span>Shape</span>
+          <div class="navtools">
+            <button class="btn ghost" id="nav-add" title="Paint walkable ground">Add</button>
+            <button class="btn ghost" id="nav-remove" title="Paint it back out">Remove</button>
+            <button class="btn ghost" id="nav-clear" title="Wipe the whole grid">Clear all</button>
+          </div>
+          <div class="field"><span>Brush</span>
+            <select id="nav-brush">
+              <option value="0.25">0.25 m</option>
+              <option value="0.5" selected>0.5 m</option>
+              <option value="1">1 m</option>
+              <option value="2">2 m</option>
+            </select>
+          </div>
+          <div class="field"><span>Fill</span>
             <select id="nav-shape"><option value="keep">Keep from file</option><option value="circle">Circle</option><option value="rect">Rectangle</option></select>
           </div>
           <div class="field" id="nav-r-row"><span>Radius</span><input type="number" id="nav-r" value="5" min="1" max="17" step="0.25"></div>
           <div class="field" id="nav-w-row" style="display:none"><span>Width</span><input type="number" id="nav-w" value="7" min="1" max="34" step="0.25"></div>
           <div class="field" id="nav-d-row" style="display:none"><span>Depth</span><input type="number" id="nav-d" value="7" min="1" max="34" step="0.25"></div>
-          <p class="hint">The green outline is the physical room the player walks in, captured by the headset. Leave it as it came unless you know you want to change it.</p>
+          <p class="hint">The green outline is the ground the bots are allowed to walk on. With a brush picked up, the left button paints on the floor instead of selecting. Untouched maps keep theirs byte for byte.</p>
         </div>
       </div>
 
-      <div class="sec">
+    </div>
+
+    <div class="scroll pane" id="pane-rules" hidden>
+
+      <div class="sec" style="border-bottom:0">
         <h2>Rules <span class="cnt" id="rules-count"></span></h2>
         <div id="mode-tabs"></div>
         <div class="pad" id="rules-body"></div>
       </div>
+
+    </div>
+
+    <div class="scroll pane" id="pane-map" hidden>
 
       <div class="sec">
         <h2>Map</h2>

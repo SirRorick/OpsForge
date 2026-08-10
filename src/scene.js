@@ -5,13 +5,17 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
+import { ComboGizmo } from './gizmo.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { geometryFor } from './placeholders.js';
 import { defFor, modelUrl, iconUrl } from './catalog.js';
-import { WEAPON_ICONS, WEAPON_ANY, parseWeapons } from './packs.js';
+import {
+  WEAPON_ICONS, WEAPON_ANY, parseWeapons,
+  ENEMY_ICONS, ENEMY_MODELS, ENEMY_TYPES, ENEMY_ANY, parseEnemyTypes,
+} from './packs.js';
 import { convertPosition, unityEulerToQuat, quatToUnityEuler } from './unity.js';
-import { decodeNavCloud, navIndexToWorld } from './format.js';
+import { decodeNavCloud, navIndexToWorld, NAV_SPACING } from './format.js';
 
 const ACCENT = 0xe8c547;
 const CYAN = 0x4ec9e0;
@@ -23,22 +27,22 @@ const warnedModels = new Set();
 // `vfx` covers the runtime effects the spawners carry: the weapon spawner's
 // SpawnBoxVFX holds a single-sided LightQuad two metres by four, which reads as
 // a pane hanging in the air that vanishes when you orbit past it.
+// `*Hologram` is included on the evidence of the meshes themselves: every one
+// in the dump is a shell of the object it sits on, a centimetre proud of the
+// surface and wearing MATTerminalSpawn, which carries neither a texture nor a
+// colour. HandgunBotSpawnerHologram inside EnemySpawnPoint looked from its name
+// like the exception — a preview of the bot that spawns there — and was kept
+// for a while on that reading. It is not: it measures 1.08 x 0.30 x 1.08
+// against the pad's 1.06 x 0.29 x 1.06, so it is the pad's own shell, and being
+// colourless it took the catalog's red and hid the textured pad underneath it.
+// The prefab's BotPreview node holds no mesh at all; the figure is a separate
+// prefab, loaded by `_refreshFigure` below.
 const FURNITURE = /manipulator|collider|hologram|ghost|outline|lockspawner|vfx/i;
-
-/**
- * The one hologram worth keeping. Every other `*Hologram*` is a shell of the
- * object it sits on, a couple of centimetres proud of the surface; the enemy
- * spawner's is a different thing entirely — a preview of the bot that will
- * spawn there, standing on the pad, which is the only figure the prefab has.
- */
-const BOT_PREVIEW = /bot.*hologram/i;
 
 /** True when the node, or any ancestor, is editor furniture rather than art. */
 function isFurniture(node) {
   for (let n = node; n; n = n.parent) {
-    const name = n.name || '';
-    if (BOT_PREVIEW.test(name)) return false;
-    if (FURNITURE.test(name)) return true;
+    if (FURNITURE.test(n.name || '')) return true;
   }
   return false;
 }
@@ -135,19 +139,52 @@ function displayMaterial(material, tint, opacity = 1, force = false, cut = false
   return out;
 }
 
+/** Largest value a normalised attribute of this type can hold: its "1.0". */
+const FULL_SCALE = new Map([
+  [Int8Array, 127], [Uint8Array, 255], [Int16Array, 32767], [Uint16Array, 65535],
+]);
+
+const matchesTemplate = (attr, template) =>
+  attr && attr.itemSize === template.itemSize
+  && attr.array.constructor === template.array.constructor
+  && attr.normalized === template.normalized;
+
+/**
+ * A vertex colour of "no change", in whatever form the prefab already uses.
+ *
+ * mergeGeometries needs every part to agree on the array *type* of an
+ * attribute, not just its item count, and the prefabs do not agree: a player
+ * spawn zone mixes parts carrying a normalised Uint8 colour with parts carrying
+ * none. Substituting a Float32 white for the missing ones failed the merge, and
+ * the fallback below then drew the whole spawn machine as whichever single mesh
+ * had the most vertices — its pillar, without the dish on top.
+ */
+function neutralColour(template, count) {
+  const Kind = template.array.constructor;
+  const white = template.normalized ? (FULL_SCALE.get(Kind) ?? 1) : 1;
+  const attr = new THREE.BufferAttribute(
+    new Kind(count * template.itemSize).fill(white), template.itemSize);
+  attr.normalized = template.normalized;
+  return attr;
+}
+
 /**
  * One geometry for the whole prefab. Merging needs every part to carry the same
  * attributes, which is not guaranteed across a prefab's meshes, so trim each to
  * position and normal first; if a merge still fails, the largest single part is
  * a better stand-in than nothing.
+ *
+ * `opacity` is the object's, and a part may override it with its own — one draw
+ * group per part means a prefab can hold a translucent volume and a solid
+ * machine at once, which is exactly what a player spawn zone is.
  */
 function mergeForDisplay(parts, tint, opacity, force, cut) {
+  const opacityOf = (p) => p.opacity ?? opacity;
   // Some prefabs carry vertex colours on the visible mesh and not on the rest —
   // the solid primitives do, the props do not. GLTFLoader turns that into
   // material.vertexColors, so a part that loses the attribute renders black.
   // Anything missing one gets opaque white, which multiplies to no change.
-  const colours = parts.map(({ geometry }) => geometry.getAttribute('color'));
-  const colourSize = colours.find(Boolean)?.itemSize ?? 0;
+  const template = parts.map(({ geometry }) => geometry.getAttribute('color')).find(Boolean);
 
   const trimmed = parts.map(({ geometry }, i) => {
     // Non-indexed throughout, or a mix of indexed and not refuses to merge.
@@ -161,12 +198,11 @@ function mergeForDisplay(parts, tint, opacity, force, cut) {
     // are the ones whose material has no map to sample anyway.
     const uv = g.getAttribute('uv');
     out.setAttribute('uv', uv ?? new THREE.BufferAttribute(new Float32Array(position.count * 2), 2));
-    if (colourSize) {
+    if (template) {
       const colour = g.getAttribute('color');
-      out.setAttribute('color', colour && colour.itemSize === colourSize
+      out.setAttribute('color', matchesTemplate(colour, template)
         ? colour
-        : new THREE.BufferAttribute(
-          new Float32Array(position.count * colourSize).fill(1), colourSize));
+        : neutralColour(template, position.count));
     }
     if (!normal) out.computeVertexNormals();
     return out;
@@ -175,13 +211,57 @@ function mergeForDisplay(parts, tint, opacity, force, cut) {
     // useGroups keeps one draw group per part, so the prefab's own materials
     // survive as a material array and the object arrives textured.
     const merged = mergeGeometries(trimmed, true);
-    if (merged) return { geometry: merged, materials: parts.map((p) => displayMaterial(p.material, tint, opacity, force, cut)) };
+    if (merged) {
+      return {
+        geometry: merged,
+        materials: parts.map((p) => displayMaterial(p.material, tint, opacityOf(p), force, cut)),
+      };
+    }
   } catch { /* fall through to the largest part */ }
   let best = 0;
   trimmed.forEach((g, i) => {
     if (g.getAttribute('position').count > trimmed[best].getAttribute('position').count) best = i;
   });
-  return { geometry: trimmed[best], materials: displayMaterial(parts[best].material, tint, opacity, force, cut) };
+  return {
+    geometry: trimmed[best],
+    materials: displayMaterial(parts[best].material, tint, opacityOf(parts[best]), force, cut),
+  };
+}
+
+/**
+ * Flatten the parts of a prefab that draw a volume rather than a solid.
+ *
+ * A player spawn zone ships as a one metre cube centred on the object's origin.
+ * It marks the area a team spawns in; it is not a wall, and drawn as one it
+ * hides everything inside it and drags the rest of the prefab half a metre off
+ * the floor when the whole thing is seated. The named parts are remapped
+ * together onto [0, height] so the slab rests on the floor exactly, and are
+ * handed the area's own opacity so the solid parts stay solid.
+ *
+ * The parts are remapped as one group rather than each on its own: the zone's
+ * four floor quads are flat, and normalising a zero-height part individually
+ * would divide by nothing and lose where it sat relative to the cube.
+ */
+function flattenArea(area, parts) {
+  if (!area?.parts) return parts;
+  const re = new RegExp(area.parts, 'i');
+  const marked = new Set(parts.filter((p) => re.test(p.path)));
+  if (!marked.size || marked.size === parts.length) return parts;
+
+  const box = new THREE.Box3();
+  for (const p of marked) {
+    box.union(new THREE.Box3().setFromBufferAttribute(p.geometry.getAttribute('position')));
+  }
+  const span = box.max.y - box.min.y;
+  const scale = span > 1e-6 ? (area.height ?? 0.1) / span : 1;
+
+  return parts.map((p) => {
+    if (!marked.has(p)) return p;
+    const geometry = p.geometry.clone();
+    geometry.translate(0, -box.min.y, 0);
+    geometry.scale(1, scale, 1);
+    return { ...p, geometry, opacity: area.opacity ?? 1 };
+  });
 }
 
 export class Viewport extends EventTarget {
@@ -193,8 +273,14 @@ export class Viewport extends EventTarget {
     this.uniformScale = true;
     this.floorLock = true;
     this.snap = { translate: 0.25, rotate: 15, scale: 0 };
-    this.gizmoMode = 'translate';
+    // The combined gizmo is the one you get on a fresh selection; Move, Rotate
+    // and Scale switch to the single-purpose ones.
+    this.gizmoMode = 'combined';
     this.gizmoSpace = 'world';
+    // Draw the procedural stand-ins even when the real prefabs are on disk, so
+    // the two can be compared. Off by default: the real art is better when it
+    // is there.
+    this.usePlaceholders = false;
     this.placing = null;
     this._pointer = null;
     this._nextId = 1;
@@ -203,6 +289,8 @@ export class Viewport extends EventTarget {
     this._modelCache = new Map();
     this._badges = new Map();
     this._fixedParts = new Map();
+    this._figures = new Map();
+    this._figureCache = new Map();
     this._gltf = new GLTFLoader();
 
     this._initRenderer();
@@ -257,12 +345,41 @@ export class Viewport extends EventTarget {
     );
     this.ground.rotation.x = -Math.PI / 2;
     this.ground.receiveShadow = true;
+    // Two millimetres under the floor rather than on it. A domination zone is a
+    // flat quad at exactly y = 0 and was fighting this plane for the same
+    // pixels; dropping the shadow catcher below the floor leaves y = 0 to the
+    // objects that actually sit there.
+    this.ground.position.y = -0.002;
     this.scene.add(this.ground);
 
+    // Everything that lives at floor level is coplanar with everything else at
+    // floor level, and the depth buffer cannot separate them — which is what
+    // made the grid strobe against the shadow plane and the domination rings
+    // strobe against both. So the ground layers are stacked in a few
+    // millimetres, smallest first, and none of them writes depth.
     this.grid = new THREE.GridHelper(40, 160, 0x2f4553, 0x1c2831);
     this.grid.material.transparent = true;
     this.grid.material.opacity = 0.75;
+    this.grid.material.depthWrite = false;
+    this.grid.position.y = -0.006;
+    this.grid.renderOrder = -2;
     this.scene.add(this.grid);
+
+    // A bolder cross through the middle of the arena, so the halfway line is
+    // findable when building something symmetrical. Sized in setBounds.
+    //
+    // Thin quads rather than lines: WebGL ignores `linewidth` on every desktop
+    // driver, so a LineBasicMaterial cannot be made any heavier than the grid
+    // it has to stand out from. A three centimetre strip can.
+    this.centreLines = new THREE.Mesh(
+      new THREE.BufferGeometry(),
+      new THREE.MeshBasicMaterial({
+        color: 0x5f8ba4, transparent: true, opacity: 0.9, depthWrite: false, side: THREE.DoubleSide,
+      })
+    );
+    this.centreLines.position.y = -0.004;
+    this.centreLines.renderOrder = -1;
+    this.scene.add(this.centreLines);
 
     this.boundsGroup = new THREE.Group();
     this.scene.add(this.boundsGroup);
@@ -295,15 +412,25 @@ export class Viewport extends EventTarget {
       typeof this.gizmo.getHelper === 'function' ? this.gizmo.getHelper() : this.gizmo;
     this.scene.add(this._gizmoHelper);
 
-    this.gizmo.addEventListener('dragging-changed', (e) => {
+    // The combined gizmo does move, rotate and scale at once. It speaks the
+    // same two events, so both go through one pair of handlers and everything
+    // downstream — snapping, floor lock, the scale anchor — is shared.
+    this.combo = new ComboGizmo(this.camera, this.canvas);
+    this.scene.add(this.combo);
+
+    const onDragChange = (e) => {
       this.orbit.enabled = !e.value;
       if (e.value) this._beginDrag();
       else this._endDrag();
-    });
-    this.gizmo.addEventListener('objectChange', () => {
+    };
+    const onObjectChange = () => {
       this._constrainDuringDrag();
       this.emit('transform');
-    });
+    };
+    for (const g of [this.gizmo, this.combo]) {
+      g.addEventListener('dragging-changed', onDragChange);
+      g.addEventListener('objectChange', onObjectChange);
+    }
 
     addEventListener('keydown', (e) => {
       if (e.key === 'Alt') this.orbit.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
@@ -363,9 +490,41 @@ export class Viewport extends EventTarget {
     mesh.scale.set(mo.scale.x, mo.scale.y, mo.scale.z);
     this.scene.add(mesh);
     this.objects.push(mesh);
-    this._refreshWeaponBadge(mesh);
-    if (def.model) this._swapInModel(mesh, def);
+    this._refreshBadge(mesh);
+    this._refreshFigure(mesh);
+    if (def.model && !this.usePlaceholders) this._swapInModel(mesh, def);
     return mesh;
+  }
+
+  /**
+   * Swap the whole scene between the real prefabs and the procedural
+   * placeholders. The placeholders are what the open-source build ships, and
+   * the only way to tell whether one of them resembles the piece it stands in
+   * for is to look at both in the same viewport.
+   *
+   * Geometry and material only — nothing about the map changes, so this cannot
+   * dirty an object or move it.
+   */
+  setUsePlaceholders(on) {
+    const next = !!on;
+    if (next === this.usePlaceholders) return;
+    this.usePlaceholders = next;
+    for (const mesh of this.objects) {
+      const def = mesh.userData.def;
+      if (!def.model) continue;
+      if (next) {
+        this._dropFixedPart(mesh);
+        mesh.geometry = geometryFor(def);
+        mesh.material = this.materialFor(def);
+        const figure = this._figures.get(mesh)?.child;
+        if (figure) figure.position.y = mesh.geometry.boundingBox.max.y;
+        this._refreshOutline(mesh);
+      } else {
+        this._swapInModel(mesh, def);
+      }
+    }
+    this.rebuildPivot();
+    this.emit('change');
   }
 
   /**
@@ -421,6 +580,114 @@ export class Viewport extends EventTarget {
     }
   }
 
+  // -- spawned figure --------------------------------------------------------
+  // An enemy spawner is a bare metal pad. What tells one apart from another is
+  // what walks off it, and the dump ships a textured figure of every enemy —
+  // `<Enemy>BotSpawner.glb`, a 1.7 m humanoid for the gun bots, a hovering
+  // drone or a chopper for the other two. Standing one on the pad is the whole
+  // difference between "a spawner" and "a sniper spawner".
+  //
+  // A child of the object rather than a mesh merged into it: the figure changes
+  // whenever the user reticks the enemy list, and it must not join the pad's
+  // outline or its picking geometry. It does inherit the object's scale, which
+  // is right — a pad stretched to twice the size is drawn with a bot to match.
+
+  /** Build or replace the figure standing on one spawner. */
+  _refreshFigure(mesh) {
+    const def = mesh.userData.def;
+    if (def?.figure !== 'enemy') {
+      this._dropFigure(mesh);
+      return;
+    }
+    // Several ticked types means the game picks one at random each spawn, so
+    // any of them is an honest illustration; take the first in library order,
+    // which makes "All" show a handgun bot — the enemy the prefab itself names.
+    const chosen = parseEnemyTypes(mesh.userData.props?.enemyTypes);
+    const type = ENEMY_TYPES.find((t) => chosen.includes(t)) ?? chosen[0];
+    const model = ENEMY_MODELS[type];
+    const current = this._figures.get(mesh);
+    if (current?.model === model) return;
+    this._dropFigure(mesh);
+    if (!model) return;
+
+    // The load is async and the user can retick faster than it resolves, so the
+    // token says whether this answer is still the one being waited for.
+    const token = {};
+    this._figures.set(mesh, { model, token, child: null });
+    this._loadFigure(model).then((built) => {
+      const entry = this._figures.get(mesh);
+      if (!built || entry?.token !== token || !mesh.parent) return;
+      const child = new THREE.Mesh(built.geometry, built.materials);
+      child.castShadow = true;
+      child.receiveShadow = true;
+      // On top of the pad, in the object's own unscaled space.
+      mesh.geometry.computeBoundingBox();
+      child.position.y = mesh.geometry.boundingBox.max.y;
+      mesh.add(child);
+      entry.child = child;
+      this.emit('change');
+    });
+  }
+
+  /** One merged, floor-seated geometry per enemy prefab. */
+  async _loadFigure(model) {
+    if (!this._figureCache.has(model)) {
+      this._figureCache.set(model, (async () => {
+        const url = modelUrl({ model });
+        try {
+          const parts = await this._prefabParts(url);
+          if (!parts.length) return null;
+          // No tint: these prefabs are fully textured, and a tint would only
+          // ever reach a part that shipped without art.
+          const built = mergeForDisplay(parts, null, 1, false, false);
+          built.geometry.computeBoundingBox();
+          // Drone and chopper hover in their own prefabs; only the ground is
+          // moved, so whatever height the artists gave them is kept.
+          built.geometry.translate(0, -built.geometry.boundingBox.min.y, 0);
+          built.geometry.computeBoundingBox();
+          return built;
+        } catch (err) {
+          if (!warnedModels.has(model)) {
+            warnedModels.add(model);
+            console.warn(`No figure at ${url}, drawing the pad bare.`, err.message ?? err);
+          }
+          return null;
+        }
+      })());
+    }
+    return this._figureCache.get(model);
+  }
+
+  _dropFigure(mesh) {
+    const entry = this._figures.get(mesh);
+    if (!entry) return;
+    entry.child?.removeFromParent();
+    this._figures.delete(mesh);
+  }
+
+  /**
+   * Every part of a prefab worth drawing, baked into the prefab's own space.
+   *
+   * Most of a prefab is not the object: drag handles, a hologram shell a couple
+   * of centimetres proud of the surface, collider proxies, an outline, and
+   * lower LODs. Including them makes every primitive 1.25 m. See
+   * tools/measure-prefabs.mjs, which filters identically.
+   */
+  async _prefabParts(url) {
+    const gltf = await this._gltf.loadAsync(url);
+    const found = [];
+    gltf.scene.updateWorldMatrix(true, true);
+    gltf.scene.traverse((n) => {
+      if (!n.isMesh || isFurniture(n) || lowerLod(n)) return;
+      const geometry = n.geometry.clone();
+      geometry.applyMatrix4(n.matrixWorld);
+      const path = [];
+      for (let p = n; p; p = p.parent) path.unshift(p.name || '');
+      found.push({ geometry, material: n.material, path: path.join('/') });
+    });
+    return found;
+  }
+
   /**
    * Replace the placeholder with the real prefab mesh, if the asset dump is
    * present. It is gitignored and optional, so a miss keeps the placeholder and
@@ -433,29 +700,15 @@ export class Viewport extends EventTarget {
       // Two entries can share a prefab and not a pivot, and the normalisation
       // below depends on both.
       const cacheKey = `${def.model}|${def.pivot}|${def.size[1]}|${def.color}|${def.opacity ?? 1}` +
-        `|${def.tintModel}|${def.fixedParts ?? ''}|${def.cutout}`;
+        `|${def.tintModel}|${def.fixedParts ?? ''}|${def.cutout}|${JSON.stringify(def.area ?? null)}`;
       let model = this._modelCache.get(cacheKey);
       if (!model) {
-        const gltf = await this._gltf.loadAsync(url);
-        const found = [];
-        gltf.scene.updateWorldMatrix(true, true);
-        gltf.scene.traverse((n) => {
-          // Most of a prefab is not the object: drag handles, a hologram shell
-          // a couple of centimetres proud of the surface, collider proxies, an
-          // outline, and lower LODs. Including them makes every primitive
-          // 1.25 m. See tools/measure-prefabs.mjs, which filters identically.
-          if (!n.isMesh || isFurniture(n) || lowerLod(n)) return;
-          const geometry = n.geometry.clone();
-          geometry.applyMatrix4(n.matrixWorld);
-          const path = [];
-          for (let p = n; p; p = p.parent) path.unshift(p.name || '');
-          found.push({ geometry, material: n.material, path: path.join('/') });
-        });
+        const found = await this._prefabParts(url);
         if (!found.length) return;
 
         const { scaled, fixed } = this._splitFixedPart(mesh, def, found);
-        const whole = mergeForDisplay(scaled, def.color, def.opacity ?? 1, def.tintModel === true,
-          def.cutout === true);
+        const whole = mergeForDisplay(flattenArea(def.area, scaled), def.color, def.opacity ?? 1,
+          def.tintModel === true, def.cutout === true);
         // Seat on the floor using the whole object's extent, then move the
         // fixed part by the same amount so it does not drift off the area.
         const before = new THREE.Box3().setFromBufferAttribute(
@@ -469,6 +722,9 @@ export class Viewport extends EventTarget {
       mesh.geometry = model.geometry;
       mesh.material = model.materials;
       this._attachFixedPart(mesh, def, model.fixed, model.dropY);
+      // The pad the figure stands on just changed height under it.
+      const figure = this._figures.get(mesh)?.child;
+      if (figure) figure.position.y = model.geometry.boundingBox.max.y;
       this._refreshOutline(mesh);
       this.emit('change');
     } catch (err) {
@@ -482,9 +738,9 @@ export class Viewport extends EventTarget {
   removeObjects(meshes) {
     for (const m of meshes) {
       this._setOutline(m, false);
-      this._dropWeaponBadge(m);
+      this._dropBadge(m);
       this._dropFixedPart(m);
-      this._dropFixedPart(m);
+      this._dropFigure(m);
       m.removeFromParent();
       const i = this.objects.indexOf(m);
       if (i >= 0) this.objects.splice(i, 1);
@@ -499,7 +755,9 @@ export class Viewport extends EventTarget {
     if (this.placing) this._endPlacement(false);
     this.setSelection([]);
     for (const m of this.objects) {
-      this._dropWeaponBadge(m);
+      this._dropBadge(m);
+      this._dropFixedPart(m);
+      this._dropFigure(m);
       m.removeFromParent();
     }
     this.objects.length = 0;
@@ -543,16 +801,29 @@ export class Viewport extends EventTarget {
       mesh.geometry = geometryFor(def);
       mesh.material = this.materialFor(def);
       this._refreshOutline(mesh);
+      if (def.model) this._swapInModel(mesh, def);
     }
-    this._refreshWeaponBadge(mesh);
+    this._refreshBadge(mesh);
+    this._refreshFigure(mesh);
     this.markDirty(mesh);
     this.emit('change');
   }
 
   // -- selection ------------------------------------------------------------
 
+  /**
+   * A locked object cannot be selected, which is the whole of how locking is
+   * enforced. Every way to move, rotate, scale, drop, nudge or delete something
+   * goes through the selection, so keeping locked objects out of it means there
+   * is exactly one guard rather than one per operation — and no path that
+   * quietly forgot about it.
+   *
+   * Getting it unlocked again therefore cannot go through the selection either.
+   * Right-clicking the object reaches it (`pickAt` ignores the lock) and so
+   * does the padlock beside its row in the outliner.
+   */
   setSelection(list) {
-    const next = new Set(list);
+    const next = new Set([...list].filter((m) => !m.userData.locked));
     for (const m of this.selection) if (!next.has(m)) this._setOutline(m, false);
     for (const m of next) if (!this.selection.has(m)) this._setOutline(m, true);
     this.selection = next;
@@ -562,6 +833,24 @@ export class Viewport extends EventTarget {
 
   selectAll() {
     this.setSelection(this.objects);
+  }
+
+  setLocked(meshes, locked) {
+    for (const m of meshes) m.userData.locked = !!locked;
+    if (locked) this.setSelection([...this.selection].filter((m) => !m.userData.locked));
+    this.emit('selection');
+    this.emit('change');
+  }
+
+  /**
+   * The object under a screen point, lock and grouping ignored. The context
+   * menu needs this: a locked object has to be reachable by the one gesture
+   * that can unlock it.
+   */
+  pickAt(ndcPoint) {
+    this.ray.setFromCamera(ndcPoint, this.camera);
+    const hits = this.ray.intersectObjects(this.objects, true);
+    return this._ownerOf(hits.find((h) => h.object.isMesh)?.object) || null;
   }
 
   /** Expand a click to its whole group, unless the user is overriding. */
@@ -616,6 +905,9 @@ export class Viewport extends EventTarget {
 
     if (!this.selection.size) {
       this.gizmo.detach();
+      // The combined one too. It used to be left attached here, so it hung in
+      // the air over nothing after a deselect.
+      this.combo.detach();
       return;
     }
     const list = [...this.selection];
@@ -636,21 +928,38 @@ export class Viewport extends EventTarget {
     this.pivot.updateMatrixWorld(true);
     for (const m of list) this.pivot.attach(m);
 
-    this.gizmo.attach(this.pivot);
+    if (this.gizmoMode === 'combined') {
+      this.gizmo.detach();
+      this.combo.attach(this.pivot);
+    } else {
+      this.combo.detach();
+      this.gizmo.attach(this.pivot);
+    }
     this._applyGizmoConstraints();
   }
 
   setGizmoMode(mode) {
     this.gizmoMode = mode;
-    this.gizmo.setMode(mode);
-    this._applyGizmoConstraints();
+    if (mode !== 'combined') this.gizmo.setMode(mode);
+    this.rebuildPivot();
     this.emit('mode');
   }
 
   setGizmoSpace(space) {
     this.gizmoSpace = space;
     this.gizmo.setSpace(space);
+    this.combo.space = space;
     this.emit('mode');
+  }
+
+  /**
+   * Which of the three a drag is actually doing. TransformControls is in one
+   * mode at a time and says so; the combined gizmo only knows once a handle has
+   * been grabbed. `_beginDrag` needs the answer to decide whether to capture a
+   * scale anchor.
+   */
+  _activeMode() {
+    return this.gizmoMode === 'combined' ? this.combo.activeMode : this.gizmoMode;
   }
 
   _applyGizmoConstraints() {
@@ -667,6 +976,16 @@ export class Viewport extends EventTarget {
     this.gizmo.rotationSnap = this.snap.rotate ? THREE.MathUtils.degToRad(this.snap.rotate) : null;
     this.gizmo.scaleSnap = this.snap.scale || null;
     this.gizmo.setSpace(this.gizmoSpace);
+
+    // The combined gizmo keeps its move and scale arms on whatever the piece
+    // allows and drops only the rotation arcs it may not turn about, so a
+    // yaw-only object still shows two of its three arcs' worth of handles.
+    this.combo.translationSnap = this.snap.translate || null;
+    this.combo.rotationSnap = this.snap.rotate ? THREE.MathUtils.degToRad(this.snap.rotate) : null;
+    this.combo.scaleSnap = this.snap.scale || null;
+    this.combo.space = this.gizmoSpace;
+    this.combo.uniform = this.uniformScale;
+    this.combo.showRotate = { x: !yawOnly, y: true, z: !yawOnly };
   }
 
   setSnap(part, value) {
@@ -677,11 +996,12 @@ export class Viewport extends EventTarget {
 
   _beginDrag() {
     this._dragStartScale = this.pivot.scale.clone();
+    this._scaleAnchor = this._activeMode() === 'scale' ? this._captureScaleAnchor() : null;
     this.emit('commit-begin');
   }
 
   _constrainDuringDrag() {
-    if (this.gizmoMode === 'scale') {
+    if (this._activeMode() === 'scale') {
       // A rotated child under a non-uniformly scaled parent shears, which no
       // position/rotation/scale triple can represent. Forcing uniform scale on
       // multi-selects keeps the export honest.
@@ -694,8 +1014,125 @@ export class Viewport extends EventTarget {
         for (const v of r) if (Math.abs(v - 1) > Math.abs(best - 1)) best = v;
         s.set(s0.x * best, s0.y * best, s0.z * best);
       }
+      this._applyScaleAnchor();
     }
     if (this.floorLock) this._applyFloorLock();
+  }
+
+  // -- scale anchoring -------------------------------------------------------
+  // TransformControls scales about the object's origin, so a crate shrinks away
+  // from every face at once: pull the right-hand handle in and the left-hand
+  // face comes with it, and shrink a centre-pivot box standing on the floor and
+  // it ends up hanging in the air. The side you are not dragging should stay
+  // exactly where it is, which is what the game's own stretcher does — its
+  // spawn zones carry PosX, NegX, PosZ and NegZ handles, one per edge.
+
+  /**
+   * Bounding box of the selection's own geometry in pivot-local space.
+   *
+   * Its own geometry, not `setFromObject`: the machine on a spawn zone and the
+   * bot on an enemy spawner are children, and anchoring to the top of a two
+   * metre machine rather than the floor pad it stands on would be wrong. Exact
+   * under rotation, because the corners are transformed rather than a world
+   * AABB being squeezed back into local space.
+   */
+  _selectionLocalBox() {
+    const box = new THREE.Box3();
+    const toLocal = new THREE.Matrix4();
+    const corner = new THREE.Vector3();
+    this.pivot.updateMatrixWorld(true);
+    const inv = this.pivot.matrixWorld.clone().invert();
+    for (const m of this.selection) {
+      m.updateWorldMatrix(true, false);
+      if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+      const bb = m.geometry.boundingBox;
+      toLocal.multiplyMatrices(inv, m.matrixWorld);
+      for (let i = 0; i < 8; i++) {
+        corner.set(
+          i & 1 ? bb.max.x : bb.min.x,
+          i & 2 ? bb.max.y : bb.min.y,
+          i & 4 ? bb.max.z : bb.min.z
+        );
+        box.expandByPoint(corner.applyMatrix4(toLocal));
+      }
+    }
+    return box;
+  }
+
+  /**
+   * Which end of an axis the user grabbed: +1, -1, or 0 when it cannot be told.
+   *
+   * TransformControls names both ends of a scale axis "X", so the handle does
+   * not say which side the drag started from. The pointer does: project the
+   * axis onto the screen and see which way along it the cursor sits.
+   */
+  _handleSign(a) {
+    if (!this._pointer) return 0;
+    const r = this.canvas.getBoundingClientRect();
+    const project = (v) => {
+      const p = v.clone().project(this.camera);
+      return new THREE.Vector2(((p.x + 1) / 2) * r.width, ((1 - p.y) / 2) * r.height);
+    };
+    // The scale gizmo is drawn in the object's own frame whatever `gizmoSpace`
+    // says, so the axis to project is the pivot's. Length only has to put the
+    // probe somewhere near the handle; which of the two ends is nearer the
+    // cursor does not depend on how far out it sits.
+    const dir = new THREE.Vector3(+(a === 'x'), +(a === 'y'), +(a === 'z'))
+      .applyQuaternion(this.pivot.quaternion)
+      .multiplyScalar(this.camera.position.distanceTo(this.pivot.position) * 0.1);
+    const origin = project(this.pivot.position);
+    const along = project(this.pivot.position.clone().add(dir)).sub(origin);
+    if (along.lengthSq() < 1) return 0;      // edge on: no side to read
+    const cursor = new THREE.Vector2(this._pointer.clientX - r.left, this._pointer.clientY - r.top);
+    return Math.sign(cursor.sub(origin).dot(along));
+  }
+
+  /** The point that must not move during this drag, in pivot-local space. */
+  _captureScaleAnchor() {
+    const box = this._selectionLocalBox();
+    if (box.isEmpty()) return null;
+    const centre = box.getCenter(new THREE.Vector3());
+    // Y holds at the bottom whatever axis is being dragged, so something that
+    // was standing on the floor is still standing on it afterwards. That is the
+    // case uniform scaling gets wrong even when no vertical handle is touched.
+    const point = new THREE.Vector3(centre.x, box.min.y, centre.z);
+    const axis = this.gizmo.axis || '';
+    // The uniform handle sits in the middle and has no near end to read.
+    if (axis !== 'XYZ') {
+      for (const a of ['x', 'y', 'z']) {
+        if (!axis.includes(a.toUpperCase())) continue;
+        const sign = this._handleSign(a);
+        if (sign) point[a] = sign > 0 ? box.min[a] : box.max[a];
+      }
+    }
+    return { point, positions: new Map([...this.selection].map((m) => [m, m.position.clone()])) };
+  }
+
+  /**
+   * Hold the anchor still as the scale changes.
+   *
+   * A point at pivot-local `p` lands at `S * p`, so restoring it to where `S0`
+   * had it means offsetting every child by `(S0/S - 1) * anchor`. Recomputed
+   * from the drag-start positions each frame rather than accumulated, so
+   * nothing drifts and floor lock is free to overrule the Y it produces.
+   *
+   * The children move rather than the pivot, deliberately: TransformControls
+   * measures the drag against a plane through the gizmo's own position, so
+   * moving the gizmo mid-drag feeds straight back into the scale it computes.
+   */
+  _applyScaleAnchor() {
+    const anchor = this._scaleAnchor;
+    if (!anchor) return;
+    const s = this.pivot.scale;
+    const s0 = this._dragStartScale;
+    const shift = new THREE.Vector3(
+      (s0.x / (s.x || 1e-6) - 1) * anchor.point.x,
+      (s0.y / (s.y || 1e-6) - 1) * anchor.point.y,
+      (s0.z / (s.z || 1e-6) - 1) * anchor.point.z,
+    );
+    for (const [m, start] of anchor.positions) {
+      if (m.parent === this.pivot) m.position.copy(start).add(shift);
+    }
   }
 
   _applyFloorLock() {
@@ -731,6 +1168,7 @@ export class Viewport extends EventTarget {
   }
 
   _endDrag() {
+    this._scaleAnchor = null;
     for (const m of this.selection) this.markDirty(m);
     this.rebuildPivot();
     this.emit('transform');
@@ -753,9 +1191,25 @@ export class Viewport extends EventTarget {
     let down = null;
 
     this.canvas.addEventListener('pointerdown', (e) => {
+      // Recorded before the early return below: a scale drag reads it to work
+      // out which end of the handle was grabbed, and a press with no move
+      // before it would otherwise leave it stale.
+      this._pointer = { clientX: e.clientX, clientY: e.clientY };
+      // While a brush is up, the left button paints the bot grid and does not
+      // select. Checked before the gizmo, because the gizmo is hidden anyway
+      // and a stray hover must not swallow the stroke.
+      if (this.navPaint && e.button === 0 && !e.altKey) {
+        e.preventDefault();
+        this._painting = true;
+        this.orbit.enabled = false;
+        this.emit('commit-begin');
+        this._paintNavAt(e);
+        return;
+      }
       // this.gizmo.axis is set while a handle is hovered; TransformControls
       // registers its listeners first, so this reliably wins.
       if (e.button !== 0 || e.altKey || this.gizmo.dragging || this.gizmo.axis) return;
+      if (this.combo.dragging || this.combo.hovered) return;
       if (this.placing) return;   // that click drops what is being placed
       down = { x: e.clientX, y: e.clientY, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey };
       this.emit('marquee-start', down);
@@ -763,6 +1217,7 @@ export class Viewport extends EventTarget {
 
     addEventListener('pointermove', (e) => {
       this._pointer = { clientX: e.clientX, clientY: e.clientY };
+      if (this._painting) { this._paintNavAt(e); return; }
       if (!down) return;
       const dx = e.clientX - down.x;
       const dy = e.clientY - down.y;
@@ -777,6 +1232,13 @@ export class Viewport extends EventTarget {
     });
 
     addEventListener('pointerup', (e) => {
+      if (this._painting) {
+        this._painting = false;
+        this.orbit.enabled = true;
+        // One undo step per stroke, not per cell.
+        this.emit('nav-painted');
+        return;
+      }
       if (!down) return;
       const wasDrag = down.active;
       const mods = { shift: down.shift, ctrl: down.ctrl };
@@ -789,10 +1251,21 @@ export class Viewport extends EventTarget {
     });
   }
 
+  /** The object a raycast hit belongs to, or null if it hit scenery. */
+  _ownerOf(node) {
+    for (let n = node; n; n = n.parent) if (this.objects.includes(n)) return n;
+    return null;
+  }
+
   _clickSelect(ndcPoint, mods) {
     this.ray.setFromCamera(ndcPoint, this.camera);
-    const hits = this.ray.intersectObjects(this.objects, false);
-    const hit = hits.length ? hits[0].object : null;
+    // Recursive: half of what you see of some objects is a child rather than
+    // the object's own geometry — the spawn zone's machine, the bot standing on
+    // an enemy spawner — and clicking the visible thing has to select it.
+    // Meshes only, because the selection outline is a child too, and line
+    // picking uses a one metre threshold that would grab it from across the map.
+    const hits = this.ray.intersectObjects(this.objects, true);
+    const hit = this._ownerOf(hits.find((h) => h.object.isMesh)?.object);
     if (!hit) {
       if (!mods.shift && !mods.ctrl) this.setSelection([]);
       return;
@@ -873,12 +1346,18 @@ export class Viewport extends EventTarget {
 
     const move = (e) => {
       const g = this.groundPoint(e.clientX, e.clientY);
+      this.pivot.position.copy(g).add(lead);
+      // Snap after the lead offset, not before it. `lead` is the gap between
+      // the cursor and the pivot, and for anything whose origin is not in the
+      // middle of its own footprint — a corner barrier is 44 cm out — it is not
+      // a whole number of grid steps. Snapping the ground point and then adding
+      // it put the object down off-grid, which is the position that gets
+      // exported.
       const s = this.snap.translate;
       if (s) {
-        g.x = Math.round(g.x / s) * s;
-        g.z = Math.round(g.z / s) * s;
+        this.pivot.position.x = Math.round(this.pivot.position.x / s) * s;
+        this.pivot.position.z = Math.round(this.pivot.position.z / s) * s;
       }
-      this.pivot.position.copy(g).add(lead);
       if (this.floorLock) this._applyFloorLock();
       this.emit('transform');
     };
@@ -961,20 +1440,61 @@ export class Viewport extends EventTarget {
     bg.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
     this.boundsGroup.add(new THREE.LineSegments(bg, mat));
     geo.dispose();
+
+    // The halfway cross, a little longer than the arena so it reads as a datum
+    // rather than as part of the box. Two strips lying flat, as triangles.
+    const over = 0.6;
+    const w = 0.015;                       // half width, so 3 cm across
+    const halfX = x / 2 + over;
+    const halfZ = z / 2 + over;
+    const quad = (x0, z0, x1, z1) => [
+      x0, 0, z0, x1, 0, z0, x1, 0, z1,
+      x0, 0, z0, x1, 0, z1, x0, 0, z1,
+    ];
+    const cross = new THREE.BufferGeometry();
+    cross.setAttribute('position', new THREE.Float32BufferAttribute([
+      ...quad(-halfX, -w, halfX, w),
+      ...quad(-w, -halfZ, w, halfZ),
+    ], 3));
+    this.centreLines.geometry.dispose();
+    this.centreLines.geometry = cross;
   }
 
   /** Draw the play space mask so it is obvious where the player can walk. */
+  /**
+   * The walkable grid, kept decoded so a brush stroke does not have to gzip
+   * anything between one cell and the next. `navMask` is the live copy;
+   * `app.js` re-encodes it once a stroke ends.
+   */
   async setNavCloud(navCloud) {
     this.navGroup.clear();
-    if (!navCloud || !navCloud.encodedPoints) return;
-    let bytes;
-    try {
-      bytes = await decodeNavCloud(navCloud.encodedPoints);
-    } catch {
-      return;
-    }
+    this.navMask = null;
+    this.navGrid = null;
+    if (!navCloud) return;
     const N = navCloud.divisions.x;
     const M = navCloud.divisions.y;
+    let bytes;
+    if (navCloud.encodedPoints) {
+      try { bytes = await decodeNavCloud(navCloud.encodedPoints); } catch { return; }
+    } else {
+      bytes = new Uint8Array(N * M);
+    }
+    if (bytes.length < N * M) {
+      const grown = new Uint8Array(N * M);
+      grown.set(bytes.subarray(0, Math.min(bytes.length, grown.length)));
+      bytes = grown;
+    }
+    this.navMask = bytes;
+    this.navGrid = { N, M };
+    this._renderNavMask();
+  }
+
+  /** Redraw the outline from whatever `navMask` currently says. */
+  _renderNavMask() {
+    this.navGroup.clear();
+    const bytes = this.navMask;
+    if (!bytes || !this.navGrid) return;
+    const { N, M } = this.navGrid;
     const positions = [];
     // Outline only: draw an edge wherever an inside cell touches an outside one.
     const at = (r, c) => (r < 0 || c < 0 || r >= M || c >= N ? 0 : bytes[r * N + c]);
@@ -997,6 +1517,56 @@ export class Viewport extends EventTarget {
     this.navGroup.add(
       new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: 0x5ad6a0, transparent: true, opacity: 0.85 }))
     );
+  }
+
+  /**
+   * Pick up or put down a brush. 'add' and 'remove' both paint with the left
+   * button; null hands it back to selection.
+   */
+  setNavPaint(mode, radius = 0.5) {
+    this.navPaint = mode || null;
+    this.navBrush = radius;
+    this.canvas.style.cursor = mode ? 'crosshair' : '';
+    this.emit('mode');
+  }
+
+  /** Wipe the grid without touching its size or spacing. */
+  clearNavMask() {
+    if (!this.navMask) return;
+    this.navMask.fill(0);
+    this._renderNavMask();
+  }
+
+  /**
+   * Paint one dab where the pointer meets the floor.
+   *
+   * The row index runs the opposite way to world Z — `_renderNavMask` draws row
+   * r at `-navIndexToWorld(r)` — so the inverse has to negate as well, or the
+   * grid comes out mirrored front to back against the map it belongs to.
+   */
+  _paintNavAt(e) {
+    if (!this.navMask || !this.navGrid || !this.navPaint) return;
+    const hit = this.groundPoint(e.clientX, e.clientY);
+    if (!hit) return;
+    const { N, M } = this.navGrid;
+    const value = this.navPaint === 'add' ? 1 : 0;
+    const toIndex = (metres, divisions) => (metres / NAV_SPACING) + (divisions - 1) / 2;
+    const cx = toIndex(hit.x, N);
+    const cr = toIndex(-hit.z, M);
+    const reach = this.navBrush / NAV_SPACING;
+    const r0 = Math.max(0, Math.floor(cr - reach)), r1 = Math.min(M - 1, Math.ceil(cr + reach));
+    const c0 = Math.max(0, Math.floor(cx - reach)), c1 = Math.min(N - 1, Math.ceil(cx + reach));
+    let touched = false;
+    for (let r = r0; r <= r1; r++) {
+      for (let c = c0; c <= c1; c++) {
+        if ((r - cr) ** 2 + (c - cx) ** 2 > reach * reach) continue;
+        const i = r * N + c;
+        if (this.navMask[i] === value) continue;
+        this.navMask[i] = value;
+        touched = true;
+      }
+    }
+    if (touched) this._renderNavMask();
   }
 
   // -- camera ---------------------------------------------------------------
@@ -1040,19 +1610,53 @@ export class Viewport extends EventTarget {
     this.renderer.setSize(r.width, r.height, false);
   }
 
-  // -- weapon spawner badge -------------------------------------------------
-  // A spawner's whole configuration is one prop, and a crate looks the same
-  // whatever it holds, so the set is drawn above it. Kept as a scene-level
+  // -- spawner badge ---------------------------------------------------------
+  // A spawner's whole configuration is one or two props, and a pad looks the
+  // same whatever it holds, so the set is drawn above it. Kept as a scene-level
   // sprite rather than a child of the mesh: a child inherits the object's
   // scale, and a spawner stretched to 3 m would stretch its label with it.
 
-  /** Build or refresh the badge for one object, and drop it if it has none. */
-  _refreshWeaponBadge(mesh) {
+  /**
+   * What one object's badge should say, or null when it wants none.
+   *
+   * `value` is the whole content collapsed to a string, so the repaint check is
+   * one comparison however many props feed it.
+   */
+  _badgeContent(mesh) {
+    const def = mesh.userData.def;
+    const props = mesh.userData.props || {};
     // A domination zone is a ring painted on the floor, which says nothing
     // about which of the three it is; the letter is the whole identity.
-    const letter = mesh.userData.def?.badge;
-    const value = letter ?? mesh.userData.props?.specificWeapon;
-    if (value === undefined) return;
+    if (def?.badge) return { value: def.badge, letter: def.badge, colour: def.color };
+    if (props.specificWeapon !== undefined) {
+      return {
+        value: `w:${props.specificWeapon}`,
+        items: parseWeapons(props.specificWeapon),
+        icons: WEAPON_ICONS,
+        any: props.specificWeapon === WEAPON_ANY,
+      };
+    }
+    if (props.enemyTypes !== undefined) {
+      // Behaviour is the other half of what a spawner is set to, and unlike the
+      // enemy list it has no icon anywhere in the dump, so it goes in as text.
+      return {
+        value: `e:${props.enemyTypes}|${props.behaviour ?? ''}`,
+        items: parseEnemyTypes(props.enemyTypes),
+        icons: ENEMY_ICONS,
+        any: props.enemyTypes === ENEMY_ANY,
+        note: props.behaviour,
+      };
+    }
+    return null;
+  }
+
+  /** Build or refresh the badge for one object, and drop it if it has none. */
+  _refreshBadge(mesh) {
+    const content = this._badgeContent(mesh);
+    if (!content) {
+      this._dropBadge(mesh);
+      return;
+    }
 
     let badge = this._badges.get(mesh);
     if (!badge) {
@@ -1066,10 +1670,10 @@ export class Viewport extends EventTarget {
       badge = { sprite, texture, value: null };
       this._badges.set(mesh, badge);
     }
-    if (badge.value === value) return;
-    badge.value = value;
-    if (letter) this._drawLetterBadge(badge, letter, mesh.userData.def.color);
-    else this._drawBadge(badge, parseWeapons(value), value === WEAPON_ANY);
+    if (badge.value === content.value) return;
+    badge.value = content.value;
+    if (content.letter) this._drawLetterBadge(badge, content.letter, content.colour);
+    else this._drawBadge(badge, content);
   }
 
   /** Paint a single big letter, for the domination zones. */
@@ -1102,13 +1706,19 @@ export class Viewport extends EventTarget {
   }
 
   /** Paint the icon strip. Icons decode late, so it repaints as they arrive. */
-  _drawBadge(badge, weapons, isAny) {
+  _drawBadge(badge, { items, icons, any, note }) {
     const CELL = 64, PAD = 6;
-    const shown = weapons.slice(0, 6);
+    const shown = items.slice(0, 6);
     const cols = Math.max(1, shown.length);
     const canvas = badge.texture.image;
+    // Thirteen enemy types do not fit in one row, so what the strip leaves out
+    // is said in the footer alongside the behaviour: "+2 · Aggresive". A
+    // spawner set to everything says so instead of counting — "ANY" already
+    // means the six icons are a sample.
+    const spare = !any && items.length > shown.length ? `+${items.length - shown.length}` : null;
+    const footer = [any ? 'ANY' : spare, note].filter(Boolean).join(' · ');
     const width = cols * CELL + PAD * 2;
-    const height = CELL + PAD * 2 + (isAny || weapons.length > shown.length ? 20 : 0);
+    const height = CELL + PAD * 2 + (footer ? 20 : 0);
 
     if (canvas.width !== width || canvas.height !== height) {
       canvas.width = width;
@@ -1140,12 +1750,11 @@ export class Viewport extends EventTarget {
           ctx.drawImage(img, PAD + i * CELL, PAD, CELL, CELL);
         }
       });
-      if (isAny || weapons.length > shown.length) {
+      if (footer) {
         ctx.fillStyle = '#E8C547';
         ctx.font = '600 15px system-ui, sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText(isAny ? 'ANY' : `+${weapons.length - shown.length}`,
-          canvas.width / 2, canvas.height - 7);
+        ctx.fillText(footer, canvas.width / 2, canvas.height - 7);
       }
       badge.texture.needsUpdate = true;
       // Height fixed, width follows the icon count, so one weapon reads as a
@@ -1156,7 +1765,7 @@ export class Viewport extends EventTarget {
 
     badge.images = {};
     for (const w of shown) {
-      const url = iconUrl({ icon: WEAPON_ICONS[w] });
+      const url = iconUrl({ icon: icons?.[w] });
       if (!url) continue;
       const img = new Image();
       img.onload = paint;
@@ -1166,7 +1775,7 @@ export class Viewport extends EventTarget {
     paint();
   }
 
-  _dropWeaponBadge(mesh) {
+  _dropBadge(mesh) {
     const badge = this._badges.get(mesh);
     if (!badge) return;
     this.scene.remove(badge.sprite);
@@ -1192,6 +1801,7 @@ export class Viewport extends EventTarget {
 
   _frame() {
     this.orbit.update();
+    this.combo.update();
     this._holdFixedParts();
     this._placeBadges();
     this.renderer.render(this.scene, this.camera);

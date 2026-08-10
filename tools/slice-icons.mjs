@@ -37,7 +37,7 @@
 
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { inflateSync, deflateSync } from 'node:zlib';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -74,7 +74,7 @@ function paeth(a, b, c) {
 }
 
 /** Decode to a tightly packed RGBA buffer. Throws on anything this dump isn't. */
-function decodePng(buf) {
+export function decodePng(buf) {
   if (!buf.subarray(0, 8).equals(PNG_MAGIC)) throw new Error('not a PNG');
   let pos = 8, width = 0, height = 0, depth = 0, colorType = 0, interlace = 0;
   const idat = [];
@@ -142,7 +142,7 @@ function chunk(type, data) {
 }
 
 /** Encode RGBA. Paeth-filtered throughout, which is what these icons like. */
-function encodePng({ width, height, data }) {
+export function encodePng({ width, height, data }) {
   const stride = width * 4;
   const raw = Buffer.alloc((stride + 1) * height);
   let prev = Buffer.alloc(stride);
@@ -358,4 +358,6 @@ function main() {
   }
 }
 
-main();
+// Guarded so the PNG codec above can be imported — stage-assets reuses it to
+// downscale the icons — without the slicer running as a side effect.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();

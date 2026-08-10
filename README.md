@@ -4,7 +4,13 @@ A visual 3D map editor for the VR game **Spatial Ops**. Runs entirely in your
 browser, offline, with no build step and no account. MIT licensed.
 
 Load a map file, drag objects in from the library, move and scale them with
-gizmos, and export a file the game can read.
+gizmos, set up the game mode rules, and export a file the game can read.
+
+The library mirrors the in-game one: **Virtual Objects** with a pack per theme
+(Default, Blue, Orange, Purple, Camo, Mykea, Graffiti, Paintball, Wild West,
+Hatchet Corp, Corrupted Technology), then **Gameplay Objects** and **Mode
+Objectives** — 178 objects in all, transcribed from maps exported out of the
+game itself.
 
 ## Run it
 
@@ -31,8 +37,8 @@ top of `index.html`.
 | | |
 |---|---|
 | Left drag | Select — click an object, or drag a box across several |
-| Right drag | Orbit |
-| Middle drag | Pan |
+| Middle drag | Orbit |
+| Right drag | Pan |
 | <kbd>Alt</kbd> + left drag | Orbit, for trackpads |
 | <kbd>Shift</kbd> + click | Add to or remove from the selection |
 | <kbd>Ctrl</kbd> + click | Pick one object out of a group |
@@ -41,7 +47,8 @@ top of `index.html`.
 |---|---|
 | <kbd>W</kbd> <kbd>E</kbd> <kbd>R</kbd> | Move, rotate, scale |
 | <kbd>G</kbd> / <kbd>Shift</kbd>+<kbd>G</kbd> | Group / ungroup |
-| <kbd>Ctrl</kbd>+<kbd>D</kbd> | Duplicate |
+| <kbd>Ctrl</kbd>+<kbd>D</kbd> | Duplicate in place |
+| <kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>Ctrl</kbd>+<kbd>V</kbd> | Copy / paste — the copy rides the cursor, click to drop it, <kbd>Esc</kbd> to cancel |
 | <kbd>Ctrl</kbd>+<kbd>A</kbd> | Select all |
 | <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> | Undo / redo |
 | <kbd>F</kbd> | Frame the selection |
@@ -54,62 +61,88 @@ Duplicating a group makes a new group, so the copy moves independently.
 Exported files have **no file extension** — that is correct, and it is what the
 game expects. Copy the file straight into the game's maps folder.
 
+### Object properties
+
+Weapon spawners, enemy spawns and damage boxes carry an extra setting — which
+weapon, which behaviour, which team colour. Select one and it appears at the
+top of the inspector. The values the game is known to use are offered as a
+list, but the field is free text, because one export is not proof of the whole
+enum.
+
+### Rules
+
+The **Rules** panel in the inspector edits the five game mode rule sets. A
+blank field means the game decides, and only the settings you actually change
+are written to the file — which is exactly what the game does. Touched settings
+get a dot beside them and a count on the mode tab.
+
+Numbers are not clamped and the enum options are suggestions rather than a
+closed list, because the reference export shows which settings exist without
+revealing their defaults or valid ranges. Settings the editor does not
+recognise are listed and passed through untouched.
+
+### The `Grounded` variants
+
+The in-game editor has solid boxes and cylinders plus a `Grounded` variant of
+each. The web editor offers only the plain ones — the grounded variants exist
+because VR has nothing to snap to, and here the grid does that job. Maps that
+already use them load, display and export unchanged.
+
 ## Adding a pack
 
-A pack is a JSON file. Nothing else is needed — no code changes.
-
-```json
-{
-  "id": "urban",
-  "name": "Urban",
-  "schema": 1,
-  "objects": [
-    {
-      "type": "UrbanDumpster",
-      "label": "Dumpster",
-      "category": "Props",
-      "shape": "box",
-      "size": [1.6, 1.2, 0.9],
-      "pivot": "base",
-      "rotationAxes": "y",
-      "floor": true,
-      "color": "#3F6B4A"
-    }
-  ]
-}
-```
+The packs the game ships with are built in. To add one the game does not have,
+drop a JSON file in `packs/` and list it in `packs/index.json` — no code
+changes. See [packs/README.md](packs/README.md) for the fields.
 
 | Field | |
 |---|---|
 | `type` | **Exact** string the game writes to the map file. This is the only field the game sees |
 | `label` / `category` | How it appears in the library |
-| `shape` | Placeholder generator: `box`, `cylinder`, `crate`, `barrier`, `barrierWindow`, `barrierCorner`, `barrierU`, `tunnel`, `electricityBox` |
+| `group` | `virtual`, `gameplay` or `objectives` — which library section it sits under |
+| `shape` | Placeholder generator — one of the ~60 builders in `src/placeholders.js` |
 | `size` | `[width, height, depth]` of the base mesh in metres, at scale 1 |
 | `pivot` | `base` (origin on the floor) or `center` |
 | `rotationAxes` | `y` for yaw only, `xyz` for free rotation |
 | `floor` | Whether the piece should rest on the ground |
+| `defaultScale` | Scale a freshly placed object gets |
 | `model` | Optional path to a `.glb`. When present it replaces the placeholder |
-
-Use **Import pack…** in the library panel to load one from disk, or drop the
-file in `packs/` and add it to `packs/index.json` if you are running from a
-server.
 
 Types the editor has never seen still load: they appear as pink markers and
 export completely unchanged, so an unknown pack can never corrupt a map.
 
-## Dropping in real models
+## Dropping in the real models
 
-Set `model` on a catalog entry to a `.glb` path and the editor loads it in place
-of the placeholder, including in the library thumbnails. Models should be
-authored at scale 1 with the origin matching the `pivot` setting.
+Out of the box the editor draws its own stand-in shapes — simple geometry
+written from measurements of the real pieces, so a barrier with a window in it
+has a window in it. That is what these screenshots show and it needs nothing
+from you.
 
-Everything currently marked `~` in the library has estimated dimensions — see
+To see the game's own models instead, extract Spatial Ops with
+[AssetRipper](https://github.com/AssetRipper/AssetRipper) and copy the `.glb`
+files into `assets/Prefabs/`. That folder is empty here and ignored by git;
+[its README](assets/Prefabs/README.md) lists every filename the editor looks
+for. Anything missing simply keeps its stand-in, so a partial set is fine.
+
+The **Stand-ins** switch in the toolbar flips between the two at any time, which
+is the quickest way to check whether a file landed.
+
+If you have the extraction and want to work from it directly:
+
+```sh
+npm run stage-assets   # copies what the catalog needs out of reference/GameAssets/
+```
+
+Adding a new catalog entry works the same way: set `model` to a `.glb` basename
+and the editor loads it in place of the stand-in, thumbnails included. Models
+should be authored at scale 1 with the origin matching the `pivot` setting.
+
+Everything still marked `~` in the library has estimated dimensions — see
 [docs/FORMAT.md](docs/FORMAT.md) for what is confirmed and what is a guess.
 
 ## Development
 
 ```sh
-npm test        # 25 tests, no dependencies, runs in under a second
+npm test        # 76 tests, no dependencies, runs in under a second
 npm run serve   # dev server at http://localhost:8000
 npm run build   # regenerate dist/ after changing src/
 ```
@@ -122,16 +155,23 @@ it is worth reading before your first change whether or not you use Claude Code.
 
 ## What is verified
 
-The file format work is tested against a real map file:
+The format work is tested against sixteen real map files exported from the
+game, kept in `reference/`:
 
 - Loading and re-exporting an untouched map is **byte-identical**, including
-  .NET float formatting quirks.
+  .NET float formatting quirks — for all sixteen files.
+- So is re-exporting with **every object marked as edited**, which forces each
+  one through the float writer instead of reusing its original bytes.
 - Pushing every object through the editor's Unity ↔ three.js conversion and
   back gives **zero** drift in position, rotation, and scale.
 - Objects you never touch are written back from their original bytes, so an
   edit to one crate cannot perturb anything else.
+- Loading each map in a real browser, selecting everything, committing a no-op
+  edit and re-exporting also comes back **byte-identical** — the whole
+  three.js pipeline, not just the pure functions.
 
-Read [docs/FORMAT.md](docs/FORMAT.md) for the format itself.
+Read [docs/FORMAT.md](docs/FORMAT.md) for the format itself, including what is
+still guesswork.
 
 ## Layout
 
@@ -141,11 +181,14 @@ CLAUDE.md     format invariants and project conventions
 src/
   format.js       map file parse and serialise, GUIDs, nav cloud codec
   unity.js        Unity <-> three.js coordinate and rotation conversion
-  catalog.js      pack schema and the built-in Default pack
+  rules.js        game mode rule set schema
+  packs.js        the 13 built-in object packs
+  catalog.js      pack registry and lookups
   placeholders.js procedural stand-in geometry
   scene.js        viewport, selection, gizmos, marquee picking
   app.js          UI, history, file I/O
-packs/            pack JSON, loaded when served over http
+packs/            extra pack JSON, loaded when served over http
+reference/        map files exported from the in-game editor
 test/             node:test suites and the sample map fixture
 docs/FORMAT.md    format notes
 build.mjs         bundles src/ into dist/
@@ -154,4 +197,22 @@ serve.mjs         local dev server
 
 ## Licence
 
-MIT.
+MIT, for the code.
+
+`assets/Icons/` is not the project's to license: those thumbnails are sliced out
+of Spatial Ops' own sprite atlases and are reproduced so the object library is
+recognisable. See [assets/Icons/NOTICE.md](assets/Icons/NOTICE.md). Delete the
+folder if you would rather not carry them — the library falls back to rendering
+each object's stand-in shape as its thumbnail, and nothing else changes.
+
+No game meshes or textures are included.
+
+`reference/` holds a set of maps exported from the in-game editor. They are my
+own maps rather than the game's, and they are here because they are the evidence
+for how the file format actually works — every claim in
+[docs/FORMAT.md](docs/FORMAT.md) is checked against them by the test suite, and
+without them the format notes would be guesswork. They contain object type
+names, transforms and rule settings, and nothing about the room anyone is
+playing in.
+
+The editor is not affiliated with or endorsed by the makers of Spatial Ops.

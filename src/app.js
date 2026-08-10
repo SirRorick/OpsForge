@@ -8,13 +8,20 @@ import {
   parseMap, serializeMap, newMap, newGuid, nowStamp, mapFileName,
   buildNavMask, encodeNavCloud, MAP_VERSION,
 } from './format.js';
-import { getPacks, registerPack, categoriesOf, packsInGroup, getByKey, iconUrl } from './catalog.js';
+import {
+  getPacks, getPack, registerPack, categoriesOf, packsInGroup, getByKey, iconUrl,
+  equivalentIn,
+} from './catalog.js';
 import {
   PACK_GROUPS, WEAPONS, WEAPON_ICONS, WEAPON_ANY, parseWeapons, formatWeapons,
-  ENEMY_TYPES, ENEMY_BEHAVIOURS, ENEMY_ANY, parseEnemyTypes, formatEnemyTypes,
+  ENEMY_TYPES, ENEMY_ICONS, ENEMY_LABELS, ENEMY_BEHAVIOURS, ENEMY_ANY,
+  parseEnemyTypes, formatEnemyTypes,
 } from './packs.js';
 import {
-  fieldsFor, unknownKeys, setValue, parseFlags, joinFlags, overrideCount,
+  MODES, layoutFor, unknownKeys, setValue, parseFlags, joinFlags, overrideCount,
+  describeFallback, effectiveValue, optionLabel, splitDuration, joinDuration,
+  formatDuration, clampInt, outOfRange, newRuleSet, duplicateRuleSet,
+  resetRuleSet, changeBaseMode, missingRequirements, modeByType,
   INT, BOOL, ENUM, FLAGS,
 } from './rules.js';
 import { unityEulerToQuat } from './unity.js';
@@ -26,7 +33,7 @@ const vp = new Viewport($('view'));
 let map = null;             // everything except mapObjects, which live in the viewport
 let activePack = 'default';                 // theme shown inside Virtual Objects
 let openGroups = new Set(['virtual']);      // expanded top-level library sections
-let activeMode = 0;                         // rule set tab
+let activeRuleSet = 0;                         // rule set tab
 let undoStack = [], redoStack = [], current = null;
 let groupSeq = 1;
 let clipboard = [];         // copied objects as values, independent of the meshes
@@ -44,6 +51,9 @@ let placingLabel = null;    // set while a library pick-up is following the curs
   buildLibrary();
   buildRules();
   wireToolbar();
+  wireBotGrid();
+  wireInspectorTabs();
+  wireArrayTool();
   wireInspector();
   wireKeyboard();
   wireDragDrop();
@@ -93,6 +103,7 @@ function snapshot() {
         props: { ...m.userData.props },
         p: p.toArray(), q: q.toArray(), s: s.toArray(),
         dirty: m.userData.dirty, raw: m.userData.raw, group: m.userData.group,
+        locked: !!m.userData.locked,
       };
     }),
     selection: vp.objects.map((m) => vp.selection.has(m)),
@@ -113,6 +124,7 @@ function restore(snap) {
     mesh.quaternion.fromArray(rec.q);
     mesh.scale.fromArray(rec.s);
     mesh.userData.group = rec.group;
+    mesh.userData.locked = !!rec.locked;
     if (snap.selection[i]) picked.push(mesh);
   });
   map.mapBoundsSize = { ...snap.bounds };
@@ -479,6 +491,161 @@ function paste() {
   toast('Click to place. Esc cancels.');
 }
 
+/**
+ * The size of the selection along each of the pivot's own axes.
+ *
+ * This is what the array tool offers as its default spacing, so a row of crates
+ * comes out flush and you only touch the number to open a gap. Measured in the
+ * pivot's frame rather than the world's: a barrier turned 30 degrees should
+ * array along its own face, and its world bounding box is wider than the piece.
+ */
+function selectionExtent() {
+  const list = [...vp.selection];
+  if (!list.length) return { x: 1, y: 1, z: 1 };
+  const inv = new THREE.Matrix4().copy(vp.pivot.matrixWorld).invert();
+  const box = new THREE.Box3();
+  const v = new THREE.Vector3();
+  for (const m of list) {
+    m.updateWorldMatrix(true, false);
+    if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+    const b = m.geometry.boundingBox;
+    for (let i = 0; i < 8; i++) {
+      v.set(i & 1 ? b.max.x : b.min.x, i & 2 ? b.max.y : b.min.y, i & 4 ? b.max.z : b.min.z);
+      v.applyMatrix4(m.matrixWorld).applyMatrix4(inv);
+      box.expandByPoint(v);
+    }
+  }
+  const size = box.getSize(new THREE.Vector3());
+  const tidy = (n) => Math.max(0.05, Math.round(n * 1000) / 1000);
+  return { x: tidy(size.x), y: tidy(size.y), z: tidy(size.z) };
+}
+
+/**
+ * Duplicate the selection into a grid of copies — five across and six high
+ * builds a wall in one go, and widening the spacing turns the same wall into a
+ * row of barricades.
+ *
+ * The steps are taken along the pivot's axes, not the world's, so a rotated
+ * piece arrays along its own length instead of skewing off it. The original
+ * counts as the first copy in each direction, so 1 x 1 x 1 does nothing.
+ */
+function arraySelection({ nx, ny, nz, dx, dy, dz }) {
+  if (!vp.selection.size) return toast('Select something to array.');
+  const total = nx * ny * nz;
+  if (total <= 1) return toast('Set at least one count above 1.');
+  if (total > 500) return toast(`That is ${total} copies. Keep it under 500.`);
+
+  const source = [...vp.selection];
+  vp.pivot.updateMatrixWorld(true);
+  const basis = {
+    x: new THREE.Vector3(1, 0, 0).applyQuaternion(vp.pivot.quaternion),
+    y: new THREE.Vector3(0, 1, 0),      // up is up, whatever the piece is doing
+    z: new THREE.Vector3(0, 0, 1).applyQuaternion(vp.pivot.quaternion),
+  };
+
+  const made = [];
+  const groups = new Map();
+  for (let ix = 0; ix < nx; ix++) {
+    for (let iy = 0; iy < ny; iy++) {
+      for (let iz = 0; iz < nz; iz++) {
+        if (!ix && !iy && !iz) continue;      // that one is the original
+        const step = new THREE.Vector3()
+          .addScaledVector(basis.x, ix * dx)
+          .addScaledVector(basis.y, iy * dy)
+          .addScaledVector(basis.z, iz * dz);
+        // Each cell of the array gets its own group id, so the copies can be
+        // moved apart later without dragging the whole wall.
+        const cell = `${ix},${iy},${iz}`;
+        for (const m of source) {
+          m.updateWorldMatrix(true, false);
+          const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+          m.matrixWorld.decompose(p, q, s);
+          const copy = vp.addObject({
+            type: m.userData.def.type,
+            $type: m.userData.objectType,
+            props: { ...m.userData.props },
+            position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 },
+            dirty: true,
+          });
+          copy.position.copy(p).add(step);
+          copy.quaternion.copy(q);
+          copy.scale.copy(s);
+          if (m.userData.group) {
+            const key = `${cell}|${m.userData.group}`;
+            if (!groups.has(key)) groups.set(key, `g${groupSeq++}`);
+            copy.userData.group = groups.get(key);
+          }
+          made.push(copy);
+        }
+      }
+    }
+  }
+  if (vp.floorLock) vp._applyFloorLock();
+  vp.setSelection([...source, ...made]);
+  commit();
+  toast(`Arrayed ${made.length} cop${made.length === 1 ? 'y' : 'ies'} — ${nx} x ${ny} x ${nz}.`);
+}
+
+/**
+ * Copy the selection to the other side of the map.
+ *
+ * `axis` is 'x' or 'z' — the two horizontal ones; mirroring in Y would put the
+ * map underground. The plane is the middle of the arena, which is the origin,
+ * so a piece two metres to the left comes back two metres to the right.
+ *
+ * The rotation is reflected too, or the far half would not be a reflection of
+ * the near one: under a mirror, a rotation about an axis becomes a rotation
+ * about the mirrored axis by the opposite angle, which for the quaternion is
+ * negating the two components perpendicular to the plane. A chiral piece — a
+ * corner barrier — cannot truly be mirrored by a rotation, so it comes out as
+ * the nearest turn, which is the piece the far half wants anyway.
+ *
+ * `packId` renders the copy in another theme, which is how you get a blue half
+ * and an orange half. An entry with no equivalent there keeps its own.
+ */
+function mirrorSelection(axis, packId = null) {
+  if (!vp.selection.size) return toast('Select something to mirror.');
+  const flip = axis === 'x' ? [1, -1, -1] : [-1, -1, 1];   // quaternion x,y,z signs
+  const made = [];
+  const remap = new Map();
+  let swapped = 0, kept = 0;
+
+  for (const m of [...vp.selection]) {
+    m.updateWorldMatrix(true, false);
+    const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+    m.matrixWorld.decompose(p, q, s);
+
+    const target = packId ? equivalentIn(m.userData.def, packId) : null;
+    const def = target || m.userData.def;
+    if (packId) (target ? swapped++ : kept++, undefined);
+
+    const copy = vp.addObject({
+      type: def.type,
+      $type: target ? (def.objectType || 'MapObject') : m.userData.objectType,
+      // Props belong to the subtype, so they only carry over within it.
+      props: target && target.type !== m.userData.def.type
+        ? { ...(def.props || {}) } : { ...m.userData.props },
+      position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 },
+      dirty: true,
+    });
+    copy.position.set(axis === 'x' ? -p.x : p.x, p.y, axis === 'z' ? -p.z : p.z);
+    copy.quaternion.set(q.x * flip[0], q.y * flip[1], q.z * flip[2], q.w);
+    copy.scale.copy(s);
+    if (m.userData.group) {
+      if (!remap.has(m.userData.group)) remap.set(m.userData.group, `g${groupSeq++}`);
+      copy.userData.group = remap.get(m.userData.group);
+    }
+    made.push(copy);
+  }
+
+  if (vp.floorLock) vp._applyFloorLock();
+  vp.setSelection(made);
+  commit();
+  const where = packId ? ` as ${getPack(packId)?.name ?? packId}` : '';
+  const missing = kept ? `, ${kept} with no equivalent kept as they were` : '';
+  toast(`Mirrored ${made.length} object${made.length === 1 ? '' : 's'} across ${axis.toUpperCase()}${where}${missing}.`);
+}
+
 function groupSelection() {
   if (vp.selection.size < 2) return toast('Select at least two objects to group.');
   const id = `g${groupSeq++}`;
@@ -513,7 +680,7 @@ function wireToolbar() {
     map = await newMap({ name: 'New Map', author: map?.author || '' });
     vp.clearObjects();
     applyMapMeta();
-    activeMode = 0;
+    activeRuleSet = 0;
     buildRules();
     undoStack = []; redoStack = []; current = snapshot();
     refreshAll();
@@ -523,7 +690,7 @@ function wireToolbar() {
   $('filepick').onchange = (e) => { const f = e.target.files[0]; if (f) openFile(f); e.target.value = ''; };
   $('b-save').onclick = exportMap;
 
-  for (const mode of ['translate', 'rotate', 'scale']) {
+  for (const mode of ['combined', 'translate', 'rotate', 'scale']) {
     $(`m-${mode}`).onclick = () => vp.setGizmoMode(mode);
   }
   $('m-space').onclick = () => {
@@ -538,6 +705,24 @@ function wireToolbar() {
   ['snap-t', 'snap-t-v', 'snap-r', 'snap-r-v'].forEach((id) => ($(id).onchange = syncSnap));
   $('uniform').onchange = (e) => { vp.uniformScale = e.target.checked; };
   $('floorlock').onchange = (e) => { vp.floorLock = e.target.checked; };
+
+  // Nothing about the map changes here, so no commit and no edited stamp — it
+  // is a way of looking at the scene, not a way of changing it.
+  $('placeholders').onchange = (e) => {
+    vp.setUsePlaceholders(e.target.checked);
+    toast(e.target.checked
+      ? 'Showing the built-in stand-in shapes.'
+      : 'Showing the game\'s own models where they are on disk.');
+  };
+
+  const packSelect = $('mirror-pack');
+  for (const p of packsInGroup('virtual')) {
+    const o = document.createElement('option');
+    o.value = p.id;
+    o.textContent = p.name;
+    packSelect.appendChild(o);
+  }
+  $('b-mirror').onclick = () => mirrorSelection($('mirror-axis').value, packSelect.value || null);
 
   $('b-undo').onclick = undo;
   $('b-redo').onclick = redo;
@@ -556,9 +741,9 @@ function wireInspector() {
   for (const id of ['bx', 'by', 'bz']) {
     $(id).onchange = () => {
       map.mapBoundsSize = {
-        x: clampInt($('bx').value, 1, 60),
-        y: clampInt($('by').value, 1, 20),
-        z: clampInt($('bz').value, 1, 60),
+        x: clampBound($('bx').value, 1, 60),
+        y: clampBound($('by').value, 1, 20),
+        z: clampBound($('bz').value, 1, 60),
       };
       applyMapMeta();
       vp.setBounds(map.mapBoundsSize);
@@ -594,10 +779,105 @@ async function regenerateNav() {
   map.navCloud.encodedPoints = await encodeNavCloud(mask);
   await vp.setNavCloud(map.navCloud);
   touchEdited();
-  toast('Play space updated.');
+  refreshNavCount();
+  toast('Bot grid filled.');
 }
 
-function clampInt(v, lo, hi) {
+/**
+ * The inspector's tabs. Build is first and default because it holds the two
+ * things touched constantly — the selection's numbers and the object list —
+ * with the array tool between them, where it is next to what it acts on.
+ */
+function wireInspectorTabs() {
+  const tabs = [...document.querySelectorAll('.itab')];
+  const show = (name) => {
+    for (const t of tabs) t.classList.toggle('on', t.dataset.pane === name);
+    for (const t of tabs) $(`pane-${t.dataset.pane}`).hidden = t.dataset.pane !== name;
+  };
+  for (const t of tabs) t.onclick = () => show(t.dataset.pane);
+  show('build');
+}
+
+/**
+ * The array tool. Counts and spacings are read at the moment you press Array,
+ * so changing the selection first and the numbers after works either way round.
+ */
+function wireArrayTool() {
+  const num = (id, fallback) => {
+    const v = parseFloat($(id).value);
+    return Number.isFinite(v) ? v : fallback;
+  };
+  $('b-array').onclick = () => arraySelection({
+    nx: Math.max(1, Math.round(num('arr-nx', 1))),
+    ny: Math.max(1, Math.round(num('arr-ny', 1))),
+    nz: Math.max(1, Math.round(num('arr-nz', 1))),
+    dx: num('arr-dx', 1), dy: num('arr-dy', 1), dz: num('arr-dz', 1),
+  });
+}
+
+/**
+ * Reset the spacings to the selection's own size whenever the selection
+ * changes, so the common case — copies sitting flush — needs no arithmetic.
+ * Counts are left alone: repeating the same 5 x 1 wall with a different piece
+ * is a normal thing to want.
+ */
+function refreshArrayDefaults() {
+  const n = vp.selection.size;
+  $('arr-count').textContent = n ? `${n} selected` : '';
+  $('b-array').disabled = !n;
+  if (!n) return;
+  const e = selectionExtent();
+  $('arr-dx').value = e.x;
+  $('arr-dy').value = e.y;
+  $('arr-dz').value = e.z;
+}
+
+/**
+ * The brushes. Picking one up takes the left button away from selection until
+ * it is put down again, which is why they toggle rather than fire.
+ */
+function wireBotGrid() {
+  const buttons = { add: $('nav-add'), remove: $('nav-remove') };
+  const paint = (mode) => {
+    const next = vp.navPaint === mode ? null : mode;
+    vp.setNavPaint(next, parseFloat($('nav-brush').value) || 0.5);
+    for (const [id, b] of Object.entries(buttons)) b.classList.toggle('on', vp.navPaint === id);
+    toast(next
+      ? `${next === 'add' ? 'Adding to' : 'Removing from'} the bot grid. Click the button again to stop.`
+      : 'Brush put down.');
+  };
+  buttons.add.onclick = () => paint('add');
+  buttons.remove.onclick = () => paint('remove');
+  $('nav-brush').onchange = () => vp.setNavPaint(vp.navPaint, parseFloat($('nav-brush').value) || 0.5);
+
+  $('nav-clear').onclick = async () => {
+    vp.clearNavMask();
+    await commitNavMask();
+    toast('Bot grid cleared.');
+  };
+
+  // One undo step per stroke rather than per cell, so a long drag is one edit.
+  vp.addEventListener('nav-painted', () => { commitNavMask(); });
+}
+
+/** Re-encode the painted mask back into the map. */
+async function commitNavMask() {
+  if (!vp.navMask || !map?.navCloud) return;
+  map.navCloud.encodedPoints = await encodeNavCloud(vp.navMask);
+  touchEdited();
+  refreshNavCount();
+}
+
+function refreshNavCount() {
+  const mask = vp.navMask;
+  if (!mask) return void ($('nav-count').textContent = '');
+  let n = 0;
+  for (let i = 0; i < mask.length; i++) if (mask[i]) n++;
+  const area = n * 0.25 * 0.25;
+  $('nav-count').textContent = n ? `${area.toFixed(1)} m²` : 'empty';
+}
+
+function clampBound(v, lo, hi) {
   const n = Math.round(parseFloat(v) || lo);
   return Math.min(hi, Math.max(lo, n));
 }
@@ -690,16 +970,17 @@ function propSuggestions(key) {
  * weapon spawners and the enemy spawners, which have the same shape: one
  * object, a set of things it may produce, and the game choosing among them.
  */
-function chipSetRow(label, id, all, chosen, icons) {
+function chipSetRow(label, id, all, chosen, icons, labels) {
   // Union, so a value from a future game update still shows and stays ticked.
   const every = [...new Set([...all, ...chosen])];
   const chips = every.map((v) => {
     const on = chosen.includes(v);
     const icon = icons?.[v] ? iconUrl({ icon: icons[v] }) : null;
     const art = icon ? `<img src="${escapeHtml(icon)}" alt="" loading="lazy">` : '';
-    return `<label class="wchip${on ? ' on' : ''}">
+    // The file's spelling on the tooltip, a readable one on the chip.
+    return `<label class="wchip${on ? ' on' : ''}" title="${escapeHtml(v)}">
       <input type="checkbox" data-value="${escapeHtml(v)}"${on ? ' checked' : ''}>
-      ${art}<span>${escapeHtml(v)}</span></label>`;
+      ${art}<span>${escapeHtml(labels?.[v] ?? v)}</span></label>`;
   }).join('');
   return `<div class="field wfield"><span>${escapeHtml(label)}</span>
     <div class="wgrid" id="${id}">${chips}</div>
@@ -707,11 +988,12 @@ function chipSetRow(label, id, all, chosen, icons) {
 }
 
 function weaponRow(value) {
-  return chipSetRow('Weapons', 'f-weapons', WEAPONS, parseWeapons(value), WEAPON_ICONS);
+  return chipSetRow('Weapons', 'f-weapons', WEAPONS, parseWeapons(value), WEAPON_ICONS, null);
 }
 
 function enemyTypesRow(value) {
-  return chipSetRow('Enemies', 'f-enemies', ENEMY_TYPES, parseEnemyTypes(value), null);
+  return chipSetRow('Enemies', 'f-enemies', ENEMY_TYPES, parseEnemyTypes(value),
+    ENEMY_ICONS, ENEMY_LABELS);
 }
 
 /** Behaviour is one of a known few, so a select rather than a free text box. */
@@ -748,7 +1030,7 @@ function propRows(mesh) {
  * the game's shorthand for "no restriction", and `format` turns the ticked set
  * back into the value written to the file.
  */
-function wireChipSet(mesh, { id, prop, noun, plural, any, format }) {
+function wireChipSet(mesh, { id, prop, noun, plural, any, format, labels }) {
   const host = $(id);
   if (!host) return;
   const hint = $(`${id}-hint`);
@@ -756,12 +1038,12 @@ function wireChipSet(mesh, { id, prop, noun, plural, any, format }) {
 
   const describe = (list, written) => {
     if (written === any) return `Any ${noun} — the game writes "${any}".`;
-    if (list.length === 1) return `Always spawns a ${list[0]}.`;
+    if (list.length === 1) return `Always spawns a ${labels?.[list[0]] ?? list[0]}.`;
     // The written value is one unbreakable token, so offer the line breaker a
-    // zero-width space after each separator: it wraps at the semicolons rather
-    // than through the middle of a name. Display only — the value stored on the
+    // zero-width space after each separator: it wraps at the commas rather than
+    // through the middle of a name. Display only — the value stored on the
     // object is untouched.
-    const wrappable = written.replaceAll(';', ';​');
+    const wrappable = written.replaceAll(',', ',​');
     return `${list.length} ${plural} — the game picks one at random. Written "${wrappable}".`;
   };
 
@@ -796,7 +1078,7 @@ function wireSpawnerRows(mesh) {
   });
   wireChipSet(mesh, {
     id: 'f-enemies', prop: 'enemyTypes', noun: 'enemy', plural: 'enemies',
-    any: ENEMY_ANY, format: formatEnemyTypes,
+    any: ENEMY_ANY, format: formatEnemyTypes, labels: ENEMY_LABELS,
   });
   const behaviour = $('f-behaviour');
   if (behaviour) {
@@ -912,57 +1194,117 @@ function applyNumericEdit() {
 // ---------------------------------------------------------------------------
 // Rule sets
 // ---------------------------------------------------------------------------
-// One tab per game mode. A field left blank writes nothing, which is how the
-// game says "use the default" — see rules.js. Touched settings get a dot next
-// to the label so it is obvious at a glance what this map actually overrides.
+// A map holds a list of rule sets, each with a free-text name and a base mode.
+// The mode decides which settings render; the name is just a name. Two sets may
+// share a mode and differ only by what they are called — "Domination Fast" and
+// "Domination Long" is the game's own example — so the list is addressed by
+// position, never by type, and its order is part of the file.
+//
+// A field left blank writes nothing, which is how the game says "use the
+// default" — see rules.js. Every control therefore shows the value that will
+// actually apply, greyed when it is the game choosing it rather than this map,
+// and touched settings get a dot next to the label so it is obvious at a glance
+// what the map overrides.
+
+let armedDelete = -1;    // rule set index whose delete button is waiting to be confirmed
+
+function ruleSets() {
+  return map?.ruleSets || [];
+}
+
+/** Object types actually placed, for the mode-availability check. */
+function placedTypes() {
+  return new Set(vp.objects.map((m) => m.userData.def.type));
+}
+
+function rulesEdited() {
+  touchEdited();
+  buildRules();
+}
 
 function buildRules() {
   const tabs = $('mode-tabs');
   const body = $('rules-body');
   tabs.innerHTML = '';
   body.innerHTML = '';
-  const sets = map?.ruleSets || [];
-  if (!sets.length) {
-    body.innerHTML = '<p class="hint">This map has no rule sets.</p>';
-    $('rules-count').textContent = '';
-    return;
-  }
-  if (activeMode >= sets.length) activeMode = 0;
+  const sets = ruleSets();
+  $('rules-count').textContent = sets.length
+    ? `${sets.reduce((a, r) => a + overrideCount(r), 0)} set`
+    : '';
 
   sets.forEach((rs, i) => {
     const n = overrideCount(rs);
     const b = document.createElement('button');
-    b.className = 'pill' + (i === activeMode ? ' on' : '');
+    b.className = 'pill' + (i === activeRuleSet ? ' on' : '');
     b.textContent = rs.name || rs.type;
-    b.title = n ? `${n} setting${n === 1 ? '' : 's'} changed from the game default` : 'All defaults';
-    if (n) b.textContent += ` ${n}`;
-    b.onclick = () => { activeMode = i; buildRules(); };
+    // The count goes in its own element rather than on the end of the name.
+    // Names may end in a number — duplicating Domination gives "Domination 2" —
+    // and "Domination 2" meaning two overrides would read as the same thing.
+    if (n) {
+      const c = document.createElement('span');
+      c.className = 'n';
+      c.textContent = String(n);
+      b.appendChild(c);
+    }
+    b.title = `${rs.name || '(unnamed)'} [${rs.type}] — ` +
+      (n ? `${n} setting${n === 1 ? '' : 's'} changed from the game default` : 'all defaults');
+    b.onclick = () => { activeRuleSet = i; armedDelete = -1; buildRules(); };
     tabs.appendChild(b);
   });
+  tabs.appendChild(addRuleSetPicker());
 
-  const rs = sets[activeMode];
-  const fields = fieldsFor(rs.type);
-  $('rules-count').textContent = `${sets.reduce((a, r) => a + overrideCount(r), 0)} set`;
-
-  if (!fields.length) {
+  if (!sets.length) {
     body.innerHTML =
-      `<p class="hint">No known settings for mode <b>${escapeHtml(rs.type)}</b>. ` +
-      'Its values are kept as they came and exported unchanged.</p>';
+      '<p class="hint">This map has no rule sets. The game writes five — one per ' +
+      'mode, all at their defaults — so a map without any is unusual but legal. ' +
+      'Add one above.</p>';
     return;
   }
+  if (activeRuleSet >= sets.length) activeRuleSet = sets.length - 1;
 
+  const rs = sets[activeRuleSet];
   const frag = document.createDocumentFragment();
-  const heads = { [INT]: 'Numbers', [BOOL]: 'Toggles', [ENUM]: 'Options', [FLAGS]: 'Sources' };
-  let lastKind = null;
-  for (const f of fields) {
-    if (f.kind !== lastKind) {
-      const h = document.createElement('div');
-      h.className = 'rule-cat';
-      h.textContent = heads[f.kind];
-      frag.appendChild(h);
-      lastKind = f.kind;
+  frag.appendChild(ruleSetHeader(rs));
+
+  const missing = missingRequirements(rs.type, placedTypes());
+  if (missing.length) {
+    const w = document.createElement('p');
+    w.className = 'rs-warn';
+    w.textContent =
+      `The game only offers ${modeByType(rs.type)?.name || rs.type} once the map has ` +
+      `its objectives. Still to place: ${missing.join(', ')}. The rule set is kept ` +
+      'and exported either way.';
+    frag.appendChild(w);
+  }
+
+  const layout = layoutFor(rs);
+  if (!layout.length) {
+    const p = document.createElement('p');
+    p.className = 'hint';
+    p.innerHTML =
+      `No known settings for mode <b>${escapeHtml(rs.type)}</b>. ` +
+      'Its values are kept as they came and exported unchanged.';
+    frag.appendChild(p);
+  }
+
+  let derived = 0;
+  for (const section of layout) {
+    const h = document.createElement('div');
+    h.className = 'rule-cat' + (section.active ? '' : ' off');
+    h.textContent = section.name;
+    if (!section.active) {
+      const tag = document.createElement('em');
+      tag.textContent = section.id === 'spawners'
+        ? 'weapon source excludes spawners'
+        : 'weapon source excludes holsters';
+      h.appendChild(tag);
     }
-    frag.appendChild(ruleRow(rs, f));
+    frag.appendChild(h);
+    for (const f of section.fields) {
+      if (!f.active && !f.set) continue;   // hidden by a parent, and holding nothing
+      if (!f.confirmed) derived++;
+      frag.appendChild(ruleRow(rs, f));
+    }
   }
 
   const extra = unknownKeys(rs);
@@ -983,131 +1325,575 @@ function buildRules() {
   note.className = 'hint';
   note.style.marginTop = '12px';
   note.textContent =
-    'Blank means the game decides. Only the settings you change are written to ' +
-    'the file, exactly as the game does it.';
+    "Greyed values are the game's own — this map leaves them alone and writes " +
+    'nothing for them. Change one and it gets a dot; × puts it back. ' +
+    (derived
+      ? `${derived} of these settings have never appeared in an exported map: their ` +
+        "names come from the game's own rule assets and are marked with a dotted " +
+        'underline.'
+      : '');
   frag.appendChild(note);
 
   body.appendChild(frag);
 }
 
+/**
+ * Adding a set means picking its mode, and the mode it is given becomes its
+ * name — so "Free For All" from this list produces a set called Free For All
+ * running Free For All. A mode the map cannot play yet is still offered, with
+ * a note saying what it is waiting for, because maps get built in some order
+ * and the rules are as reasonable a place to start as the geometry.
+ */
+function addRuleSetPicker() {
+  const sel = document.createElement('select');
+  sel.className = 'pill add';
+  sel.title = 'Add a rule set';
+  const head = document.createElement('option');
+  head.textContent = '+ Add';
+  head.value = '';
+  sel.appendChild(head);
+  const present = placedTypes();
+  for (const m of MODES) {
+    const o = document.createElement('option');
+    o.value = m.type;
+    const missing = missingRequirements(m.type, present);
+    o.textContent = missing.length ? `${m.name} — needs ${missing.join(', ')}` : m.name;
+    sel.appendChild(o);
+  }
+  sel.onchange = () => {
+    if (!sel.value) return;
+    if (!map.ruleSets) map.ruleSets = [];
+    map.ruleSets.push(newRuleSet(sel.value, map.ruleSets));
+    activeRuleSet = map.ruleSets.length - 1;
+    armedDelete = -1;
+    rulesEdited();
+  };
+  return sel;
+}
+
+/**
+ * Name, base mode, and the five list operations the in-game screen has.
+ *
+ * Changing the base mode reshapes the set: settings both modes share keep their
+ * values, settings only the old mode had go. That is destructive and undo does
+ * not cover the rules, which is also why delete arms on the first click and
+ * fires on the second rather than going straight through.
+ */
+function ruleSetHeader(rs) {
+  const box = document.createElement('div');
+  box.className = 'rs-head';
+
+  const name = document.createElement('input');
+  name.type = 'text';
+  name.className = 'rs-name';
+  name.value = rs.name || '';
+  name.placeholder = 'Rule set name';
+  name.title = 'Shown in the game\'s rule set list. Names need not be unique.';
+  name.onchange = () => { rs.name = name.value; rulesEdited(); };
+  box.appendChild(name);
+
+  const mode = document.createElement('select');
+  mode.className = 'rs-mode';
+  mode.title = 'Base mode — decides which settings this set has';
+  const types = MODES.map((m) => [m.type, m.name]);
+  if (!modeByType(rs.type)) types.push([rs.type, `${rs.type} (unknown)`]);
+  for (const [value, label] of types) {
+    const o = document.createElement('option');
+    o.value = value;
+    o.textContent = label;
+    o.selected = value === rs.type;
+    mode.appendChild(o);
+  }
+  // The name is left alone on purpose. The game treats the two as independent —
+  // a set called "Co-op Survival" running Free For All is legal and shows the
+  // Free For All rules — so renaming behind the user's back would be a guess.
+  mode.onchange = () => {
+    changeBaseMode(rs, mode.value);
+    armedDelete = -1;
+    rulesEdited();
+  };
+  box.appendChild(mode);
+
+  const acts = document.createElement('div');
+  acts.className = 'rs-acts';
+  const sets = ruleSets();
+  const i = activeRuleSet;
+
+  const move = (to) => {
+    const [item] = sets.splice(i, 1);
+    sets.splice(to, 0, item);
+    activeRuleSet = to;
+    armedDelete = -1;
+    rulesEdited();
+  };
+  acts.appendChild(actButton('↑', 'Move up', i === 0, () => move(i - 1)));
+  acts.appendChild(actButton('↓', 'Move down', i === sets.length - 1, () => move(i + 1)));
+  acts.appendChild(actButton('⧉', 'Duplicate', false, () => {
+    sets.splice(i + 1, 0, duplicateRuleSet(rs, sets));
+    activeRuleSet = i + 1;
+    armedDelete = -1;
+    rulesEdited();
+  }));
+  acts.appendChild(actButton('↺', 'Reset every setting to the game default',
+    overrideCount(rs) === 0, () => { resetRuleSet(rs); armedDelete = -1; rulesEdited(); }));
+
+  const armed = armedDelete === i;
+  const del = actButton(armed ? 'Delete?' : '✕',
+    armed ? 'Click again to delete this rule set' : 'Delete this rule set', false, () => {
+      if (!armed) { armedDelete = i; buildRules(); return; }
+      sets.splice(i, 1);
+      activeRuleSet = Math.max(0, i - 1);
+      armedDelete = -1;
+      rulesEdited();
+      toast('Rule set deleted. Undo does not cover the rules panel.');
+    });
+  del.classList.add('danger');
+  if (armed) del.classList.add('armed');
+  acts.appendChild(del);
+
+  box.appendChild(acts);
+  return box;
+}
+
+function actButton(text, title, disabled, onclick) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'rs-act';
+  b.textContent = text;
+  b.title = title;
+  b.disabled = !!disabled;
+  b.onclick = onclick;
+  return b;
+}
+
+/**
+ * One setting.
+ *
+ * Every control shows the value that will actually apply, whether or not this
+ * map is the one choosing it: a setting nobody has touched draws its game
+ * default greyed out rather than the word "Default", so the panel reads as what
+ * the match will play like. Touched rows get the accent dot and a "clear"
+ * button that takes the setting back out of the file entirely — which is not
+ * the same as setting it to the default, and is why the button exists.
+ *
+ * Two states are marked rather than hidden. A row whose parent has turned it
+ * off but which still holds a value is dimmed and labelled, because the value
+ * is in the file and exported and there would otherwise be nothing that could
+ * clear it. And a number outside the in-game stepper's range is flagged rather
+ * than clamped — the reference export itself carries one, and rewriting a value
+ * the game wrote would be worse than pointing at it.
+ */
 function ruleRow(rs, f) {
   const row = document.createElement('div');
   row.className = 'rule';
-  const has = rs[f.dict][f.key] !== undefined;
-  if (has) row.classList.add('set');
+  const has = f.set;
+  const value = has ? rs[f.dict][f.key] : undefined;
+  row.classList.add(has ? 'set' : 'default');
+  if (!f.active) row.classList.add('off');
+  const bad = has && outOfRange(f, value);
+  if (bad) row.classList.add('bad');
 
   const label = document.createElement('label');
   label.textContent = f.label;
-  label.title = f.key;
+  if (!f.confirmed) label.classList.add('derived');
+  const bits = [f.key];
+  const shown = describeFallback(f);
+  if (shown) bits.push(`game default ${shown}`);
+  if (f.kind === INT && !f.duration) bits.push(`range ${f.min}–${f.max}`);
+  if (!f.confirmed) {
+    bits.push("key name taken from the game's rule assets — no export has ever contained it");
+  }
+  if (!f.active) bits.push('not in effect with the current settings, but still written to the file');
+  if (bad) bits.push(`outside the in-game range of ${f.min}–${f.max}`);
+  label.title = bits.join('\n');
   row.appendChild(label);
+
+  const change = (v) => { setValue(rs, f.key, f.kind, v); rulesEdited(); };
+
+  // Takes the key back out of the file, which is not the same as zeroing it.
+  // Always built, so the column does not jump as rows are set and cleared; it
+  // is simply invisible on a row that has nothing to clear.
+  const clear = document.createElement('button');
+  clear.className = 'clear';
+  clear.type = 'button';
+  clear.textContent = '×';
+  clear.title = shown
+    ? `Back to the game default (${shown}), and out of the file`
+    : 'Back to the game default, and out of the file';
+  clear.disabled = !has;
+  clear.onclick = () => change(undefined);
 
   const cell = document.createElement('div');
   cell.className = 'val';
-  const change = (value) => {
-    setValue(rs, f.key, f.kind, value);
-    touchEdited();
-    buildRules();
-  };
 
   if (f.kind === BOOL) {
-    // Three states — on, off and untouched — so a checkbox alone will not do.
+    // On, off, and untouched. A plain checkbox cannot say "untouched", but it
+    // can show what untouched *means* — the default, greyed — which is more use
+    // than a third dropdown entry reading "Default". Clicking it commits an
+    // explicit value; the × beside it is how you get back to untouched.
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = effectiveValue(rs, f.key) === true;
+    cb.onchange = () => change(cb.checked);
+    cell.appendChild(cb);
+  } else if (f.kind === ENUM) {
+    // The default is an entry of its own rather than only a greyed value, so
+    // that a setting whose default is "Off" can still be set to Off on purpose.
+    // Those are different files, even though they are the same match.
     const sel = document.createElement('select');
-    sel.innerHTML =
-      '<option value="">Default</option><option value="true">On</option><option value="false">Off</option>';
-    sel.value = has ? String(rs[f.dict][f.key]) : '';
-    sel.onchange = () => change(sel.value === '' ? undefined : sel.value === 'true');
+    const none = document.createElement('option');
+    none.value = '';
+    none.textContent = shown ? `Default — ${optionLabel(f.fallback)}` : 'Default';
+    sel.appendChild(none);
+    const opts = [...new Set([...(f.options || []), ...(has ? [value] : [])])];
+    for (const o of opts) {
+      const el = document.createElement('option');
+      el.value = o;
+      el.textContent = optionLabel(o);
+      sel.appendChild(el);
+    }
+    sel.value = has ? value : '';
+    sel.onchange = () => change(sel.value || undefined);
     cell.appendChild(sel);
   } else if (f.kind === FLAGS) {
-    const chosen = new Set(parseFlags(rs[f.dict][f.key]));
-    const wrap = document.createElement('div');
-    wrap.className = 'flagset';
-    for (const opt of f.options || []) {
-      const l = document.createElement('label');
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.checked = chosen.has(opt);
-      cb.onchange = () => {
-        cb.checked ? chosen.add(opt) : chosen.delete(opt);
-        change(chosen.size ? joinFlags([...chosen]) : undefined);
-      };
-      l.append(cb, document.createTextNode(opt));
-      wrap.appendChild(l);
-    }
-    row.style.gridTemplateColumns = '1fr';
-    row.appendChild(wrap);
+    row.appendChild(flagsControl(rs, f, clear));
+    row.classList.add('wide');
     return row;
-  } else if (f.kind === ENUM) {
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.placeholder = 'Default';
-    input.value = has ? rs[f.dict][f.key] : '';
-    input.setAttribute('list', `dl-${f.key}`);
-    const dl = document.createElement('datalist');
-    dl.id = `dl-${f.key}`;
-    for (const opt of f.options || []) {
-      const o = document.createElement('option');
-      o.value = opt;
-      dl.appendChild(o);
-    }
-    input.onchange = () => change(input.value.trim() || undefined);
-    cell.append(input, dl);
+  } else if (f.duration) {
+    // Two steppers, one integer. The seconds field stops at 59 and does not
+    // roll over, and the ten-second floor is on the total rather than on
+    // either field, so both are read together on every edit.
+    const base = splitDuration(effectiveValue(rs, f.key));
+    const cur = splitDuration(value ?? 0);
+    const part = (unit, max, placeholder, now) => {
+      const i = document.createElement('input');
+      i.type = 'number';
+      i.step = '1';
+      i.min = '0';
+      i.max = String(max);
+      i.placeholder = String(placeholder);
+      i.value = has ? String(now) : '';
+      i.title = unit;
+      return i;
+    };
+    const m = part('minutes', 10000, base.minutes, cur.minutes);
+    const s = part('seconds', 59, base.seconds, cur.seconds);
+    const push = () => {
+      const mv = m.value.trim() === '' ? base.minutes : Number(m.value);
+      const sv = s.value.trim() === '' ? base.seconds : Number(s.value);
+      change(joinDuration(mv, sv));
+    };
+    m.onchange = push;
+    s.onchange = push;
+    cell.classList.add('dur');
+    cell.append(m, tag('m'), s, tag('s'));
   } else {
     const input = document.createElement('input');
     input.type = 'number';
     input.step = '1';
-    input.placeholder = 'Default';
-    input.value = has ? rs[f.dict][f.key] : '';
+    if (f.min !== undefined) input.min = String(f.min);
+    if (f.max !== undefined) input.max = String(f.max);
+    // The default sits in the placeholder rather than the value, so the field
+    // still reads as empty: typing the same number back would write it to the
+    // file, and an untouched setting must stay out of the file.
+    input.placeholder = f.fallback === undefined ? 'unknown' : String(f.fallback);
+    input.value = has ? String(value) : '';
     input.onchange = () => {
       const raw = input.value.trim();
-      change(raw === '' ? undefined : Math.round(parseFloat(raw) || 0));
+      if (raw === '') return change(undefined);
+      const n = clampInt(f, raw);
+      if (n === undefined) return change(undefined);
+      change(n);
     };
     cell.appendChild(input);
-    if (f.unit) {
-      const u = document.createElement('span');
-      u.className = 'u';
-      u.textContent = f.unit;
-      cell.appendChild(u);
-    }
+    if (f.unit) cell.appendChild(tag(f.unit));
   }
 
   row.appendChild(cell);
+  row.appendChild(clear);
   return row;
+}
+
+function tag(text) {
+  const u = document.createElement('span');
+  u.className = 'u';
+  u.textContent = text;
+  return u;
+}
+
+/**
+ * A multi-select, drawn as the set it is rather than as a dropdown.
+ *
+ * The game's control collapses to the word ALL when everything is ticked, which
+ * is a display convention only: the one flags value any export contains was
+ * written out in full as `Spawners;Holsters`, so this writes members and shows
+ * an ALL tag instead. Weapon-valued fields borrow the icon chips the weapon
+ * spawner inspector uses, which is what keeps nine weapons inside the panel.
+ *
+ * Weapon Source is the one field that cannot be emptied — it decides whether
+ * the last two sections exist at all — so its final tick refuses to come off.
+ */
+function flagsControl(rs, f, clear) {
+  const wrap = document.createElement('div');
+  wrap.className = 'flagset';
+  const chosen = new Set(parseFlags(effectiveValue(rs, f.key), f.options));
+  const weapons = (f.options || []).every((o) => WEAPON_ICONS[o]);
+
+  const push = (next) => {
+    setValue(rs, f.key, f.kind, joinFlags([...next], f));
+    rulesEdited();
+  };
+
+  const bar = document.createElement('div');
+  bar.className = 'flagbar';
+  const all = document.createElement('button');
+  all.type = 'button';
+  all.className = 'flagpick' + (chosen.size === (f.options || []).length ? ' on' : '');
+  all.textContent = 'All';
+  all.onclick = () => push(new Set(f.options));
+  bar.appendChild(all);
+  if (!f.required) {
+    const none = document.createElement('button');
+    none.type = 'button';
+    none.className = 'flagpick' + (chosen.size === 0 ? ' on' : '');
+    none.textContent = 'None';
+    none.title = 'Written as "None". Each holster is independent — this one only.';
+    none.onclick = () => push(new Set());
+    bar.appendChild(none);
+  }
+  bar.appendChild(clear);
+  wrap.appendChild(bar);
+
+  // Union, so a member from a future game update still shows and stays ticked.
+  const every = [...new Set([...(f.options || []), ...chosen])];
+  const grid = document.createElement('div');
+  grid.className = weapons ? 'wgrid' : 'flagrow';
+  for (const opt of every) {
+    const l = document.createElement('label');
+    l.className = weapons ? 'wchip' : 'flagopt';
+    if (chosen.has(opt)) l.classList.add('on');
+    l.title = opt;
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = chosen.has(opt);
+    cb.onchange = () => {
+      const next = new Set(chosen);
+      cb.checked ? next.add(opt) : next.delete(opt);
+      if (f.required && !next.size) {
+        cb.checked = true;
+        return toast('At least one weapon source has to stay on.');
+      }
+      push(next);
+    };
+    l.appendChild(cb);
+    if (weapons) {
+      const img = document.createElement('img');
+      img.src = iconUrl({ icon: WEAPON_ICONS[opt] });
+      img.alt = '';
+      img.loading = 'lazy';
+      l.appendChild(img);
+    }
+    const t = document.createElement('span');
+    t.textContent = optionLabel(opt);
+    l.appendChild(t);
+    grid.appendChild(l);
+  }
+  wrap.appendChild(grid);
+  return wrap;
 }
 
 // ---------------------------------------------------------------------------
 // Outliner
 // ---------------------------------------------------------------------------
 
+/**
+ * The object list. A group is one row that stands for all of its members and
+ * can be opened to show them, because a group of thirty crates was thirty rows
+ * of "Crate" and told you nothing. Selecting the group row selects the group,
+ * which is what copy, mirror and delete then act on.
+ */
+const openGroupRows = new Set();
+
 function buildOutliner() {
   const host = $('outliner');
   host.innerHTML = '';
-  vp.objects.forEach((m) => {
-    const row = document.createElement('div');
-    row.className = 'row' + (vp.selection.has(m) ? ' on' : '');
-    const dot = document.createElement('i');
-    dot.className = 'dot';
-    dot.style.background = m.userData.def.color;
-    const t = document.createElement('span');
-    t.className = 't';
-    t.textContent = m.userData.def.label;
-    row.append(dot, t);
-    if (m.userData.group) {
-      const g = document.createElement('span');
-      g.className = 'g';
-      g.textContent = m.userData.group.toUpperCase();
-      row.appendChild(g);
-    }
-    row.onclick = (e) => {
-      const picked = vp.expandGroup(m, e.ctrlKey || e.metaKey);
-      if (e.shiftKey) {
-        const next = new Set(vp.selection);
-        for (const o of picked) next.add(o);
-        vp.setSelection([...next]);
-      } else vp.setSelection(picked);
-    };
-    host.appendChild(row);
-  });
+
+  // Walk the objects in order and emit either a lone object or, at the first
+  // member of a group, the whole group. Order follows the scene, so a group
+  // sits where its first member is.
+  const groups = new Map();
+  for (const m of vp.objects) {
+    const g = m.userData.group;
+    if (!g) continue;
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(m);
+  }
+  const emitted = new Set();
+
+  for (const m of vp.objects) {
+    const g = m.userData.group;
+    if (!g) { host.appendChild(objectRow(m, false)); continue; }
+    if (emitted.has(g)) continue;
+    emitted.add(g);
+    const members = groups.get(g);
+    host.appendChild(groupRow(g, members));
+    if (openGroupRows.has(g)) for (const child of members) host.appendChild(objectRow(child, true));
+  }
   $('obj-count').textContent = String(vp.objects.length);
+}
+
+function selectFrom(list, e) {
+  if (e.shiftKey) {
+    const next = new Set(vp.selection);
+    for (const o of list) next.add(o);
+    vp.setSelection([...next]);
+  } else vp.setSelection(list);
+}
+
+function groupRow(id, members) {
+  const row = document.createElement('div');
+  const allSelected = members.every((m) => vp.selection.has(m));
+  const locked = members.every((m) => m.userData.locked);
+  row.className = 'row grouprow' + (allSelected ? ' on' : '') + (locked ? ' locked' : '');
+
+  const tw = document.createElement('span');
+  tw.className = 'tw';
+  tw.textContent = openGroupRows.has(id) ? '▾' : '▸';
+  tw.onclick = (e) => {
+    e.stopPropagation();
+    openGroupRows.has(id) ? openGroupRows.delete(id) : openGroupRows.add(id);
+    buildOutliner();
+  };
+
+  const dot = document.createElement('i');
+  dot.className = 'dot';
+  dot.style.background = members[0].userData.def.color;
+
+  const t = document.createElement('span');
+  t.className = 't';
+  t.textContent = `Group ${id.replace(/^g/, '')}`;
+
+  const n = document.createElement('span');
+  n.className = 'g';
+  n.textContent = String(members.length);
+
+  row.append(tw, dot, t, n, lockToggle(members, locked));
+  row.onclick = (e) => selectFrom(members, e);
+  row.oncontextmenu = (e) => { e.preventDefault(); showContextMenu(e.clientX, e.clientY, members); };
+  return row;
+}
+
+function objectRow(m, child) {
+  const row = document.createElement('div');
+  row.className = 'row' + (vp.selection.has(m) ? ' on' : '') +
+    (child ? ' child' : '') + (m.userData.locked ? ' locked' : '');
+  const dot = document.createElement('i');
+  dot.className = 'dot';
+  dot.style.background = m.userData.def.color;
+  const t = document.createElement('span');
+  t.className = 't';
+  t.textContent = m.userData.def.label;
+  row.append(dot, t, lockToggle([m], !!m.userData.locked));
+  row.onclick = (e) => selectFrom(vp.expandGroup(m, e.ctrlKey || e.metaKey), e);
+  row.oncontextmenu = (e) => {
+    e.preventDefault();
+    showContextMenu(e.clientX, e.clientY, vp.expandGroup(m, e.ctrlKey || e.metaKey));
+  };
+  return row;
+}
+
+/**
+ * Right-click menu for whatever was clicked, in the viewport or the list.
+ *
+ * It is where locking lives, and it has to be, because a locked object cannot
+ * enter the selection — so every command that reads the selection is closed to
+ * it. This menu reads what was clicked instead.
+ */
+let contextMenuEl = null;
+
+function showContextMenu(x, y, meshes) {
+  hideContextMenu();
+  if (!meshes.length) return;
+  const locked = meshes.every((m) => m.userData.locked);
+  const mixed = !locked && meshes.some((m) => m.userData.locked);
+  const many = meshes.length > 1;
+
+  const el = document.createElement('div');
+  el.className = 'ctxmenu';
+  el.style.left = `${x}px`;
+  el.style.top = `${y}px`;
+
+  const item = (label, hint, fn, disabled = false) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.disabled = disabled;
+    b.innerHTML = `<span>${escapeHtml(label)}</span>` + (hint ? `<kbd>${escapeHtml(hint)}</kbd>` : '');
+    b.onclick = () => { hideContextMenu(); fn(); };
+    el.appendChild(b);
+    return b;
+  };
+
+  const head = document.createElement('div');
+  head.className = 'ctxhead';
+  head.textContent = many
+    ? `${meshes.length} objects${meshes[0].userData.group ? ' · group' : ''}`
+    : meshes[0].userData.def.label;
+  el.appendChild(head);
+
+  if (locked || mixed) {
+    item(mixed ? 'Unlock all' : 'Unlock', '', () => {
+      vp.setLocked(meshes, false);
+      vp.setSelection(meshes);
+      touchEdited();
+      refreshAll();
+      toast(`Unlocked ${meshes.length} object${many ? 's' : ''}.`);
+    });
+  }
+  if (!locked) {
+    item('Lock', '', () => {
+      vp.setLocked(meshes, true);
+      touchEdited();
+      refreshAll();
+      toast(`Locked ${meshes.length} object${many ? 's' : ''}. Right-click it to unlock.`);
+    });
+  }
+
+  const sep = document.createElement('div');
+  sep.className = 'ctxsep';
+  el.appendChild(sep);
+
+  item('Select', '', () => vp.setSelection(meshes), locked);
+  item('Duplicate', 'Ctrl D', () => { vp.setSelection(meshes); duplicate(); }, locked);
+  item('Copy', 'Ctrl C', () => { vp.setSelection(meshes); copySelection(); }, locked);
+  item('Delete', 'Del', () => { vp.setSelection(meshes); deleteSelection(); }, locked);
+
+  document.body.appendChild(el);
+  // Keep it on screen when the click was near an edge.
+  const r = el.getBoundingClientRect();
+  if (r.right > innerWidth) el.style.left = `${Math.max(0, innerWidth - r.width - 4)}px`;
+  if (r.bottom > innerHeight) el.style.top = `${Math.max(0, innerHeight - r.height - 4)}px`;
+  contextMenuEl = el;
+}
+
+function hideContextMenu() {
+  contextMenuEl?.remove();
+  contextMenuEl = null;
+}
+
+/** The padlock beside a row — and the only way back for a locked object. */
+function lockToggle(meshes, locked) {
+  const b = document.createElement('button');
+  b.className = 'lockbtn' + (locked ? ' on' : '');
+  b.type = 'button';
+  b.textContent = locked ? '🔒' : '🔓';
+  b.title = locked ? 'Locked — click to unlock' : 'Lock against editing';
+  b.onclick = (e) => {
+    e.stopPropagation();
+    vp.setLocked(meshes, !locked);
+    touchEdited();
+    refreshAll();
+  };
+  return b;
 }
 
 // ---------------------------------------------------------------------------
@@ -1135,6 +1921,7 @@ function wireKeyboard() {
     if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); exportMap(); return; }
 
     switch (e.key) {
+      case 'q': case 'Q': vp.setGizmoMode('combined'); break;
       case 'w': case 'W': vp.setGizmoMode('translate'); break;
       case 'e': case 'E': vp.setGizmoMode('rotate'); break;
       case 'r': case 'R': vp.setGizmoMode('scale'); break;
@@ -1188,6 +1975,30 @@ function wireDragDrop() {
 
 function wireViewport() {
   const box = $('marquee');
+
+  // Right-click reaches an object whether or not it is locked, which is what
+  // makes locking reversible: nothing else can touch one.
+  $('view').addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    const r = $('view').getBoundingClientRect();
+    const ndc = {
+      x: ((e.clientX - r.left) / r.width) * 2 - 1,
+      y: -((e.clientY - r.top) / r.height) * 2 + 1,
+    };
+    const hit = vp.pickAt(ndc);
+    if (!hit) return hideContextMenu();
+    // A click inside the current selection acts on all of it; outside, on the
+    // thing clicked and its group.
+    const meshes = vp.selection.has(hit) && vp.selection.size > 1
+      ? [...vp.selection]
+      : vp.expandGroup(hit, e.ctrlKey || e.metaKey);
+    showContextMenu(e.clientX, e.clientY, meshes);
+  });
+  addEventListener('pointerdown', (e) => {
+    if (contextMenuEl && !contextMenuEl.contains(e.target)) hideContextMenu();
+  }, true);
+  addEventListener('blur', hideContextMenu);
+
   vp.addEventListener('marquee-move', (e) => {
     const r = e.detail;
     box.style.display = 'block';
@@ -1197,7 +2008,7 @@ function wireViewport() {
     box.style.height = `${r.y2 - r.y1}px`;
   });
   vp.addEventListener('marquee-end', () => { box.style.display = 'none'; });
-  vp.addEventListener('selection', () => { buildSelectionPanel(); buildOutliner(); refreshStatus(); });
+  vp.addEventListener('selection', () => { buildSelectionPanel(); buildOutliner(); refreshArrayDefaults(); refreshStatus(); });
   vp.addEventListener('transform', () => { refreshSelectionValues(); refreshStatus(); });
   vp.addEventListener('commit-end', () => commit());
   vp.addEventListener('placement-end', (e) => {
@@ -1232,9 +2043,10 @@ async function openFile(file) {
     vp.clearObjects();
     for (const mo of parsed.mapObjects) vp.addObject(mo);
     applyMapMeta();
-    activeMode = 0;
+    activeRuleSet = 0;
     buildRules();
     await vp.setNavCloud(map.navCloud);
+    refreshNavCount();
     $('nav-shape').value = 'keep';
     vp.setSelection([]);
     vp.setView('persp');
@@ -1262,7 +2074,10 @@ function exportMap() {
     map.mapObjects = vp.objects.map((m) => vp.toMapObject(m));
     const text = serializeMap(map);
     const name = mapFileName(map.name, map.guid);
-    const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+    // Not application/json: `download` names the file without an extension,
+    // and browsers append one inferred from the MIME type when it is missing.
+    // A JSON type gets ".json" bolted on and the game will not read the file.
+    const url = URL.createObjectURL(new Blob([text], { type: 'application/octet-stream' }));
     const a = document.createElement('a');
     a.href = url;
     a.download = name;
@@ -1314,7 +2129,7 @@ function refreshStatus() {
   $('st-sel').textContent = `${vp.objects.length} objects · ${n} selected`;
   $('b-undo').disabled = !undoStack.length;
   $('b-redo').disabled = !redoStack.length;
-  for (const mode of ['translate', 'rotate', 'scale']) {
+  for (const mode of ['combined', 'translate', 'rotate', 'scale']) {
     $(`m-${mode}`).classList.toggle('on', vp.gizmoMode === mode);
   }
 

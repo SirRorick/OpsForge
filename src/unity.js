@@ -13,6 +13,21 @@
 //
 // Written out longhand here rather than leaning on three.js so it can be
 // tested standalone.
+//
+// **Then every object is turned half a turn about its own vertical axis.**
+// Confirmed in the headset against the editor: positions land where the editor
+// says, but a crate's lettering sits on the opposite face and a corner
+// barrier's arms wrap the opposite corner — the text still reads left to right,
+// so it is a rotation and not a mirror. `MODEL_YAW` below is that half turn.
+//
+// It is applied on the right, in the object's own frame, because that is where
+// the evidence puts it. A world-side half turn is the difference between
+// reflecting Z and reflecting X, and that would move every object as well as
+// turn it — positions are right, so it is not that. What is left is the meshes'
+// own forward axis pointing the other way to the map's, which is a property of
+// each mesh. Rotating all 167 prefabs and placeholders would say the same
+// thing; doing it here says it once, and keeps the measured `anchor` values
+// pointing at the corner the tracer actually found.
 // ---------------------------------------------------------------------------
 
 export const DEG = Math.PI / 180;
@@ -60,14 +75,36 @@ export function convertPosition(p) {
   return [p.x, p.y, -p.z];
 }
 
+/**
+ * The half turn about the object's own Y that sits between a map file's
+ * rotation and the way the mesh faces. See the note at the top of the file.
+ * As a quaternion about +Y by pi: [0, 1, 0, 0].
+ */
+export const MODEL_YAW = [0, 1, 0, 0];
+
+/** Hamilton product, [x,y,z,w] convention. */
+function mulQuat(a, b) {
+  const [ax, ay, az, aw] = a;
+  const [bx, by, bz, bw] = b;
+  return [
+    aw * bx + ax * bw + ay * bz - az * by,
+    aw * by - ax * bz + ay * bw + az * bx,
+    aw * bz + ax * by - ay * bx + az * bw,
+    aw * bw - ax * bx - ay * by - az * bz,
+  ];
+}
+
 /** Unity euler degrees {x,y,z} -> three.js quaternion [x,y,z,w]. */
 export function unityEulerToQuat(r) {
-  return quatFromEulerYXZ(-r.x * DEG, -r.y * DEG, r.z * DEG);
+  const q = quatFromEulerYXZ(-r.x * DEG, -r.y * DEG, r.z * DEG);
+  return mulQuat(q, MODEL_YAW);
 }
 
 /** three.js quaternion [x,y,z,w] -> Unity euler degrees {x,y,z} in [0, 360). */
 export function quatToUnityEuler(q) {
-  const [ex, ey, ez] = eulerYXZFromQuat(q);
+  // Undo the half turn first. It is its own inverse, so the same multiply
+  // serves both ways round and the round trip cannot drift.
+  const [ex, ey, ez] = eulerYXZFromQuat(mulQuat(q, MODEL_YAW));
   return {
     x: wrap360(-ex * RAD),
     y: wrap360(-ey * RAD),

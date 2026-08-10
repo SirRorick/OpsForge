@@ -5,3 +5,24 @@ __pycache__/
 Thumbs.db
 .vscode/
 .idea/
+
+reference/GameAssets/
+
+# reference/ is a private working directory in its entirety: the AssetRipper
+# extraction, the packaged builds, design references, notes. None of it is
+# published. The evidence the test suite needs travels in test/fixtures/maps/
+# instead, so a fresh clone still verifies the format byte for byte.
+reference/
+
+# assets/Icons is committed — the library thumbnails. assets/Prefabs is not:
+# those are the game's meshes, staged locally by `npm run stage-assets`. A fresh
+# clone therefore has thumbnails and the stand-in shapes, which is the intended
+# open-source experience.
+assets/Prefabs/*
+!assets/Prefabs/README.md
+
+# The release folder assembled by `npm run package:public`. dist/ itself is
+# committed — that single bundled file is the build — but this is a copy of it
+# plus the icons, zipped up for a GitHub release and rebuilt on demand.
+dist/spatial-ops-map-editor/
+test/

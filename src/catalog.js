@@ -15,16 +15,21 @@
 import { BUILTIN_PACKS } from './packs.js';
 
 /**
- * Where the game asset dump lives, relative to the page.
+ * Where the editor's art lives, relative to the page.
  *
  * `model` and `icon` in a pack are bare asset names, not paths, because that is
  * what the dump calls them and tools/match-assets.mjs reports. Resolving them
- * here keeps the packs portable if the dump moves, and keeps the whole thing
- * optional: the dump is gitignored and absent for anyone who has not extracted
- * it, so both loaders below fall back rather than fail. That fallback is the
- * reason the single-file dist/ build still works with no assets at all.
+ * here keeps the packs portable, and keeps the whole thing optional: both
+ * loaders below fall back rather than fail.
+ *
+ * That fallback is the entire difference between the two builds. There is one
+ * editor and one `assets/` folder, and what is sitting in it decides what you
+ * see — `assets/Icons` is committed, `assets/Prefabs` is gitignored, so a fresh
+ * clone has thumbnails and stand-in shapes, and a machine that has run
+ * `npm run stage-assets` has the game's own models as well. No forks, no build
+ * flags, nothing conditional in the code.
  */
-export const ASSET_BASE = 'reference/GameAssets/';
+export const ASSET_BASE = 'assets/';
 
 /** URL of an entry's prefab mesh, or null when it has none. */
 export function modelUrl(def, base = ASSET_BASE) {
@@ -57,6 +62,15 @@ export function registerPack(pack) {
       model: null,
       texture: null,
       opacity: 1,
+      // Where the object's origin sits in its own footprint, as a fraction of
+      // the width and depth. Centred unless the pack says otherwise — see
+      // geometryFor, and the corner barriers that need it.
+      anchor: [0.5, 0.5],
+      // A themed pack paints everything in it one colour, so the colour lives
+      // on the pack. An entry may still carry its own and win: Gameplay Objects
+      // and Mode Objectives do exactly that, because a red explosive barrel and
+      // a team-blue spawn zone are telling you something the pack cannot.
+      color: pack.color,
       ...raw,
       key: raw.key || raw.type,
       pack: pack.id,
@@ -142,6 +156,43 @@ export function unknownDef(type) {
 
 export function defOrUnknown(type) {
   return getDef(type) || unknownDef(type);
+}
+
+/**
+ * Two shapes name the same kind of piece.
+ *
+ * Shape ids are `family` plus an optional variant in TitleCase —
+ * `wall`, `wallPlank`, `wallLayered` are all walls, and
+ * `barrierFull`, `barrierFullSlab` are all full-height barriers. The remainder
+ * has to start with a capital, which is what keeps `barrierD` from swallowing
+ * `barrierDoor`.
+ */
+export function sameShapeFamily(a, b) {
+  if (a === b) return true;
+  const [shortest, longest] = a.length < b.length ? [a, b] : [b, a];
+  return longest.startsWith(shortest) && /^[A-Z]/.test(longest.slice(shortest.length));
+}
+
+/**
+ * The entry in `packId` that stands for the same piece as `def` — Camo's
+ * barrier corner for the Default one — or null when that pack has no
+ * equivalent. Used by mirroring, which can build the far half of a map out of
+ * a different theme.
+ */
+export function equivalentIn(def, packId) {
+  const pack = packs.get(packId);
+  if (!def || !pack) return null;
+  if (def.pack === packId) return def;
+  const candidates = pack.objects
+    .map((raw) => byKey.get(raw.key || raw.type))
+    .filter((d) => d && sameShapeFamily(d.shape, def.shape));
+  if (!candidates.length) return null;
+  // An exact shape match beats a family match, and a visible entry beats a
+  // hidden one — otherwise a Solid Box could mirror into its Grounded twin,
+  // which is the same mesh with different rotation limits.
+  return candidates.find((d) => d.shape === def.shape && !d.hidden)
+    ?? candidates.find((d) => !d.hidden)
+    ?? candidates[0];
 }
 
 /** Library entries of a pack, grouped by category, hidden ones left out. */
