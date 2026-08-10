@@ -3,15 +3,15 @@
 Reverse engineered from sixteen v4 map files exported out of the in-game
 editor — one per library group, one per object theme, one with every rule set
 option deliberately changed, one with none of them changed, and one holding a
-pair of enemy spawners between them naming every enemy in the game. They live
-in `reference/`. Everything here is
-verified against those files unless marked **unconfirmed**, and the test suite
-re-exports all sixteen byte for byte on every run. Corrections welcome.
+pair of enemy spawners between them naming every enemy in the game. Those files
+are not published. Everything here is verified against them unless marked
+**unconfirmed**: each one loads and re-exports byte for byte, which is the
+standard every claim below is held to. Corrections welcome.
 
 ## The file itself
 
 - **No extension.** The name is `` `${name}_${guid}` `` — e.g.
-  `Default_f1d7dd74461f492aa897773d77451a78`.
+  `Warehouse_3f2b1c4d5e6a7b8c9d0e1f2a3b4c5d6e`.
 - **Minified JSON**, UTF-8, no BOM, no trailing newline.
 - Serialised by **Newtonsoft.Json**, which matters for two reasons below.
 
@@ -286,10 +286,10 @@ for every object that is not deliberately tilted or mounted in the air — the
 free-rotated `BoxSolid`, the `DamageBox` volumes (placed at ~90° about X) and
 the wall-mounted `Jumbotron`.
 
-This has a consequence for the editor's placeholder meshes: floor lock drops a
-selection until its bounding box rests on `y = 0`, so a placeholder whose
-geometry misses the floor by a centimetre would shift the object every time it
-is edited and write that shift into the exported map. `geometryFor` therefore
+This has a consequence for the editor's placeholder meshes: **Drop to floor**
+lowers a selection until its bounding box rests on `y = 0`, so a placeholder
+whose geometry misses the floor by a centimetre would shift the object it
+stands for and write that shift into the exported map. `geometryFor` therefore
 normalises every placeholder to sit exactly on the cell floor.
 
 ### The `Grounded` suffix

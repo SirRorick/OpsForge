@@ -15,7 +15,7 @@ import { dirname, join } from 'node:path';
 const ROOT = dirname(fileURLToPath(import.meta.url));
 export const ORDER = [
   'unity.js', 'rules.js', 'format.js', 'packs.js', 'catalog.js',
-  'placeholders.js', 'gizmo.js', 'scene.js', 'app.js',
+  'placeholders.js', 'checkpoints.js', 'gizmo.js', 'scene.js', 'app.js',
 ];
 
 // Matches single- and multi-line imports alike, capturing the module specifier
@@ -64,9 +64,9 @@ export function build() {
  * bundle is a single scope and the second declaration is a SyntaxError that
  * kills the whole editor on load.
  *
- * Nothing else catches it: `npm test` never imports `app.js` or `scene.js`
- * because they pull in three.js, so the first sign is a blank page. Cheap to
- * check here, where the flat scope is actually built.
+ * Nothing else catches it. `app.js` and `scene.js` pull in three.js, so they
+ * only ever run in a browser, and the first sign of a clash is a blank page.
+ * Cheap to check here, where the flat scope is actually built.
  *
  * Top-level declarations only — the regex is anchored at column zero, so
  * anything indented is inside a function and has a scope of its own.

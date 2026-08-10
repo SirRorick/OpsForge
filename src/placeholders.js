@@ -1020,18 +1020,52 @@ const builders = {
   dominationZoneB: () => dominationZone(2),
   dominationZoneC: () => dominationZone(3),
 
-  // CaptureFlagSpawnPointTeam1 and Team2 contain **no meshes at all** — only
-  // nodes and UI, with the flag itself built at runtime — so unlike everything
-  // else here this one has nothing to measure and is designed from the library
-  // icon. Say so rather than implying it was traced.
-  flagSpawn: () =>
-    merge([
-      cyl(0.46, 0.06, 0.03, 16),
-      ring(0.4, 0.035, 0, 0.07),
-      cyl(0.05, 0.9, 0.5, 8),
-      cyl(0.07, 0.05, 0.94, 8),
-      prism([[0, 0], [0.44, -0.1], [0.44, 0.26], [0, 0.36]], 0.03, 0.03, 0.62, 0),
-    ]),
+  // CaptureFlagSpawnPointTeam1 and Team2, 0.637 x 2.15 x 0.2.
+  //
+  // These two prefabs hold **no meshes at all**: the flag is built at runtime,
+  // which is why looking for a flag model finds nothing. What they do hold is a
+  // rig, and a rig is measurable — every number below is off the prefab's own
+  // nodes rather than eyeballed:
+  //
+  //   Outline      a box from y = 0 to 2.15, 0.2 across in x and z: the pole
+  //   MidCollider  0.2 x 2.2 x 0.2 at y = 1.1, agreeing with it
+  //   FlagFloat    y = 0.8, and FlagBase 0.993 above it -> the cloth hangs from
+  //                y = 1.793
+  //   FlagBase -> FlagMiddle1 -> FlagMiddle2 -> FlagEnd, three horizontal bone
+  //                offsets of 0.162, 0.184 and 0.191 -> the cloth reaches
+  //                0.537 m from the pole, and those are the stations the game's
+  //                own cloth waves about, so they are the stations used here
+  //
+  // Two things are not measurable and come from the library icon
+  // (Icon_OrangeTeamFlag / Icon_PurpleTeamFlag) instead: how far the cloth
+  // hangs, and the swallowtail notch cut into its trailing edge. The notch is
+  // the whole reason this reads as a flag from across the arena rather than as
+  // a signpost, which the previous stand-in — a 0.44 m pennant on a 0.9 m stick
+  // — did not.
+  //
+  // The cell is not square (0.637 wide against 0.2 deep), so anything round has
+  // to be authored as the ellipse that comes out circular, and anything turned
+  // in the XZ plane would shear. Hence the local helpers.
+  flagSpawn: () => {
+    const W = 0.637, H = 2.15, D = 0.2, A = 0.157;   // must match the catalog
+    const cx = (m) => m / W - 0.5 + A;               // metres from the pole -> cell x
+    const cy = (m) => m / H;
+    const cz = (m) => m / D;
+    /** An upright round post of radius `r` metres, `h` tall, standing at `y`. */
+    const post = (r, h, y, seg = 12) =>
+      place(cyl(1, cy(h), 0, seg), { s: [r / W, 1, r / D], x: cx(0), y: cy(y + h / 2) });
+
+    return merge([
+      // Foot: the 0.2 m square the collider claims, drawn as the disc it reads
+      // as. Nothing in the prefab says there is a base — but an objective you
+      // drag around wants a visible footprint, and this is exactly the one the
+      // game reserves for it.
+      post(0.1, 0.05, 0),
+      post(0.03, 2.15, 0),          // the pole itself, full height
+      post(0.045, 0.06, 2.06),      // a collar under the tip, so it reads as a pole
+      flagCloth(cx, cy, cz),
+    ]);
+  },
 
   // EnemySpawnPoint, 1.061 x 0.289 x 1.059 — a flat ring on the floor with a
   // low marker, not the tall pillar it used to be drawn as.
@@ -1046,6 +1080,58 @@ const builders = {
   // Deliberately odd so an unrecognised type is impossible to mistake.
   unknown: () => octa(0.5, 0, 0.5, 0),
 };
+
+/**
+ * The cloth half of the capture flag, as a waving sheet.
+ *
+ * The one thing in this file that is a surface rather than an assembly of
+ * solids, because a flag is a surface: boxes and prisms can make a pennant, not
+ * something that reads as cloth at ten metres. Parameterised by u along the
+ * flag and v down it, both running 0 to 1, and evaluated in metres before the
+ * caller's cell mapping is applied.
+ *
+ *   u  0 at the pole, 1 at the free end 0.537 m out — the prefab's own bone
+ *      chain — waving in z, held still where it meets the pole
+ *   v  0 at the top edge, where FlagBase hangs it at y = 1.793, and 1 at the
+ *      bottom 0.55 m below, which the icon gives rather than the rig
+ *
+ * The trailing edge is cut back in the middle and full at the corners: the
+ * swallowtail both team icons have.
+ *
+ * Emitted twice, a few millimetres either side of the surface and wound the
+ * other way round, so the flag is solid whichever side you are standing on.
+ * geometryFor recomputes the normals afterwards, so only the winding matters.
+ */
+function flagCloth(cx, cy, cz) {
+  const REACH = 0.537, TOP = 1.793, DROP = 0.55, NOTCH = 0.22, WAVE = 0.055;
+  const NU = 10, NV = 6, SKIN = 0.008;
+
+  const at = (i, j, side) => {
+    const v = j / NV;
+    const u = (i / NU) * (1 - NOTCH * (1 - Math.abs(2 * v - 1)));
+    const z = WAVE * u * Math.sin(u * Math.PI * 2.1);   // the wave grows with reach
+    const y = TOP - DROP * v - 0.09 * u * v;            // and the free end sags
+    return [cx(REACH * u), cy(y), cz(z + side * SKIN)];
+  };
+
+  const pos = [];
+  const tri = (a, b, c) => pos.push(...a, ...b, ...c);
+  for (const side of [1, -1]) {
+    for (let i = 0; i < NU; i++) {
+      for (let j = 0; j < NV; j++) {
+        const a = at(i, j, side), b = at(i + 1, j, side);
+        const c = at(i + 1, j + 1, side), d = at(i, j + 1, side);
+        if (side > 0) { tri(a, d, c); tri(a, c, b); } else { tri(a, b, c); tri(a, c, d); }
+      }
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array(pos.length), 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array((pos.length / 3) * 2), 2));
+  g.computeVertexNormals();
+  return g;
+}
 
 function dominationZone(rings) {
   const parts = zonePad(0.44, 0.42, 3);
@@ -1106,7 +1192,7 @@ export function localBox(def) {
   return geometryFor(def).boundingBox;
 }
 
-/** Shape ids the module can build, for the catalog tests. */
+/** Every shape id the module can build, for checking the catalog against. */
 export function shapeIds() {
   return Object.keys(builders);
 }

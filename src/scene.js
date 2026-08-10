@@ -4,7 +4,6 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { ComboGizmo } from './gizmo.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
@@ -14,11 +13,26 @@ import {
   WEAPON_ICONS, WEAPON_ANY, parseWeapons,
   ENEMY_ICONS, ENEMY_MODELS, ENEMY_TYPES, ENEMY_ANY, parseEnemyTypes,
 } from './packs.js';
-import { convertPosition, unityEulerToQuat, quatToUnityEuler } from './unity.js';
+import { convertPosition, unityEulerToQuat, quatToUnityEuler, MODEL_YAW } from './unity.js';
 import { decodeNavCloud, navIndexToWorld, NAV_SPACING } from './format.js';
 
 const ACCENT = 0xe8c547;
 const CYAN = 0x4ec9e0;
+
+/**
+ * The half turn every mesh carries relative to the map's own frame — see
+ * MODEL_YAW in unity.js, which explains where it comes from.
+ *
+ * It matters here because the pivot the gizmo drives has to be in the *map's*
+ * frame, not the mesh's. Left in the mesh's, an unrotated object's own +X
+ * points along world −X, so the scale cube for X sat on the opposite side of
+ * the gizmo from the X arrow, and the array tool stepped backwards along its
+ * own axes. Turning the pivot by the same half turn and letting `attach` push
+ * it down onto the mesh cancels both: the object's world transform is untouched
+ * (a half turn about Y commutes with any diagonal scale), and every axis the
+ * editor draws now means what the map file means by it.
+ */
+const MAP_FRAME = new THREE.Quaternion().fromArray(MODEL_YAW);
 
 // -- prefab meshes -----------------------------------------------------------
 // A missing asset is normal, not an error, so each one is mentioned once.
@@ -118,15 +132,100 @@ function cutout() {
  */
 const displayMaterials = new Map();
 
-function displayMaterial(material, tint, opacity = 1, force = false, cut = false) {
-  if (Array.isArray(material)) return material.map((m) => displayMaterial(m, tint, opacity, force, cut));
+/**
+ * Team colours recoverable from a material's *name*, for art that arrived
+ * without any.
+ *
+ * The same trick the damage boxes need, and for the same reason: Unity put the
+ * colour in a shader glTF has no slot for, and the only thing that survived the
+ * export is what the artist called the material.
+ */
+const NAME_TINTS = [
+  [/orange[ _]?team/i, 0xe08a3c],
+  [/blue[ _]?team/i, 0x4a90d9],
+  [/crystal/i, 0xd98a4a],
+];
+
+const nameTint = (name) => NAME_TINTS.find(([re]) => re.test(name || ''))?.[1] ?? null;
+
+const normalMapVerdicts = new Map();
+
+/**
+ * Is this texture a normal map wearing a base colour's clothes?
+ *
+ * The five Corrupted enemy prefabs each carry one, and it is why they render as
+ * a wash of violet and blue: the glTF export wrote the humanoid's *normal* map
+ * into `baseColorTexture` and left the diffuse behind entirely. A tangent-space
+ * normal map is unmistakable — it is a field of (0.5, 0.5, 1.0), so the average
+ * pixel is mid red, mid green, near-full blue, and blue is the largest channel
+ * almost everywhere. Measured across all thirteen enemy prefabs, the five
+ * corrupted bodies score 97-98% blue-dominant with an average of (0.50, 0.50,
+ * 0.96) and nothing else comes close, so the test separates them cleanly.
+ *
+ * Sampled at 32x32, which is plenty for an average, and remembered per texture.
+ * A cross-origin image would taint the canvas and throw; that answers "no",
+ * because guessing wrong here would strip the art off a perfectly good model.
+ */
+function isNormalMapTexture(texture) {
+  if (!texture?.image) return false;
+  if (normalMapVerdicts.has(texture.uuid)) return normalMapVerdicts.get(texture.uuid);
+  let verdict = false;
+  try {
+    const N = 32;
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = N;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(texture.image, 0, 0, N, N);
+    const { data } = ctx.getImageData(0, 0, N, N);
+    let n = 0, blueWins = 0, sr = 0, sg = 0, sb = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i + 3] < 8) continue;
+      sr += data[i]; sg += data[i + 1]; sb += data[i + 2];
+      if (data[i + 2] >= data[i] && data[i + 2] >= data[i + 1]) blueWins++;
+      n++;
+    }
+    if (n) {
+      const r = sr / n / 255, g = sg / n / 255, b = sb / n / 255;
+      verdict = blueWins / n > 0.9 && b > 0.6 && b > r + 0.12 && b > g + 0.12
+        && Math.abs(r - 0.5) < 0.2 && Math.abs(g - 0.5) < 0.25;
+    }
+  } catch {
+    verdict = false;
+  }
+  normalMapVerdicts.set(texture.uuid, verdict);
+  return verdict;
+}
+
+function displayMaterial(material, tint, opacity = 1, force = false, cut = false, litByVertex = true) {
+  if (Array.isArray(material)) {
+    return material.map((m) => displayMaterial(m, tint, opacity, force, cut, litByVertex));
+  }
   if (!material) return material;
-  const key = `${material.uuid}|${tint ?? ''}|${opacity}|${force}|${cut}`;
+  const key = `${material.uuid}|${tint ?? ''}|${opacity}|${force}|${cut}|${litByVertex}`;
   if (displayMaterials.has(key)) return displayMaterials.get(key);
   const out = material.clone();
   if (out.metalness !== undefined && !out.envMap) {
     out.metalness = Math.min(out.metalness, 0.25);
     out.roughness = Math.max(out.roughness ?? 0.5, 0.45);
+  }
+  // Vertex colours the merged geometry cannot supply, or that were only ever
+  // black, must not be read. See `usableColour`.
+  if (!litByVertex) out.vertexColors = false;
+  // A normal map in the base colour slot is put where it belongs — the surface
+  // detail it carries is real and worth having — and the colour it was standing
+  // in for comes from the material's name. Not the diffuse the artist painted:
+  // that texture is not in the file at all. It reads as a crystallised orange
+  // bot rather than a violet one, which is what the crystals on its own back
+  // say it should be.
+  if (out.map && isNormalMapTexture(out.map)) {
+    if (!out.normalMap) {
+      const bumps = out.map.clone();
+      bumps.colorSpace = THREE.NoColorSpace;   // it is geometry, not colour
+      bumps.needsUpdate = true;
+      out.normalMap = bumps;
+    }
+    out.map = null;
+    out.color.set(nameTint(material.name) ?? 0xb9c3cc);
   }
   // `force` is for prefabs whose art is deliberately colourless and gets its
   // team colour from a shader the export could not carry — the player spawn
@@ -169,6 +268,30 @@ function neutralColour(template, count) {
 }
 
 /**
+ * A part's vertex colours, if they are colours at all.
+ *
+ * The player spawn zone's machine ships a COLOR_0 that is **entirely zero**, and
+ * glTF says a base colour is multiplied by it — so the machine, which has a
+ * perfectly good 1024px texture atlas, rendered pure black, and both teams'
+ * spawn zones looked like scorched metal. Nothing dressed as a base colour can
+ * have meant "multiply the artwork by nothing"; Unity's own shader read that
+ * channel as a mask for an effect glTF has nowhere to put, and the exporter
+ * wrote it out anyway.
+ *
+ * So an all-black colour attribute is treated as no colour attribute. A single
+ * non-zero component anywhere is enough to take it at its word — this is only
+ * ever meant to catch the degenerate case, not to second-guess dark shading.
+ */
+function usableColour(geometry) {
+  const attr = geometry.getAttribute('color');
+  if (!attr) return null;
+  for (let i = 0; i < attr.count; i++) {
+    if (attr.getX(i) || attr.getY(i) || attr.getZ(i)) return attr;
+  }
+  return null;
+}
+
+/**
  * One geometry for the whole prefab. Merging needs every part to carry the same
  * attributes, which is not guaranteed across a prefab's meshes, so trim each to
  * position and normal first; if a merge still fails, the largest single part is
@@ -184,7 +307,8 @@ function mergeForDisplay(parts, tint, opacity, force, cut) {
   // the solid primitives do, the props do not. GLTFLoader turns that into
   // material.vertexColors, so a part that loses the attribute renders black.
   // Anything missing one gets opaque white, which multiplies to no change.
-  const template = parts.map(({ geometry }) => geometry.getAttribute('color')).find(Boolean);
+  const colours = parts.map(({ geometry }) => usableColour(geometry));
+  const template = colours.find(Boolean);
 
   const trimmed = parts.map(({ geometry }, i) => {
     // Non-indexed throughout, or a mix of indexed and not refuses to merge.
@@ -199,7 +323,9 @@ function mergeForDisplay(parts, tint, opacity, force, cut) {
     const uv = g.getAttribute('uv');
     out.setAttribute('uv', uv ?? new THREE.BufferAttribute(new Float32Array(position.count * 2), 2));
     if (template) {
-      const colour = g.getAttribute('color');
+      // `toNonIndexed` above rebuilt the attribute, so the usable one is looked
+      // up again on the trimmed copy rather than reused from `colours`.
+      const colour = g === geometry ? colours[i] : usableColour(g);
       out.setAttribute('color', matchesTemplate(colour, template)
         ? colour
         : neutralColour(template, position.count));
@@ -207,6 +333,10 @@ function mergeForDisplay(parts, tint, opacity, force, cut) {
     if (!normal) out.computeVertexNormals();
     return out;
   });
+  // A material may only read vertex colours if the merged geometry has some to
+  // read: bound to nothing, the shader's `color` attribute is black and takes
+  // the whole mesh with it.
+  const lit = !!template;
   try {
     // useGroups keeps one draw group per part, so the prefab's own materials
     // survive as a material array and the object arrives textured.
@@ -214,7 +344,7 @@ function mergeForDisplay(parts, tint, opacity, force, cut) {
     if (merged) {
       return {
         geometry: merged,
-        materials: parts.map((p) => displayMaterial(p.material, tint, opacityOf(p), force, cut)),
+        materials: parts.map((p) => displayMaterial(p.material, tint, opacityOf(p), force, cut, lit)),
       };
     }
   } catch { /* fall through to the largest part */ }
@@ -224,8 +354,76 @@ function mergeForDisplay(parts, tint, opacity, force, cut) {
   });
   return {
     geometry: trimmed[best],
-    materials: displayMaterial(parts[best].material, tint, opacityOf(parts[best]), force, cut),
+    materials: displayMaterial(parts[best].material, tint, opacityOf(parts[best]), force, cut, lit),
   };
+}
+
+// -- mirror symmetry ---------------------------------------------------------
+// Copying the selection to the far side of the arena is a reflection, and a
+// reflection is not a rotation: a corner barrier reflected is a piece no amount
+// of turning produces. Working the transform through,
+//
+//   reflect · T(p)·R(q)·S(s)  =  T(reflect p) · R(q') · S(s with one sign flipped)
+//
+// where q' is the mirrored quaternion the mirror already writes — and the sign
+// that flips is always the object's *local* x for a mirror across world X, and
+// its local z for one across world Z, whatever the piece is rotated to.
+//
+// A negative scale in an exported map is not something the game has ever been
+// seen to write, so it is worth spending only where it buys something. Most
+// pieces are their own reflection: a crate, a cylinder, a plain wall. Those are
+// mirrored by rotation alone and export exactly as they always did.
+
+const symmetryCache = new WeakMap();
+
+// One centimetre. Loose on purpose: this is asking whether a piece has a left
+// and a right, and the answer is measured in the tens of centimetres a barrier
+// arm or a ramp's slope spans. Exact matching answers "chiral" for everything,
+// because the traced numbers carry the real prefabs' own asymmetries — the U
+// barrier's notch runs -0.186 to 0.185, one millimetre off centre, which is a
+// measurement and not a shape.
+const SYMMETRY_EPSILON = 0.01;
+
+/**
+ * Is `geometry` unchanged by flipping the sign of `axis` about the origin?
+ *
+ * Answered off the vertices rather than a hand-kept list of which pieces are
+ * chiral: bin every vertex into a coarse grid, then ask of each whether its
+ * mirror image has a vertex near it. Triangulation is ignored, so a symmetric
+ * shape cut into asymmetric triangles still answers yes; the neighbouring bins
+ * are checked as well as the exact one, so a vertex that lands a hair the wrong
+ * side of a bin edge does not answer no on its own.
+ */
+function isMirrorSymmetric(geometry, axis) {
+  if (!geometry) return true;
+  let entry = symmetryCache.get(geometry);
+  if (!entry) symmetryCache.set(geometry, (entry = {}));
+  if (entry[axis] !== undefined) return entry[axis];
+
+  const pos = geometry.getAttribute('position');
+  const bin = (v) => Math.floor(v / SYMMETRY_EPSILON);
+  const filled = new Set();
+  for (let i = 0; i < pos.count; i++) {
+    filled.add(`${bin(pos.getX(i))},${bin(pos.getY(i))},${bin(pos.getZ(i))}`);
+  }
+  const near = (x, y, z) => {
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dz = -1; dz <= 1; dz++) if (filled.has(`${x + dx},${y + dy},${z + dz}`)) return true;
+      }
+    }
+    return false;
+  };
+
+  let symmetric = true;
+  for (let i = 0; i < pos.count && symmetric; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    symmetric = axis === 'x'
+      ? near(bin(-x), bin(y), bin(z))
+      : near(bin(x), bin(y), bin(-z));
+  }
+  entry[axis] = symmetric;
+  return symmetric;
 }
 
 /**
@@ -271,12 +469,7 @@ export class Viewport extends EventTarget {
     this.objects = [];
     this.selection = new Set();
     this.uniformScale = true;
-    this.floorLock = true;
     this.snap = { translate: 0.25, rotate: 15, scale: 0 };
-    // The combined gizmo is the one you get on a fresh selection; Move, Rotate
-    // and Scale switch to the single-purpose ones.
-    this.gizmoMode = 'combined';
-    this.gizmoSpace = 'world';
     // Draw the procedural stand-ins even when the real prefabs are on disk, so
     // the two can be compared. Off by default: the real art is better when it
     // is there.
@@ -405,32 +598,21 @@ export class Viewport extends EventTarget {
     };
     this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
-    this.gizmo = new TransformControls(this.camera, this.canvas);
-    this.gizmo.setSize(0.9);
-    // three r169+ exposes the visual half of TransformControls separately.
-    this._gizmoHelper =
-      typeof this.gizmo.getHelper === 'function' ? this.gizmo.getHelper() : this.gizmo;
-    this.scene.add(this._gizmoHelper);
+    // One gizmo, doing move, rotate and scale at once. There used to be a mode
+    // switch and three single-purpose gizmos behind it; the combined one covers
+    // all of it, so the switch went and TransformControls with it.
+    this.gizmo = new ComboGizmo(this.camera, this.canvas);
+    this.scene.add(this.gizmo);
 
-    // The combined gizmo does move, rotate and scale at once. It speaks the
-    // same two events, so both go through one pair of handlers and everything
-    // downstream — snapping, floor lock, the scale anchor — is shared.
-    this.combo = new ComboGizmo(this.camera, this.canvas);
-    this.scene.add(this.combo);
-
-    const onDragChange = (e) => {
+    this.gizmo.addEventListener('dragging-changed', (e) => {
       this.orbit.enabled = !e.value;
       if (e.value) this._beginDrag();
       else this._endDrag();
-    };
-    const onObjectChange = () => {
+    });
+    this.gizmo.addEventListener('objectChange', () => {
       this._constrainDuringDrag();
       this.emit('transform');
-    };
-    for (const g of [this.gizmo, this.combo]) {
-      g.addEventListener('dragging-changed', onDragChange);
-      g.addEventListener('objectChange', onObjectChange);
-    }
+    });
 
     addEventListener('keydown', (e) => {
       if (e.key === 'Alt') this.orbit.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
@@ -789,6 +971,20 @@ export class Viewport extends EventTarget {
   }
 
   /**
+   * Put the selection where the inspector's three boxes say, in map values.
+   *
+   * Goes through the pivot because the pivot is what carries a selection's
+   * placement while it is selected, and through here rather than from `app.js`
+   * because the pivot is in the map's frame and the quaternion a map rotation
+   * converts to is in the mesh's — the half turn between them is this module's
+   * business, not the panel's.
+   */
+  placeSelection(unityPosition, unityRotation) {
+    this.pivot.position.set(unityPosition.x, unityPosition.y, -unityPosition.z);
+    this.pivot.quaternion.fromArray(unityEulerToQuat(unityRotation)).multiply(MAP_FRAME);
+  }
+
+  /**
    * Change one of a subtype's extra fields — which weapon a spawner holds,
    * how an enemy spawn behaves. Swapping the value can mean a different
    * catalog entry and so a different placeholder, so the mesh is re-skinned.
@@ -897,6 +1093,22 @@ export class Viewport extends EventTarget {
     return box;
   }
 
+  /**
+   * Does mirroring this object across `axis` need a scale sign flipped, or will
+   * the mirrored rotation alone do it?
+   *
+   * Asked of the placeholder rather than of whatever mesh is on screen. The
+   * placeholders are the traced silhouette built out of boxes and cylinders, so
+   * a symmetric piece is symmetric to the last decimal and the answer is clean.
+   * The real prefabs are not: an artist's crate is symmetric to look at and off
+   * by a millimetre here and there in fact, which makes every object in the map
+   * read as chiral and puts a negative scale on all of them. Same shape, better
+   * evidence.
+   */
+  needsMirrorFlip(mesh, axis) {
+    return !isMirrorSymmetric(geometryFor(mesh.userData.def), axis);
+  }
+
   // -- gizmo ----------------------------------------------------------------
 
   rebuildPivot() {
@@ -905,9 +1117,6 @@ export class Viewport extends EventTarget {
 
     if (!this.selection.size) {
       this.gizmo.detach();
-      // The combined one too. It used to be left attached here, so it hung in
-      // the air over nothing after a deselect.
-      this.combo.detach();
       return;
     }
     const list = [...this.selection];
@@ -919,7 +1128,7 @@ export class Viewport extends EventTarget {
       const s = new THREE.Vector3();
       m.matrixWorld.decompose(p, q, s);
       this.pivot.position.copy(p);
-      this.pivot.quaternion.copy(q);
+      this.pivot.quaternion.copy(q).multiply(MAP_FRAME);
     } else {
       this.pivot.position.copy(this.selectionBounds().getCenter(new THREE.Vector3()));
       this.pivot.quaternion.identity();
@@ -928,68 +1137,47 @@ export class Viewport extends EventTarget {
     this.pivot.updateMatrixWorld(true);
     for (const m of list) this.pivot.attach(m);
 
-    if (this.gizmoMode === 'combined') {
-      this.gizmo.detach();
-      this.combo.attach(this.pivot);
-    } else {
-      this.combo.detach();
-      this.gizmo.attach(this.pivot);
-    }
+    this.gizmo.attach(this.pivot);
     this._applyGizmoConstraints();
   }
 
-  setGizmoMode(mode) {
-    this.gizmoMode = mode;
-    if (mode !== 'combined') this.gizmo.setMode(mode);
-    this.rebuildPivot();
-    this.emit('mode');
-  }
-
-  setGizmoSpace(space) {
-    this.gizmoSpace = space;
-    this.gizmo.setSpace(space);
-    this.combo.space = space;
-    this.emit('mode');
-  }
-
   /**
-   * Which of the three a drag is actually doing. TransformControls is in one
-   * mode at a time and says so; the combined gizmo only knows once a handle has
-   * been grabbed. `_beginDrag` needs the answer to decide whether to capture a
-   * scale anchor.
+   * Which of the three a drag is actually doing. The gizmo offers all three at
+   * once, so it only knows once a handle has been grabbed. `_beginDrag` needs
+   * the answer to decide whether to capture a scale anchor.
    */
   _activeMode() {
-    return this.gizmoMode === 'combined' ? this.combo.activeMode : this.gizmoMode;
+    return this.gizmo.activeMode;
   }
 
   _applyGizmoConstraints() {
-    const list = [...this.selection];
-    const yawOnly = list.length > 0 && list.every((m) => m.userData.def.rotationAxes === 'y');
-    this.gizmo.showX = true;
-    this.gizmo.showY = true;
-    this.gizmo.showZ = true;
-    if (this.gizmoMode === 'rotate' && yawOnly) {
-      this.gizmo.showX = false;
-      this.gizmo.showZ = false;
-    }
     this.gizmo.translationSnap = this.snap.translate || null;
     this.gizmo.rotationSnap = this.snap.rotate ? THREE.MathUtils.degToRad(this.snap.rotate) : null;
     this.gizmo.scaleSnap = this.snap.scale || null;
-    this.gizmo.setSpace(this.gizmoSpace);
-
-    // The combined gizmo keeps its move and scale arms on whatever the piece
-    // allows and drops only the rotation arcs it may not turn about, so a
-    // yaw-only object still shows two of its three arcs' worth of handles.
-    this.combo.translationSnap = this.snap.translate || null;
-    this.combo.rotationSnap = this.snap.rotate ? THREE.MathUtils.degToRad(this.snap.rotate) : null;
-    this.combo.scaleSnap = this.snap.scale || null;
-    this.combo.space = this.gizmoSpace;
-    this.combo.uniform = this.uniformScale;
-    this.combo.showRotate = { x: !yawOnly, y: true, z: !yawOnly };
+    this.gizmo.uniform = this.uniformScale;
+    // All three circles, on everything. The catalog's `rotationAxes` used to
+    // hide X and Z on a yaw-only piece, which is what the in-game editor allows
+    // rather than what the format allows: the map file stores a full euler for
+    // every object, and the reference exports themselves contain damage boxes
+    // turned 90 degrees about X and a solid box turned freely. Hiding two
+    // thirds of the gizmo enforced a rule the file does not have.
+    this.gizmo.showRotate = { x: true, y: true, z: true };
   }
 
   setSnap(part, value) {
     this.snap[part] = value;
+    this._applyGizmoConstraints();
+    this.emit('mode');
+  }
+
+  /**
+   * Scale every axis together, or one at a time. Pushed through to the gizmo
+   * here rather than left for the next `rebuildPivot`, which is what used to
+   * happen — so ticking the box mid-selection did nothing until you clicked
+   * something else.
+   */
+  setUniformScale(on) {
+    this.uniformScale = !!on;
     this._applyGizmoConstraints();
     this.emit('mode');
   }
@@ -1016,16 +1204,20 @@ export class Viewport extends EventTarget {
       }
       this._applyScaleAnchor();
     }
-    if (this.floorLock) this._applyFloorLock();
   }
 
   // -- scale anchoring -------------------------------------------------------
-  // TransformControls scales about the object's origin, so a crate shrinks away
-  // from every face at once: pull the right-hand handle in and the left-hand
-  // face comes with it, and shrink a centre-pivot box standing on the floor and
-  // it ends up hanging in the air. The side you are not dragging should stay
+  // Scaling an object multiplies its own origin outwards, so a crate grows away
+  // from every face at once: pull the right-hand handle out and the left-hand
+  // face moves too, and shrink a centre-pivot box standing on the floor and it
+  // ends up hanging in the air. The side you are *not* dragging should stay
   // exactly where it is, which is what the game's own stretcher does — its
   // spawn zones carry PosX, NegX, PosZ and NegZ handles, one per edge.
+  //
+  // So the far face is pinned: the point opposite the handle is held still and
+  // the children are shifted each frame to keep it there. This applies to
+  // uniform scaling as well as per-axis, since "the opposite side stays put" is
+  // no less true when the other two axes come along for the ride.
 
   /**
    * Bounding box of the selection's own geometry in pivot-local space.
@@ -1060,51 +1252,26 @@ export class Viewport extends EventTarget {
   }
 
   /**
-   * Which end of an axis the user grabbed: +1, -1, or 0 when it cannot be told.
+   * The point that must not move during this drag, in pivot-local space.
    *
-   * TransformControls names both ends of a scale axis "X", so the handle does
-   * not say which side the drag started from. The pointer does: project the
-   * axis onto the screen and see which way along it the cursor sits.
+   * Every scale handle sits on the positive end of its axis and is drawn in the
+   * pivot's own frame, so the side to hold still is always that axis's minimum.
+   * There is nothing to guess: this used to project the axis to the screen and
+   * read which end the cursor was nearer, because the old gizmo labelled both
+   * ends of an axis the same, and the answer stopped meaning anything the
+   * moment the gizmo stopped having two.
+   *
+   * The other two axes hold at the bottom in Y and at the middle in the
+   * remaining horizontal, so a piece standing on the floor is still standing on
+   * it afterwards and a uniform scale grows evenly sideways.
    */
-  _handleSign(a) {
-    if (!this._pointer) return 0;
-    const r = this.canvas.getBoundingClientRect();
-    const project = (v) => {
-      const p = v.clone().project(this.camera);
-      return new THREE.Vector2(((p.x + 1) / 2) * r.width, ((1 - p.y) / 2) * r.height);
-    };
-    // The scale gizmo is drawn in the object's own frame whatever `gizmoSpace`
-    // says, so the axis to project is the pivot's. Length only has to put the
-    // probe somewhere near the handle; which of the two ends is nearer the
-    // cursor does not depend on how far out it sits.
-    const dir = new THREE.Vector3(+(a === 'x'), +(a === 'y'), +(a === 'z'))
-      .applyQuaternion(this.pivot.quaternion)
-      .multiplyScalar(this.camera.position.distanceTo(this.pivot.position) * 0.1);
-    const origin = project(this.pivot.position);
-    const along = project(this.pivot.position.clone().add(dir)).sub(origin);
-    if (along.lengthSq() < 1) return 0;      // edge on: no side to read
-    const cursor = new THREE.Vector2(this._pointer.clientX - r.left, this._pointer.clientY - r.top);
-    return Math.sign(cursor.sub(origin).dot(along));
-  }
-
-  /** The point that must not move during this drag, in pivot-local space. */
   _captureScaleAnchor() {
     const box = this._selectionLocalBox();
     if (box.isEmpty()) return null;
     const centre = box.getCenter(new THREE.Vector3());
-    // Y holds at the bottom whatever axis is being dragged, so something that
-    // was standing on the floor is still standing on it afterwards. That is the
-    // case uniform scaling gets wrong even when no vertical handle is touched.
     const point = new THREE.Vector3(centre.x, box.min.y, centre.z);
-    const axis = this.gizmo.axis || '';
-    // The uniform handle sits in the middle and has no near end to read.
-    if (axis !== 'XYZ') {
-      for (const a of ['x', 'y', 'z']) {
-        if (!axis.includes(a.toUpperCase())) continue;
-        const sign = this._handleSign(a);
-        if (sign) point[a] = sign > 0 ? box.min[a] : box.max[a];
-      }
-    }
+    const axis = this.gizmo.axis;
+    if (axis && axis !== 'view') point[axis] = box.min[axis];
     return { point, positions: new Map([...this.selection].map((m) => [m, m.position.clone()])) };
   }
 
@@ -1114,11 +1281,11 @@ export class Viewport extends EventTarget {
    * A point at pivot-local `p` lands at `S * p`, so restoring it to where `S0`
    * had it means offsetting every child by `(S0/S - 1) * anchor`. Recomputed
    * from the drag-start positions each frame rather than accumulated, so
-   * nothing drifts and floor lock is free to overrule the Y it produces.
+   * nothing drifts however long the drag goes on.
    *
-   * The children move rather than the pivot, deliberately: TransformControls
-   * measures the drag against a plane through the gizmo's own position, so
-   * moving the gizmo mid-drag feeds straight back into the scale it computes.
+   * The children move rather than the pivot, deliberately: the gizmo measures
+   * the drag against a plane through its own position, so moving the gizmo
+   * mid-drag would feed straight back into the scale it computes.
    */
   _applyScaleAnchor() {
     const anchor = this._scaleAnchor;
@@ -1135,36 +1302,97 @@ export class Viewport extends EventTarget {
     }
   }
 
-  _applyFloorLock() {
-    for (const m of this.selection) {
-      if (!m.userData.def.floor) continue;
+  /**
+   * Let the selection fall until it rests on something.
+   *
+   * `onto` is 'floor' for the ground, always, or 'surface' for whatever is
+   * actually underneath — the top of another object if there is one, the ground
+   * if there is not. The second is how a crate goes on a crate: put it roughly
+   * over the target and drop it, rather than reading a height off the inspector
+   * and typing it.
+   *
+   * Height is otherwise unconstrained. This used to run on every edit, off a
+   * Floor tick that was on by default, which made anything the catalog marks
+   * `floor` impossible to lift — and maps want that: a walkway over a gap, a
+   * barrier used as a ceiling.
+   *
+   * Each object falls on its own rather than the selection moving as one, which
+   * is what makes dropping a scattered handful of props onto uneven ground do
+   * the useful thing.
+   */
+  dropSelection(onto = 'floor') {
+    const targets = [...this.selection];
+    if (!targets.length) return 0;
+    // Only things outside the selection can be landed on. Otherwise a stack
+    // dropped as a group would rest on itself and never move.
+    const others = onto === 'surface' ? this.objects.filter((m) => !this.selection.has(m)) : [];
+
+    let moved = 0;
+    for (const m of targets) {
       m.updateWorldMatrix(true, false);
       const box = new THREE.Box3().setFromObject(m);
-      const drop = box.min.y;
-      if (Math.abs(drop) > 1e-5) {
-        const world = new THREE.Vector3();
-        m.getWorldPosition(world);
-        world.y -= drop;
-        const local = this.pivot.worldToLocal(world.clone());
-        if (m.parent === this.pivot) m.position.copy(local);
-        else m.position.copy(world);
-      }
-    }
-  }
-
-  dropToFloor() {
-    const targets = this.selection.size ? [...this.selection] : [];
-    for (const m of targets) {
-      const box = new THREE.Box3().setFromObject(m);
+      if (box.isEmpty()) continue;
+      const rest = others.length ? this._surfaceUnder(box, others) : 0;
+      const drop = box.min.y - rest;
+      if (Math.abs(drop) < 1e-5) continue;
       const world = new THREE.Vector3();
       m.getWorldPosition(world);
-      world.y -= box.min.y;
-      const local = m.parent === this.pivot ? this.pivot.worldToLocal(world.clone()) : world;
-      m.position.copy(local);
+      world.y -= drop;
+      m.position.copy(m.parent === this.pivot ? this.pivot.worldToLocal(world.clone()) : world);
       this.markDirty(m);
+      moved++;
     }
+    // The gizmo hangs off the pivot, and the pivot does not follow a child that
+    // moves underneath it — so without this the gizmo stayed in the air above
+    // whatever had just been dropped until the object was selected again.
+    this.rebuildPivot();
     this.emit('transform');
     this.emit('commit-end');
+    return moved;
+  }
+
+  /** Kept for the old name; the floor is the common case. */
+  dropToFloor() {
+    return this.dropSelection('floor');
+  }
+
+  /**
+   * The height of the highest thing under `box`, or 0 for the ground.
+   *
+   * Nine rays straight down through the object's footprint — corners, edge
+   * middles and centre — rather than one down the middle, so a crate sitting
+   * half over the edge of a table lands on the table rather than dropping
+   * through it. The highest surface any of them finds wins.
+   *
+   * Hits above the object's own top are ignored: those are things it is under,
+   * not things it is on. Hits between its bottom and its top are kept, so a
+   * piece pushed into another one rises to sit on it instead of staying sunk —
+   * which is what "drop it on that" means when you have eyeballed the position.
+   */
+  _surfaceUnder(box, others) {
+    const ray = new THREE.Raycaster();
+    ray.ray.direction.set(0, -1, 0);
+    const size = box.getSize(new THREE.Vector3());
+    // Inset from the edges so a ray grazing the side of the object's own
+    // footprint is not decided by floating point.
+    const ix = Math.min(0.02, size.x / 3);
+    const iz = Math.min(0.02, size.z / 3);
+    const xs = [box.min.x + ix, (box.min.x + box.max.x) / 2, box.max.x - ix];
+    const zs = [box.min.z + iz, (box.min.z + box.max.z) / 2, box.max.z - iz];
+    const ceiling = box.max.y - 1e-4;
+
+    let best = 0;
+    for (const x of xs) {
+      for (const z of zs) {
+        ray.ray.origin.set(x, box.max.y + 0.05, z);
+        for (const hit of ray.intersectObjects(others, true)) {
+          if (hit.point.y > ceiling) continue;   // an overhang, not a shelf
+          if (hit.point.y > best) best = hit.point.y;
+          break;                                  // hits are sorted, so this is the top
+        }
+      }
+    }
+    return best;
   }
 
   _endDrag() {
@@ -1191,9 +1419,9 @@ export class Viewport extends EventTarget {
     let down = null;
 
     this.canvas.addEventListener('pointerdown', (e) => {
-      // Recorded before the early return below: a scale drag reads it to work
-      // out which end of the handle was grabbed, and a press with no move
-      // before it would otherwise leave it stale.
+      // Recorded before the early returns below: `beginPlacement` puts what it
+      // is carrying under the cursor straight away, and a press with no move
+      // before it would otherwise leave this stale.
       this._pointer = { clientX: e.clientX, clientY: e.clientY };
       // While a brush is up, the left button paints the bot grid and does not
       // select. Checked before the gizmo, because the gizmo is hidden anyway
@@ -1206,10 +1434,9 @@ export class Viewport extends EventTarget {
         this._paintNavAt(e);
         return;
       }
-      // this.gizmo.axis is set while a handle is hovered; TransformControls
-      // registers its listeners first, so this reliably wins.
-      if (e.button !== 0 || e.altKey || this.gizmo.dragging || this.gizmo.axis) return;
-      if (this.combo.dragging || this.combo.hovered) return;
+      // `hovered` is set while a handle is under the pointer, so a press meant
+      // for the gizmo never starts a marquee behind it.
+      if (e.button !== 0 || e.altKey || this.gizmo.dragging || this.gizmo.hovered) return;
       if (this.placing) return;   // that click drops what is being placed
       down = { x: e.clientX, y: e.clientY, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey };
       this.emit('marquee-start', down);
@@ -1326,14 +1553,18 @@ export class Viewport extends EventTarget {
   /**
    * Carry `meshes` under the pointer until a left click drops them. They ride
    * on the pivot like any other selection, so this only has to move the pivot
-   * and floor lock keeps working unchanged. Ends by emitting 'placement-end'
-   * with { committed, meshes }; a cancelled placement leaves the meshes in the
-   * scene for the caller to dispose of.
+   * and each piece keeps whatever height it was created at. Ends by emitting
+   * 'placement-end' with { committed, meshes }; a cancelled placement leaves the
+   * meshes in the scene for the caller to dispose of.
    */
   beginPlacement(meshes) {
     if (this.placing) this._endPlacement(false);
     if (!meshes.length) return;
 
+    // Reaching for an object puts any bot-grid brush down. The left button
+    // cannot both paint the floor and drop what is riding on the cursor, and of
+    // the two the thing in your hand is obviously the one you meant.
+    this.setNavPaint(null);
     this.setSelection(meshes);
     // The gizmo would swallow the click that drops them, and there is nothing
     // worth transforming until they have landed.
@@ -1358,7 +1589,6 @@ export class Viewport extends EventTarget {
         this.pivot.position.x = Math.round(this.pivot.position.x / s) * s;
         this.pivot.position.z = Math.round(this.pivot.position.z / s) * s;
       }
-      if (this.floorLock) this._applyFloorLock();
       this.emit('transform');
     };
     const drop = (e) => { if (e.button === 0) this._endPlacement(true); };
@@ -1801,7 +2031,7 @@ export class Viewport extends EventTarget {
 
   _frame() {
     this.orbit.update();
-    this.combo.update();
+    this.gizmo.update();
     this._holdFixedParts();
     this._placeBadges();
     this.renderer.render(this.scene, this.camera);

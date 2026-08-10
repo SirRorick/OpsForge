@@ -10,8 +10,6 @@
 // loaded and re-exported byte for byte.
 // ---------------------------------------------------------------------------
 
-import { defaultRuleSets } from './rules.js';
-
 export const MAP_VERSION = 4;
 export const DOTNET_MIN_DATE = '0001-01-01T00:00:00';
 
@@ -364,8 +362,44 @@ export async function defaultNavCloud(radius = 5) {
   return stub;
 }
 
+/**
+ * A nav cloud of the right shape with nothing walkable in it.
+ *
+ * The grid is still 141 x 141 at 0.25 m, because those numbers describe the play
+ * space the headset was set up in rather than anything about the map, and every
+ * export the game has written carries them. Only the mask is empty — which is
+ * what a blank map should start as, so the first thing painted is the author's
+ * and not a five metre circle they have to clear first.
+ *
+ * Encoded properly rather than left as an empty string: an empty gzip payload is
+ * what the game would write for a grid nobody has walked, and a bare "" is a
+ * shape the format has only ever been *seen* to tolerate, not to use.
+ */
+export async function emptyNavCloud() {
+  const stub = defaultNavCloudStub();
+  const { x, y } = stub.divisions;
+  stub.encodedPoints = await encodeNavCloud(new Uint8Array(x * y));
+  return stub;
+}
+
 // -- New map ----------------------------------------------------------------
 
+/**
+ * A blank map.
+ *
+ * No rule sets. The game's own new map carries five — one per mode, every
+ * setting at its default — and `defaultRuleSets` in rules.js still builds
+ * exactly that, because reproducing what the game writes is the standard the
+ * format code is held to. But four of the five are for modes an empty map
+ * cannot play, and a page of settings for a match nobody can start is not a
+ * useful place to begin.
+ * A mode is added here once its objectives are on the map. An empty `ruleSets`
+ * array is legal in the format either way.
+ *
+ * No bot grid either — see `emptyNavCloud`. The grid is a thing you paint where
+ * the bots may walk, and starting it as a five metre circle meant every map
+ * began by rubbing one out.
+ */
 export async function newMap({ name = 'New Map', author = '' } = {}) {
   const ts = nowStamp();
   return {
@@ -378,10 +412,10 @@ export async function newMap({ name = 'New Map', author = '' } = {}) {
     editedTime: ts,
     playedTime: DOTNET_MIN_DATE,
     mapBoundsSize: { x: 7, y: 3, z: 7 },
-    ruleSets: defaultRuleSets(),
+    ruleSets: [],
     anchors: [],
     mapObjects: [],
-    navCloud: await defaultNavCloud(5),
+    navCloud: await emptyNavCloud(),
     hasArUcoAnchor: false,
   };
 }

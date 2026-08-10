@@ -32,6 +32,27 @@ const THREE_VERSION = '0.169.0';
 
 const mb = (n) => `${(n / 1048576).toFixed(1)} MB`;
 
+/**
+ * Empty a directory without deleting the directory itself.
+ *
+ * Deleting the folder outright is the obvious thing and it is wrong here.
+ * Anything holding the directory open — a static server run from inside it,
+ * which is exactly what these folders are for — makes Windows refuse the
+ * removal with EPERM, and it refuses it *after* having already deleted the
+ * contents. That leaves the package folder empty and the run failed, which is
+ * the worst of both. Removing the entries and keeping the directory never needs
+ * the handle nobody will give up.
+ */
+function emptyDirectory(dir) {
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+    return;
+  }
+  for (const entry of readdirSync(dir)) {
+    rmSync(join(dir, entry), { recursive: true, force: true });
+  }
+}
+
 function dirSize(dir) {
   let total = 0, files = 0;
   const walk = (d) => {
@@ -186,7 +207,7 @@ export function packagePublic({ out } = {}) {
   const dest = out || join(ROOT, 'reference/opensource/spatial-ops-map-editor');
   const bundle = build();
 
-  if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
+  emptyDirectory(dest);
   mkdirSync(join(dest, 'assets/Prefabs'), { recursive: true });
 
   writeFileSync(join(dest, 'index.html'), readFileSync(bundle, 'utf8'), 'utf8');
@@ -229,8 +250,7 @@ export function packageSelfHosted({ out, vendor = false } = {}) {
   // Always rebuild, so the package cannot be quietly older than src/.
   const bundle = build();
 
-  if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
-  mkdirSync(dest, { recursive: true });
+  emptyDirectory(dest);
 
   let html = readFileSync(bundle, 'utf8');
   if (vendor) html = vendorThree(html);

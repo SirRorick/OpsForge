@@ -24,8 +24,11 @@ import {
   resetRuleSet, changeBaseMode, missingRequirements, modeByType,
   INT, BOOL, ENUM, FLAGS,
 } from './rules.js';
-import { unityEulerToQuat } from './unity.js';
 import { geometryFor } from './placeholders.js';
+import {
+  checkpointsAvailable, checkpointList, checkpointText, saveCheckpoint,
+  removeCheckpoint, clearCheckpoints, checkpointBytes, timeAgo,
+} from './checkpoints.js';
 
 const $ = (id) => document.getElementById(id);
 const vp = new Viewport($('view'));
@@ -53,16 +56,20 @@ let placingLabel = null;    // set while a library pick-up is following the curs
   wireToolbar();
   wireBotGrid();
   wireInspectorTabs();
+  wireMirrorTool();
   wireArrayTool();
   wireInspector();
   wireKeyboard();
   wireDragDrop();
   wireViewport();
+  wireAutosave();
+  await loadNavCloud();
   resize();
   addEventListener('resize', resize);
   current = snapshot();
   refreshAll();
   toast('Ready. Open a map file, or drag objects in from the library.');
+  greetWithCheckpoints();
 })();
 
 function resize() {
@@ -158,6 +165,9 @@ function redo() {
 
 function touchEdited() {
   if (map) map.editedTime = nowStamp();
+  // Everything that changes the map goes through here, which makes it the one
+  // place autosave has to watch to know a checkpoint would be worth taking.
+  mapTouched = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -370,6 +380,9 @@ function thumbnail(def) {
 
 function newObject(def, worldPoint) {
   vp.cancelPlacement();   // reaching for the library abandons a pending paste
+  // ...and puts down a bot-grid brush, which would otherwise still own the left
+  // button while an object sat waiting to be placed with it.
+  if (vp.navPaint) vp.setNavPaint(null);
   // The scale a piece is placed at comes from the catalog, not from 1,1,1: a
   // solid cylinder is 0.5 x 2 x 0.5 in every map the game wrote, and a tunnel
   // is 1 x 2 x 1.
@@ -580,35 +593,43 @@ function arraySelection({ nx, ny, nz, dx, dy, dz }) {
       }
     }
   }
-  if (vp.floorLock) vp._applyFloorLock();
   vp.setSelection([...source, ...made]);
   commit();
   toast(`Arrayed ${made.length} cop${made.length === 1 ? 'y' : 'ies'} — ${nx} x ${ny} x ${nz}.`);
+  tip('array',
+    'Each copy is its own group, so you can pull one out of the wall afterwards without dragging '
+    + 'the rest with it.');
 }
 
 /**
- * Copy the selection to the other side of the map.
+ * Copy the selection to the other side of the map, as a true reflection.
  *
  * `axis` is 'x' or 'z' — the two horizontal ones; mirroring in Y would put the
  * map underground. The plane is the middle of the arena, which is the origin,
  * so a piece two metres to the left comes back two metres to the right.
  *
- * The rotation is reflected too, or the far half would not be a reflection of
- * the near one: under a mirror, a rotation about an axis becomes a rotation
- * about the mirrored axis by the opposite angle, which for the quaternion is
- * negating the two components perpendicular to the plane. A chiral piece — a
- * corner barrier — cannot truly be mirrored by a rotation, so it comes out as
- * the nearest turn, which is the piece the far half wants anyway.
+ * A reflection is three things, not one. The position flips, obviously. The
+ * rotation is reflected — under a mirror, a rotation about an axis becomes one
+ * about the mirrored axis, which for the quaternion is negating the two
+ * components perpendicular to the plane. And the piece itself has to be turned
+ * inside out, which no rotation can do: that is a negative scale, always on the
+ * object's own axis matching the mirror plane, and it is the difference between
+ * a corner barrier that faces the right way and one that actually closes the
+ * far corner.
+ *
+ * The flip is spent only where it buys something. `needsMirrorFlip` asks the
+ * geometry whether the piece is already its own reflection; a crate, a cylinder
+ * and a plain wall all are, and they export exactly as they always did.
  *
  * `packId` renders the copy in another theme, which is how you get a blue half
  * and an orange half. An entry with no equivalent there keeps its own.
  */
 function mirrorSelection(axis, packId = null) {
   if (!vp.selection.size) return toast('Select something to mirror.');
-  const flip = axis === 'x' ? [1, -1, -1] : [-1, -1, 1];   // quaternion x,y,z signs
+  const turn = axis === 'x' ? [1, -1, -1] : [-1, -1, 1];   // quaternion x,y,z signs
   const made = [];
   const remap = new Map();
-  let swapped = 0, kept = 0;
+  let swapped = 0, kept = 0, flipped = 0;
 
   for (const m of [...vp.selection]) {
     m.updateWorldMatrix(true, false);
@@ -629,8 +650,14 @@ function mirrorSelection(axis, packId = null) {
       dirty: true,
     });
     copy.position.set(axis === 'x' ? -p.x : p.x, p.y, axis === 'z' ? -p.z : p.z);
-    copy.quaternion.set(q.x * flip[0], q.y * flip[1], q.z * flip[2], q.w);
+    copy.quaternion.set(q.x * turn[0], q.y * turn[1], q.z * turn[2], q.w);
     copy.scale.copy(s);
+    // Chirality is the source piece's, so it is asked of the source: the copy's
+    // model may still be loading, and a themed swap is the same shape anyway.
+    if (vp.needsMirrorFlip(m, axis)) {
+      copy.scale[axis] = -copy.scale[axis];
+      flipped++;
+    }
     if (m.userData.group) {
       if (!remap.has(m.userData.group)) remap.set(m.userData.group, `g${groupSeq++}`);
       copy.userData.group = remap.get(m.userData.group);
@@ -638,12 +665,31 @@ function mirrorSelection(axis, packId = null) {
     made.push(copy);
   }
 
-  if (vp.floorLock) vp._applyFloorLock();
   vp.setSelection(made);
   commit();
   const where = packId ? ` as ${getPack(packId)?.name ?? packId}` : '';
   const missing = kept ? `, ${kept} with no equivalent kept as they were` : '';
-  toast(`Mirrored ${made.length} object${made.length === 1 ? '' : 's'} across ${axis.toUpperCase()}${where}${missing}.`);
+  const turned = flipped ? `, ${flipped} turned inside out to face the other way` : '';
+  toast(`Mirrored ${made.length} object${made.length === 1 ? '' : 's'} across ${axis.toUpperCase()}${where}${missing}${turned}.`);
+  tip('mirror',
+    'The copies are a reflection, not just a move: a piece with a left and a right comes out the '
+    + 'other way round. Build one half of the arena, then mirror it.');
+}
+
+/**
+ * Drop the selection onto whatever is under it. The viewport does the work;
+ * this is here to say what happened, because a drop that finds nothing to land
+ * on looks identical to a drop that did not run.
+ */
+function dropOntoSurface() {
+  if (!vp.selection.size) return toast('Select something to drop.');
+  const moved = vp.dropSelection('surface');
+  toast(moved
+    ? `Dropped ${moved} object${moved === 1 ? '' : 's'} onto what was underneath.`
+    : 'Already resting on something — nothing to drop.');
+  tip('drop',
+    'Drop lands a piece on the top of whatever is beneath it, so a crate goes on a crate. '
+    + 'To floor ignores all that and puts it on the ground.');
 }
 
 function groupSelection() {
@@ -675,36 +721,40 @@ function deleteSelection() {
 // ---------------------------------------------------------------------------
 
 function wireToolbar() {
-  $('b-new').onclick = async () => {
-    if (vp.objects.length && !confirm('Start a new map? Anything unexported is lost.')) return;
+  const startNewMap = async () => {
     map = await newMap({ name: 'New Map', author: map?.author || '' });
     vp.clearObjects();
     applyMapMeta();
+    await loadNavCloud();
     activeRuleSet = 0;
     buildRules();
     undoStack = []; redoStack = []; current = snapshot();
     refreshAll();
-    toast('New map started.');
+    toast('New map started. It has no bot grid and no rule sets yet — both are yours to add.');
+  };
+  $('b-new').onclick = () => {
+    if (!vp.objects.length) return void startNewMap();
+    // A checkpoint first, so "start again" is recoverable even though undo
+    // deliberately does not reach across a new map.
+    confirmDialog({
+      title: 'Start a new map',
+      body: `This clears the ${vp.objects.length} object${vp.objects.length === 1 ? '' : 's'} on `
+        + 'screen and everything set against them. A checkpoint of the current map is taken first, '
+        + 'so you can get back to it from the Map tab.',
+      confirmLabel: 'New map',
+      run: () => { takeCheckpoint('manual', true); startNewMap(); },
+    });
   };
   $('b-open').onclick = () => $('filepick').click();
   $('filepick').onchange = (e) => { const f = e.target.files[0]; if (f) openFile(f); e.target.value = ''; };
   $('b-save').onclick = exportMap;
-
-  for (const mode of ['combined', 'translate', 'rotate', 'scale']) {
-    $(`m-${mode}`).onclick = () => vp.setGizmoMode(mode);
-  }
-  $('m-space').onclick = () => {
-    vp.setGizmoSpace(vp.gizmoSpace === 'world' ? 'local' : 'world');
-    $('m-space').textContent = vp.gizmoSpace === 'world' ? 'World' : 'Local';
-  };
 
   const syncSnap = () => {
     vp.setSnap('translate', $('snap-t').checked ? parseFloat($('snap-t-v').value) : 0);
     vp.setSnap('rotate', $('snap-r').checked ? parseFloat($('snap-r-v').value) : 0);
   };
   ['snap-t', 'snap-t-v', 'snap-r', 'snap-r-v'].forEach((id) => ($(id).onchange = syncSnap));
-  $('uniform').onchange = (e) => { vp.uniformScale = e.target.checked; };
-  $('floorlock').onchange = (e) => { vp.floorLock = e.target.checked; };
+  $('uniform').onchange = (e) => vp.setUniformScale(e.target.checked);
 
   // Nothing about the map changes here, so no commit and no edited stamp — it
   // is a way of looking at the scene, not a way of changing it.
@@ -714,15 +764,6 @@ function wireToolbar() {
       ? 'Showing the built-in stand-in shapes.'
       : 'Showing the game\'s own models where they are on disk.');
   };
-
-  const packSelect = $('mirror-pack');
-  for (const p of packsInGroup('virtual')) {
-    const o = document.createElement('option');
-    o.value = p.id;
-    o.textContent = p.name;
-    packSelect.appendChild(o);
-  }
-  $('b-mirror').onclick = () => mirrorSelection($('mirror-axis').value, packSelect.value || null);
 
   $('b-undo').onclick = undo;
   $('b-redo').onclick = redo;
@@ -784,18 +825,53 @@ async function regenerateNav() {
 }
 
 /**
- * The inspector's tabs. Build is first and default because it holds the two
- * things touched constantly — the selection's numbers and the object list —
- * with the array tool between them, where it is next to what it acts on.
+ * The inspector's tabs. Build is first and default because it holds the things
+ * touched constantly — the selection's numbers and the object list — with the
+ * mirror and array tools between them, next to what they act on.
+ *
+ * Leaving World puts any bot-grid brush down. The brush is modal in the worst
+ * way — it takes the left button away from selection everywhere in the viewport
+ * — and its only controls are on that tab, so walking away from them while it
+ * is still up leaves no visible sign of why clicking an object stopped working.
  */
 function wireInspectorTabs() {
   const tabs = [...document.querySelectorAll('.itab')];
   const show = (name) => {
+    if (name !== 'world' && vp.navPaint) {
+      vp.setNavPaint(null);
+      toast('Brush put down.');
+    }
     for (const t of tabs) t.classList.toggle('on', t.dataset.pane === name);
     for (const t of tabs) $(`pane-${t.dataset.pane}`).hidden = t.dataset.pane !== name;
+    if (name === 'rules') {
+      tip('rules',
+        'A mode can be added once the map holds what it needs to play it — the picker lists the '
+        + 'rest greyed out, saying what is missing.');
+    }
+    if (name === 'world') {
+      tip('world',
+        'The bot grid is the ground the bots may walk on. A new map starts with none: paint what '
+        + 'you want them to reach.');
+    }
   };
   for (const t of tabs) t.onclick = () => show(t.dataset.pane);
   show('build');
+}
+
+/**
+ * The mirror tool. It lives in the Build tab beside Array because the two are
+ * the same kind of thing — one selection in, a lot of objects out — and both
+ * want the object list they act on within reach.
+ */
+function wireMirrorTool() {
+  const packSelect = $('mirror-pack');
+  for (const p of packsInGroup('virtual')) {
+    const o = document.createElement('option');
+    o.value = p.id;
+    o.textContent = p.name;
+    packSelect.appendChild(o);
+  }
+  $('b-mirror').onclick = () => mirrorSelection($('mirror-axis').value, packSelect.value || null);
 }
 
 /**
@@ -835,20 +911,34 @@ function refreshArrayDefaults() {
 /**
  * The brushes. Picking one up takes the left button away from selection until
  * it is put down again, which is why they toggle rather than fire.
+ *
+ * The buttons are painted from `vp.navPaint` rather than from whichever click
+ * last happened, because the viewport puts the brush down by itself — leaving
+ * the World tab, or picking an object out of the library, both drop it. A brush
+ * still lit while the left button had gone back to selecting was the worst of
+ * both: clicks that neither painted nor selected.
  */
 function wireBotGrid() {
   const buttons = { add: $('nav-add'), remove: $('nav-remove') };
+  const showBrush = () => {
+    for (const [id, b] of Object.entries(buttons)) b.classList.toggle('on', vp.navPaint === id);
+  };
   const paint = (mode) => {
     const next = vp.navPaint === mode ? null : mode;
     vp.setNavPaint(next, parseFloat($('nav-brush').value) || 0.5);
-    for (const [id, b] of Object.entries(buttons)) b.classList.toggle('on', vp.navPaint === id);
     toast(next
       ? `${next === 'add' ? 'Adding to' : 'Removing from'} the bot grid. Click the button again to stop.`
       : 'Brush put down.');
+    if (next) {
+      tip('brush',
+        'While a brush is up the left button paints the floor instead of selecting. It puts itself '
+        + 'down when you leave this tab or reach for the library.');
+    }
   };
   buttons.add.onclick = () => paint('add');
   buttons.remove.onclick = () => paint('remove');
   $('nav-brush').onchange = () => vp.setNavPaint(vp.navPaint, parseFloat($('nav-brush').value) || 0.5);
+  vp.addEventListener('mode', showBrush);
 
   $('nav-clear').onclick = async () => {
     vp.clearNavMask();
@@ -858,6 +948,23 @@ function wireBotGrid() {
 
   // One undo step per stroke rather than per cell, so a long drag is one edit.
   vp.addEventListener('nav-painted', () => { commitNavMask(); });
+}
+
+/**
+ * Hand the map's bot grid to the viewport, so there is something to paint on.
+ *
+ * Called for every map that arrives, new ones included. It used not to be: a
+ * new map's grid only reached the viewport if you changed the Fill setting,
+ * which is why the brushes did nothing on a fresh map until you set Fill to
+ * Circle and back to Keep. There was no mask to paint into.
+ */
+async function loadNavCloud() {
+  await vp.setNavCloud(map.navCloud);
+  $('nav-shape').value = 'keep';
+  $('nav-r-row').style.display = '';
+  $('nav-w-row').style.display = 'none';
+  $('nav-d-row').style.display = 'none';
+  refreshNavCount();
 }
 
 /** Re-encode the painted mask back into the map. */
@@ -908,10 +1015,14 @@ function buildSelectionPanel() {
     ${vecRow('Rotation', 'r', multi ? 'disabled' : '')}
     ${vecRow('Scale', 's', multi ? 'disabled' : '')}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:9px">
-      <button class="btn ghost" id="s-dup">Duplicate</button>
-      <button class="btn ghost" id="s-floor">To floor</button>
-      <button class="btn ghost" id="s-group">Group</button>
-      <button class="btn ghost" id="s-ungroup">Ungroup</button>
+      <button class="btn ghost" id="s-dup" title="Copy in place (Ctrl+D)">Duplicate</button>
+      <button class="btn ghost" id="s-drop"
+        title="Let it fall until it rests on whatever is underneath — the top of another object, or the ground (Shift+End)">Drop</button>
+      <button class="btn ghost" id="s-floor"
+        title="Put it on the ground, whatever is in the way (End)">To floor</button>
+      <button class="btn ghost" id="s-group" title="Move these together from now on (G)">Group</button>
+      <button class="btn ghost" id="s-ungroup" title="Break the group up (Shift+G)">Ungroup</button>
+      <span></span>
     </div>
     <button class="btn ghost" id="s-del" style="width:100%;margin-top:5px;color:var(--danger)">Delete</button>
   `;
@@ -928,7 +1039,8 @@ function buildSelectionPanel() {
     }
   }
   $('s-dup').onclick = duplicate;
-  $('s-floor').onclick = () => vp.dropToFloor();
+  $('s-drop').onclick = dropOntoSurface;
+  $('s-floor').onclick = () => vp.dropSelection('floor');
   $('s-group').onclick = groupSelection;
   $('s-ungroup').onclick = ungroupSelection;
   $('s-del').onclick = deleteSelection;
@@ -1172,8 +1284,7 @@ function applyNumericEdit() {
     const r = read(selFields.r, mo.rotation);
     const s = read(selFields.s, mo.scale);
     // The pivot carries the object's world placement while it is selected.
-    vp.pivot.position.set(p.x, p.y, -p.z);
-    vp.pivot.quaternion.fromArray(unityEulerToQuat(r));
+    vp.placeSelection(p, r);
     list[0].scale.set(s.x || 0.001, s.y || 0.001, s.z || 0.001);
     vp.markDirty(list[0]);
   } else {
@@ -1185,7 +1296,6 @@ function applyNumericEdit() {
     );
     for (const m of list) vp.markDirty(m);
   }
-  if (vp.floorLock) vp._applyFloorLock();
   vp.rebuildPivot();
   commit();
 }
@@ -1222,6 +1332,22 @@ function rulesEdited() {
   buildRules();
 }
 
+/**
+ * Redraw the rules panel when — and only when — the set of object types on the
+ * map changes, because that is what decides which modes can be added and what
+ * the warning at the top of an existing set says. Guarded by a signature rather
+ * than rebuilt on every object move: the panel holds live inputs, and throwing
+ * them away underneath somebody mid-edit loses focus and the caret with it.
+ */
+let placedSignature = null;
+
+function refreshModeAvailability() {
+  const now = [...placedTypes()].sort().join('|');
+  if (now === placedSignature) return;
+  placedSignature = now;
+  buildRules();
+}
+
 function buildRules() {
   const tabs = $('mode-tabs');
   const body = $('rules-body');
@@ -1255,9 +1381,10 @@ function buildRules() {
 
   if (!sets.length) {
     body.innerHTML =
-      '<p class="hint">This map has no rule sets. The game writes five — one per ' +
-      'mode, all at their defaults — so a map without any is unusual but legal. ' +
-      'Add one above.</p>';
+      '<p class="hint">No rule sets yet, which is where a new map starts: a mode ' +
+      'is worth adding once the map can play it, and not before. Add above — the ' +
+      'list offers whatever the objectives on the map allow, and says what the ' +
+      'rest are waiting for.</p>';
     return;
   }
   if (activeRuleSet >= sets.length) activeRuleSet = sets.length - 1;
@@ -1340,9 +1467,18 @@ function buildRules() {
 /**
  * Adding a set means picking its mode, and the mode it is given becomes its
  * name — so "Free For All" from this list produces a set called Free For All
- * running Free For All. A mode the map cannot play yet is still offered, with
- * a note saying what it is waiting for, because maps get built in some order
- * and the rules are as reasonable a place to start as the geometry.
+ * running Free For All.
+ *
+ * A mode whose objectives are not on the map cannot be picked. The game will
+ * not offer that mode either, so a rule set for it is a page of settings for a
+ * match nobody can start — and offering it invited exactly that. The entry
+ * stays in the list rather than disappearing, greyed, saying on hover what the
+ * map is missing, because "Capture The Flag needs a team 1 flag" is a useful
+ * thing to be told and an absent line is not.
+ *
+ * A set already in the file is never touched by any of this: maps get edited in
+ * whatever order suits, and deleting somebody's rules because they moved a flag
+ * would be much worse than leaving a warning at the top of the panel.
  */
 function addRuleSetPicker() {
   const sel = document.createElement('select');
@@ -1358,6 +1494,10 @@ function addRuleSetPicker() {
     o.value = m.type;
     const missing = missingRequirements(m.type, present);
     o.textContent = missing.length ? `${m.name} — needs ${missing.join(', ')}` : m.name;
+    o.disabled = missing.length > 0;
+    o.title = missing.length
+      ? `Place ${missing.join(', ')} and this mode becomes available.`
+      : `${m.name} can be played on this map.`;
     sel.appendChild(o);
   }
   sel.onchange = () => {
@@ -1921,13 +2061,9 @@ function wireKeyboard() {
     if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); exportMap(); return; }
 
     switch (e.key) {
-      case 'q': case 'Q': vp.setGizmoMode('combined'); break;
-      case 'w': case 'W': vp.setGizmoMode('translate'); break;
-      case 'e': case 'E': vp.setGizmoMode('rotate'); break;
-      case 'r': case 'R': vp.setGizmoMode('scale'); break;
       case 'f': case 'F': vp.frameSelection(); break;
       case 'g': case 'G': e.shiftKey ? ungroupSelection() : groupSelection(); break;
-      case 'End': vp.dropToFloor(); break;
+      case 'End': e.shiftKey ? dropOntoSurface() : vp.dropSelection('floor'); break;
       case 'Delete': case 'Backspace': deleteSelection(); break;
       case 'Escape': vp.setSelection([]); break;
     }
@@ -2020,6 +2156,9 @@ function wireViewport() {
       toast(fresh
         ? `Placed ${fresh}.`
         : `Pasted ${meshes.length} object${meshes.length === 1 ? '' : 's'}.`);
+      tip('gizmo',
+        'One gizmo does everything: arrows move, the three coloured circles turn about X, Y and Z, '
+        + 'the cubes scale from the far side, and the disc in the middle slides it across the view.');
       return;
     }
     vp.removeObjects(meshes);
@@ -2028,7 +2167,11 @@ function wireViewport() {
     toast(fresh ? 'Placement cancelled.' : 'Paste cancelled.');
   });
   vp.addEventListener('mode', refreshStatus);
-  vp.addEventListener('change', () => { buildOutliner(); refreshStatus(); });
+  vp.addEventListener('change', () => {
+    buildOutliner();
+    refreshModeAvailability();
+    refreshStatus();
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -2037,42 +2180,77 @@ function wireViewport() {
 
 async function openFile(file) {
   try {
-    const text = await file.text();
-    const parsed = parseMap(text);
-    map = parsed;
-    vp.clearObjects();
-    for (const mo of parsed.mapObjects) vp.addObject(mo);
-    applyMapMeta();
-    activeRuleSet = 0;
-    buildRules();
-    await vp.setNavCloud(map.navCloud);
-    refreshNavCount();
-    $('nav-shape').value = 'keep';
-    vp.setSelection([]);
-    vp.setView('persp');
-    undoStack = []; redoStack = []; current = snapshot();
-    refreshAll();
-
-    const unknown = new Set(
-      vp.objects.filter((m) => m.userData.def.unknown).map((m) => m.userData.def.type)
-    );
-    let msg = `Loaded "${map.name}" — ${parsed.mapObjects.length} objects.`;
-    if (parsed.version !== MAP_VERSION) msg += ` Map format v${parsed.version}, editor targets v${MAP_VERSION}.`;
-    if (unknown.size) msg += ` ${unknown.size} type(s) not in any loaded pack: ${[...unknown].join(', ')}.`;
-    toast(msg, unknown.size > 0);
-    $('st-file').textContent = file.name;
+    await loadMapText(await file.text(), file.name);
   } catch (err) {
     console.error(err);
     toast(`Could not read that file: ${err.message}`, true);
   }
 }
 
+/**
+ * Replace everything on screen with a map read from `text`.
+ *
+ * Shared by the file picker, drag and drop, and restoring a checkpoint — all
+ * three are the same act, and a checkpoint that took a different path through
+ * this would be a checkpoint that restored subtly differently from the file it
+ * was a copy of.
+ */
+async function loadMapText(text, sourceName) {
+  const parsed = parseMap(text);
+  map = parsed;
+  vp.clearObjects();
+  for (const mo of parsed.mapObjects) vp.addObject(mo);
+  applyMapMeta();
+  activeRuleSet = 0;
+  buildRules();
+  await loadNavCloud();
+  vp.setSelection([]);
+  vp.setView('persp');
+  undoStack = []; redoStack = []; current = snapshot();
+  refreshAll();
+
+  const unknown = new Set(
+    vp.objects.filter((m) => m.userData.def.unknown).map((m) => m.userData.def.type)
+  );
+  let msg = `Loaded "${map.name}" — ${parsed.mapObjects.length} objects.`;
+  if (parsed.version !== MAP_VERSION) msg += ` Map format v${parsed.version}, editor targets v${MAP_VERSION}.`;
+  if (unknown.size) msg += ` ${unknown.size} type(s) not in any loaded pack: ${[...unknown].join(', ')}.`;
+  toast(msg, unknown.size > 0);
+  $('st-file').textContent = sourceName;
+}
+
+/** The map as the game would read it. Used by both Export and autosave. */
+function currentMapText() {
+  map.editedTime = nowStamp();
+  map.version = map.version || MAP_VERSION;
+  map.mapObjects = vp.objects.map((m) => vp.toMapObject(m));
+  return serializeMap(map);
+}
+
+/** A map still wearing the name it was born with has not been named. */
+const UNNAMED = (name) => !name || !name.trim() || /^new map$/i.test(name.trim());
+
+/**
+ * Export, after a word about the two fields the game puts on screen beside the
+ * map and nothing else in the editor forces you to fill in.
+ *
+ * The prompt is a reminder rather than a gate — "Export anyway" is right there,
+ * because someone testing a throwaway map twenty times an hour should not have
+ * to name it, and the Tips switch turns the reminder off for good. But the
+ * default is to ask: a maps folder full of "New Map" is not recoverable after
+ * the fact, since the name is most of how you tell one from another.
+ */
 function exportMap() {
+  if (tipsOn() && (UNNAMED(map.name) || !map.author.trim())) {
+    promptForMapDetails();
+    return;
+  }
+  writeMapFile();
+}
+
+function writeMapFile() {
   try {
-    map.editedTime = nowStamp();
-    map.version = map.version || MAP_VERSION;
-    map.mapObjects = vp.objects.map((m) => vp.toMapObject(m));
-    const text = serializeMap(map);
+    const text = currentMapText();
     const name = mapFileName(map.name, map.guid);
     // Not application/json: `download` names the file without an extension,
     // and browsers append one inferred from the MIME type when it is missing.
@@ -2084,11 +2262,355 @@ function exportMap() {
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 4000);
     $('st-file').textContent = name;
+    // An export is the best moment there is to take a checkpoint: it is the one
+    // point where the author has said this state is worth keeping.
+    takeCheckpoint('export');
     toast(`Exported ${name} — ${map.mapObjects.length} objects. Copy it into the game's maps folder with no file extension.`);
   } catch (err) {
     console.error(err);
     toast(`Export failed: ${err.message}`, true);
   }
+}
+
+function promptForMapDetails() {
+  const missing = UNNAMED(map.name) && !map.author.trim() ? 'a name and an author'
+    : UNNAMED(map.name) ? 'a name' : 'an author';
+  openDialog({
+    title: 'Before you export',
+    body: `This map still needs ${missing}. Both are shown in the game's map list, and the name ` +
+      'becomes the file name — a folder of maps all called "New Map" is hard to sort out later. ' +
+      'Fill them in here, or export as it is.',
+    fields: [
+      { id: 'dlg-name', label: 'Name', value: UNNAMED(map.name) ? '' : map.name, placeholder: 'Map name' },
+      { id: 'dlg-author', label: 'Author', value: map.author, placeholder: 'Your name' },
+    ],
+    actions: [
+      { label: 'Export anyway', ghost: true, run: () => writeMapFile() },
+      {
+        label: 'Save and export',
+        run: (values) => {
+          if (values['dlg-name'].trim()) map.name = values['dlg-name'].trim();
+          map.author = values['dlg-author'].trim();
+          touchEdited();
+          refreshMeta();
+          writeMapFile();
+        },
+      },
+    ],
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Dialogs
+// ---------------------------------------------------------------------------
+// A handful of moments deserve more than a toast that fades in five seconds:
+// the export reminder, and confirming something destructive. `confirm()` would
+// do the job in three characters, but it freezes the page — including the
+// render loop — and cannot say more than one line, so this builds its own.
+
+let dialogClose = null;
+
+function openDialog({ title, body, fields = [], actions }) {
+  closeDialog();
+  const veil = $('veil');
+  const box = document.createElement('div');
+  box.className = 'dlg';
+  box.setAttribute('role', 'dialog');
+  box.setAttribute('aria-modal', 'true');
+
+  const h = document.createElement('h3');
+  h.textContent = title;
+  box.appendChild(h);
+  const p = document.createElement('p');
+  p.textContent = body;
+  box.appendChild(p);
+
+  const inputs = {};
+  for (const f of fields) {
+    const row = document.createElement('div');
+    row.className = 'field';
+    const label = document.createElement('span');
+    label.textContent = f.label;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.id = f.id;
+    input.value = f.value || '';
+    input.placeholder = f.placeholder || '';
+    inputs[f.id] = input;
+    row.append(label, input);
+    box.appendChild(row);
+  }
+
+  const acts = document.createElement('div');
+  acts.className = 'acts';
+  const values = () => Object.fromEntries(Object.entries(inputs).map(([k, el]) => [k, el.value]));
+  for (const a of actions) {
+    const b = document.createElement('button');
+    b.className = 'btn' + (a.ghost ? ' ghost' : '');
+    b.textContent = a.label;
+    b.onclick = () => { const v = values(); closeDialog(); a.run(v); };
+    acts.appendChild(b);
+  }
+  box.appendChild(acts);
+
+  veil.innerHTML = '';
+  veil.appendChild(box);
+  veil.classList.add('show');
+
+  // Escape cancels, which is always the last action listed — the harmless one.
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); closeDialog(); }
+    if (e.key === 'Enter' && fields.length) {
+      e.preventDefault();
+      const v = values();
+      const primary = actions[actions.length - 1];
+      closeDialog();
+      primary.run(v);
+    }
+  };
+  addEventListener('keydown', onKey, true);
+  dialogClose = () => {
+    removeEventListener('keydown', onKey, true);
+    veil.classList.remove('show');
+    veil.innerHTML = '';
+    dialogClose = null;
+  };
+  (fields.length ? inputs[fields[0].id] : acts.lastChild)?.focus();
+}
+
+function closeDialog() {
+  dialogClose?.();
+}
+
+/** Ask before something that cannot be undone. */
+function confirmDialog({ title, body, confirmLabel, run }) {
+  openDialog({
+    title,
+    body,
+    actions: [
+      { label: 'Cancel', ghost: true, run: () => {} },
+      { label: confirmLabel, run },
+    ],
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Tips
+// ---------------------------------------------------------------------------
+// First-time hints. Every one of them is something the editor cannot make
+// obvious by looking at it — where a mode came from, why the left button
+// stopped selecting — and every one of them is worth saying exactly once.
+// The switch in the toolbar turns the lot off, including the export reminder.
+
+const TIPS_KEY = 'spatialops.tips';
+const SEEN_KEY = 'spatialops.tips.seen';
+let tipsSeen = new Set();
+
+const tipsOn = () => $('tips')?.checked !== false;
+
+function loadTipState() {
+  try {
+    const on = localStorage.getItem(TIPS_KEY);
+    if (on !== null) $('tips').checked = on === '1';
+    tipsSeen = new Set(JSON.parse(localStorage.getItem(SEEN_KEY) || '[]'));
+  } catch { /* no storage: tips stay on and repeat, which is harmless */ }
+}
+
+/** Say `message` the first time `id` comes up, and never again. */
+function tip(id, message) {
+  if (!tipsOn() || tipsSeen.has(id)) return;
+  tipsSeen.add(id);
+  try { localStorage.setItem(SEEN_KEY, JSON.stringify([...tipsSeen])); } catch { /* fine */ }
+  toast(message);
+}
+
+// ---------------------------------------------------------------------------
+// Autosave
+// ---------------------------------------------------------------------------
+// The editor holds the only copy of an unexported map, and a browser tab is a
+// fragile place to keep one. So the map is snapshotted into this browser's
+// storage every couple of minutes of actual editing, on export, and on the way
+// out of the page — and the Map tab lists what is there to be restored.
+//
+// See checkpoints.js for where they live and why it is not the build folder.
+
+const AUTOSAVE_KEY = 'spatialops.autosave';
+const AUTOSAVE_EVERY = 120_000;   // ms of wall clock between timed checkpoints
+let mapTouched = false;
+
+const autosaveOn = () => $('autosave')?.checked !== false;
+
+function wireAutosave() {
+  loadTipState();
+  try {
+    const on = localStorage.getItem(AUTOSAVE_KEY);
+    if (on !== null) $('autosave').checked = on === '1';
+  } catch { /* no storage */ }
+
+  if (!checkpointsAvailable()) {
+    // Private windows and file:// pages have nowhere to put these. Say so once
+    // rather than offering a switch that silently does nothing.
+    $('autosave').checked = false;
+    $('autosave').disabled = true;
+    $('autosave-sw').title =
+      'This browser will not give the page any storage — private window, or opened from disk. ' +
+      'Serve the editor over http:// to get autosave.';
+  }
+
+  $('autosave').onchange = () => {
+    try { localStorage.setItem(AUTOSAVE_KEY, autosaveOn() ? '1' : '0'); } catch { /* fine */ }
+    toast(autosaveOn()
+      ? 'Autosave on. Checkpoints are kept in this browser and listed under Map.'
+      : 'Autosave off. Nothing is kept but what you export.');
+    refreshCheckpoints();
+  };
+  $('tips').onchange = () => {
+    try { localStorage.setItem(TIPS_KEY, tipsOn() ? '1' : '0'); } catch { /* fine */ }
+    toast(tipsOn() ? 'Hints on.' : 'Hints off, including the reminder before exporting.');
+  };
+
+  $('cp-save').onclick = () => {
+    const entry = takeCheckpoint('manual', true);
+    toast(entry ? 'Checkpoint taken.' : 'Nothing has changed since the last checkpoint.');
+  };
+  $('cp-clear').onclick = () => {
+    if (!checkpointList().length) return toast('There are no checkpoints to clear.');
+    confirmDialog({
+      title: 'Clear every checkpoint',
+      body: 'This deletes all of the autosaved snapshots held in this browser. Anything you have '
+        + 'exported is a file on disk and is not affected.',
+      confirmLabel: 'Clear them',
+      run: () => { clearCheckpoints(); refreshCheckpoints(); toast('Checkpoints cleared.'); },
+    });
+  };
+
+  setInterval(() => { if (mapTouched) takeCheckpoint('auto'); }, AUTOSAVE_EVERY);
+  // `pagehide` fires where `beforeunload` is unreliable — a closed tab, a
+  // navigation, the phone being locked — and localStorage is synchronous, so
+  // the write finishes even as the page goes away.
+  addEventListener('pagehide', () => { if (mapTouched) takeCheckpoint('exit'); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && mapTouched) takeCheckpoint('exit');
+  });
+}
+
+/**
+ * Write a checkpoint if there is anything to write. `force` is for the button,
+ * which should work whether or not the switch is on.
+ */
+function takeCheckpoint(reason, force = false) {
+  if (!map || (!force && !autosaveOn())) return null;
+  try {
+    const entry = saveCheckpoint({
+      text: currentMapText(),
+      name: map.name,
+      author: map.author,
+      guid: map.guid,
+      objects: vp.objects.length,
+      reason,
+    });
+    mapTouched = false;
+    if (entry) refreshCheckpoints();
+    return entry;
+  } catch (err) {
+    console.warn('Checkpoint failed', err);
+    return null;
+  }
+}
+
+function refreshCheckpoints() {
+  const host = $('cp-list');
+  if (!host) return;
+  const entries = checkpointList();
+  $('cp-count').textContent = entries.length ? `${entries.length}` : '';
+  host.innerHTML = '';
+
+  if (!checkpointsAvailable()) {
+    $('cp-note').textContent =
+      'This browser gives the page no storage, so nothing can be kept here. Serve the editor '
+      + 'over http:// rather than opening the file from disk.';
+    return;
+  }
+  if (!entries.length) {
+    $('cp-note').textContent = autosaveOn()
+      ? 'Nothing kept yet. With Autosave on, a snapshot is taken every couple of minutes of '
+        + 'editing, when you export, and when you leave the page.'
+      : 'Autosave is off. Turn it on above the view, or take one by hand.';
+    return;
+  }
+
+  for (const e of entries) {
+    const row = document.createElement('div');
+    row.className = 'cprow';
+
+    const meta = document.createElement('div');
+    meta.className = 'cpm';
+    const n = document.createElement('div');
+    n.className = 'cpn';
+    n.textContent = e.name;
+    const w = document.createElement('div');
+    w.className = 'cpw';
+    w.textContent = `${timeAgo(e.at)} · ${e.objects} object${e.objects === 1 ? '' : 's'}`
+      + (e.reason === 'export' ? ' · exported' : e.reason === 'manual' ? ' · by hand' : '');
+    meta.append(n, w);
+    meta.title = `${e.name}${e.author ? ` by ${e.author}` : ''}\n${new Date(e.at).toLocaleString()}`
+      + `\n${e.objects} objects, ${(e.bytes / 1024).toFixed(1)} kB`;
+
+    const restore = document.createElement('button');
+    restore.className = 'btn ghost';
+    restore.textContent = 'Restore';
+    restore.title = 'Load this snapshot, replacing what is on screen';
+    restore.onclick = () => restoreCheckpoint(e);
+
+    const kill = document.createElement('button');
+    kill.className = 'kill';
+    kill.type = 'button';
+    kill.textContent = '×';
+    kill.title = 'Delete this checkpoint';
+    kill.onclick = () => { removeCheckpoint(e.id); refreshCheckpoints(); };
+
+    row.append(meta, restore, kill);
+    host.appendChild(row);
+  }
+
+  const kb = checkpointBytes() / 1024;
+  $('cp-note').textContent =
+    `${entries.length} kept in this browser, ${kb.toFixed(0)} kB. The newest ${entries.length === 1
+      ? 'one is' : 'few are'} kept and the oldest drop off. These live with the address the editor `
+    + 'is served from, not in the map folder — Export is still what makes a file the game can read.';
+}
+
+function restoreCheckpoint(entry) {
+  const text = checkpointText(entry.id);
+  if (!text) { refreshCheckpoints(); return toast('That checkpoint is no longer stored.', true); }
+  const go = async () => {
+    try {
+      await loadMapText(text, `${entry.name} (checkpoint)`);
+      refreshCheckpoints();
+    } catch (err) {
+      console.error(err);
+      toast(`That checkpoint would not load: ${err.message}`, true);
+    }
+  };
+  if (!vp.objects.length) return void go();
+  confirmDialog({
+    title: 'Restore this checkpoint',
+    body: `"${entry.name}" from ${timeAgo(entry.at)}, ${entry.objects} objects. What is on screen `
+      + 'now will be replaced, and undo does not reach back past it. A checkpoint of where you are '
+      + 'is taken first.',
+    confirmLabel: 'Restore',
+    run: () => { takeCheckpoint('manual', true); go(); },
+  });
+}
+
+/** On the way in, mention what is waiting rather than leaving it to be found. */
+function greetWithCheckpoints() {
+  const entries = checkpointList();
+  if (!entries.length) return;
+  refreshCheckpoints();
+  tip('checkpoints',
+    `${entries.length} autosaved checkpoint${entries.length === 1 ? '' : 's'} from a previous `
+    + `session — the newest is "${entries[0].name}", ${timeAgo(entries[0].at)}. Map tab, Checkpoints.`);
 }
 
 // ---------------------------------------------------------------------------
@@ -2113,6 +2635,7 @@ function refreshMeta() {
 function refreshAll() {
   buildOutliner();
   buildSelectionPanel();
+  refreshModeAvailability();
   refreshMeta();
   refreshStatus();
   $('b-undo').disabled = !undoStack.length;
@@ -2123,15 +2646,13 @@ function refreshStatus() {
   const n = vp.selection.size;
   $('sel-count').textContent = n ? `${n} selected` : 'none';
   $('st-mode').textContent =
-    `${vp.gizmoMode.toUpperCase()} · ${vp.gizmoSpace.toUpperCase()} · ` +
+    `${vp.uniformScale ? 'uniform' : 'per-axis'} · ` +
     `grid ${vp.snap.translate ? vp.snap.translate + 'm' : 'off'} · ` +
-    `angle ${vp.snap.rotate ? vp.snap.rotate + '°' : 'off'}`;
+    `angle ${vp.snap.rotate ? vp.snap.rotate + '°' : 'off'}` +
+    (vp.navPaint ? ` · brush ${vp.navPaint}` : '');
   $('st-sel').textContent = `${vp.objects.length} objects · ${n} selected`;
   $('b-undo').disabled = !undoStack.length;
   $('b-redo').disabled = !redoStack.length;
-  for (const mode of ['combined', 'translate', 'rotate', 'scale']) {
-    $(`m-${mode}`).classList.toggle('on', vp.gizmoMode === mode);
-  }
 
   const b = map ? map.mapBoundsSize : { x: 0, y: 0, z: 0 };
   let extra = '';

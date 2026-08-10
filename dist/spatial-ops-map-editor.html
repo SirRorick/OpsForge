@@ -144,6 +144,9 @@ label.sw:has(input:checked){color:var(--text)}
 .arrl[data-a=Y]::before{color:#7FD17F}
 .arrl[data-a=Z]::before{color:#6C9BE0}
 
+/* ---------- mirror tool ---------- */
+.mirrorrow{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+
 /* ---------- bot grid ---------- */
 .navtools{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:8px}
 .navtools .btn{padding:5px 4px;font-size:12px}
@@ -306,6 +309,30 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
   font-family:var(--hud);font-size:16px;letter-spacing:.2em;text-transform:uppercase;color:var(--accent)}
 #stage.dropping #drophint{display:grid}
 
+/* ---------- checkpoints ---------- */
+.cprow{display:grid;grid-template-columns:1fr auto auto;gap:6px;align-items:center;
+  padding:5px 0;border-bottom:1px solid var(--line-soft)}
+.cprow:last-of-type{border-bottom:0}
+.cprow .cpm{min-width:0}
+.cprow .cpn{font-size:11.5px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cprow .cpw{font-family:var(--mono);font-size:9.5px;color:var(--faint)}
+.cprow .btn{padding:3px 7px;font-size:11px}
+.cprow .kill{background:none;border:0;padding:0 2px;cursor:pointer;color:var(--faint);font-size:14px;line-height:1}
+.cprow .kill:hover{color:var(--danger)}
+
+/* ---------- dialog ---------- */
+#veil{position:fixed;inset:0;z-index:200;display:none;place-items:center;
+  background:rgba(6,10,14,.62)}
+#veil.show{display:grid}
+.dlg{width:min(440px,92vw);background:var(--panel);border:1px solid var(--line);
+  border-top:2px solid var(--accent);border-radius:6px;padding:16px 18px 14px;
+  box-shadow:0 18px 50px rgba(0,0,0,.6)}
+.dlg h3{margin:0 0 8px;font-family:var(--hud);font-size:15px;font-weight:600;
+  letter-spacing:.14em;text-transform:uppercase;color:var(--accent)}
+.dlg p{margin:0 0 12px;font-size:12px;line-height:1.55;color:var(--dim)}
+.dlg .field{grid-template-columns:66px 1fr}
+.dlg .acts{display:flex;gap:6px;justify-content:flex-end;margin-top:14px}
+
 /* ---------- toast ---------- */
 #toast{position:fixed;left:50%;bottom:52px;transform:translateX(-50%) translateY(10px);
   background:var(--raise);border:1px solid var(--line);border-left:3px solid var(--accent);
@@ -323,40 +350,26 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
     <div class="brand"><b>Spatial Ops</b><span>Map Editor</span></div>
 
     <div class="grp">
-      <button class="btn" id="b-new">New</button>
-      <button class="btn" id="b-open">Open</button>
-      <button class="btn" id="b-save">Export</button>
+      <button class="btn" id="b-new" title="Start again with an empty arena. Anything unexported is lost, so a checkpoint is taken first.">New</button>
+      <button class="btn" id="b-open" title="Open a map exported from the game. Dropping the file anywhere on the page works too.">Open</button>
+      <button class="btn" id="b-save" title="Write the map out as a file the game can read (Ctrl+S). It has no file extension — that is correct.">Export</button>
     </div>
 
     <div class="grp">
-      <button class="btn" id="m-combined" title="Move, rotate and scale in one gizmo (Q)">All</button>
-      <button class="btn" id="m-translate" title="Move (W)">Move</button>
-      <button class="btn" id="m-rotate" title="Rotate (E)">Rotate</button>
-      <button class="btn" id="m-scale" title="Scale (R)">Scale</button>
-      <button class="btn ghost" id="m-space" title="Toggle world/local axes">World</button>
-    </div>
-
-    <div class="grp">
-      <label class="sw" title="Snap movement to a grid"><input type="checkbox" id="snap-t" checked>Grid</label>
+      <label class="sw" title="Snap movement to a grid, so pieces line up with each other"><input type="checkbox" id="snap-t" checked>Grid</label>
       <select id="snap-t-v" style="width:64px"><option value="0.05">5cm</option><option value="0.1">10cm</option><option value="0.25" selected>25cm</option><option value="0.5">50cm</option><option value="1">1m</option></select>
-      <label class="sw" title="Snap rotation to an angle"><input type="checkbox" id="snap-r" checked>Angle</label>
+      <label class="sw" title="Snap turns to whole steps, so two pieces meant to face the same way do"><input type="checkbox" id="snap-r" checked>Angle</label>
       <select id="snap-r-v" style="width:56px"><option value="5">5&deg;</option><option value="15" selected>15&deg;</option><option value="45">45&deg;</option><option value="90">90&deg;</option></select>
     </div>
 
     <div class="grp">
-      <label class="sw" title="Scale all axes together"><input type="checkbox" id="uniform" checked>Uniform</label>
-      <label class="sw" title="Keep floor pieces resting on the ground"><input type="checkbox" id="floorlock" checked>Floor</label>
+      <label class="sw" title="Scale all axes together, so a piece keeps its proportions"><input type="checkbox" id="uniform" checked>Uniform</label>
       <label class="sw" title="Draw the built-in stand-in shapes instead of the game's own models, to check them against each other"><input type="checkbox" id="placeholders">Stand-ins</label>
     </div>
 
     <div class="grp">
-      <button class="btn ghost" id="b-mirror" title="Copy the selection to the other side of the map">Mirror</button>
-      <select id="mirror-axis" style="width:52px" title="Which way to mirror">
-        <option value="x">X</option><option value="z">Z</option>
-      </select>
-      <select id="mirror-pack" style="width:104px" title="Draw the mirrored copy from another theme">
-        <option value="">Same pack</option>
-      </select>
+      <label class="sw" id="autosave-sw" title="Keep a rolling set of recent snapshots in this browser, so closing the tab does not lose the map. Restore them from the Map tab."><input type="checkbox" id="autosave" checked>Autosave</label>
+      <label class="sw" title="Show first-time hints and the reminders before exporting"><input type="checkbox" id="tips" checked>Tips</label>
     </div>
 
     <div class="grp" style="margin-left:auto">
@@ -369,7 +382,7 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
   <aside id="library">
     <div class="sec">
       <h2>Library <span class="cnt" id="lib-count"></span></h2>
-      <div id="search"><input type="text" id="q" placeholder="Filter objects"></div>
+      <div id="search"><input type="text" id="q" placeholder="Filter objects" title="Search every pack at once by name or type"></div>
     </div>
     <div class="scroll" id="lib-list"></div>
     <div class="sec" style="border-bottom:0;border-top:1px solid var(--line-soft)">
@@ -386,10 +399,9 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
       <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
       <div id="readout"></div>
       <div id="viewbtns">
-        <button class="btn ghost" data-view="top">Top</button>
-        <button class="btn ghost" data-view="front">Front</button>
-        <button class="btn ghost" data-view="side">Side</button>
-        <button class="btn ghost" data-view="persp">3D</button>
+        <button class="btn ghost" data-view="top" title="Look straight down">Top</button>
+        <button class="btn ghost" data-view="front" title="Look along Z">Front</button>
+        <button class="btn ghost" data-view="side" title="Look along X">Side</button>
       </div>
     </div>
     <div id="drophint">Release to place</div>
@@ -412,6 +424,25 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
       </div>
 
       <div class="sec">
+        <h2>Mirror</h2>
+        <div class="pad">
+          <div class="mirrorrow">
+            <select id="mirror-axis" title="Which way to mirror">
+              <option value="x">Across X</option><option value="z">Across Z</option>
+            </select>
+            <select id="mirror-pack" title="Draw the mirrored copy from another theme">
+              <option value="">Same pack</option>
+            </select>
+          </div>
+          <button class="btn ghost" id="b-mirror" style="width:100%;margin-top:6px"
+            title="Copy the selection to the other side of the map">Mirror</button>
+          <p class="hint" style="margin-top:7px">Copies the selection across the middle of the arena,
+            reflected rather than just moved: a piece that has a left and a right comes out the other
+            way round, so the two halves match. Pick another theme to make the far half a different colour.</p>
+        </div>
+      </div>
+
+      <div class="sec">
         <h2>Array <span class="cnt" id="arr-count"></span></h2>
         <div class="pad">
           <div class="arrgrid">
@@ -426,7 +457,7 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
             <input type="number" id="arr-nz" value="1" min="1" max="100" step="1">
             <input type="number" id="arr-dz" value="1" step="0.05">
           </div>
-          <button class="btn ghost" id="b-array" style="width:100%;margin-top:8px">Array</button>
+          <button class="btn ghost" id="b-array" style="width:100%;margin-top:8px" title="Repeat the selection into a grid of copies">Array</button>
           <p class="hint" style="margin-top:7px">Spacing starts at the selection's own size, so copies sit flush.
             Widen it for gaps. Steps follow the object's own axes, so a turned piece arrays along its face.</p>
         </div>
@@ -461,7 +492,7 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
           <div class="navtools">
             <button class="btn ghost" id="nav-add" title="Paint walkable ground">Add</button>
             <button class="btn ghost" id="nav-remove" title="Paint it back out">Remove</button>
-            <button class="btn ghost" id="nav-clear" title="Wipe the whole grid">Clear all</button>
+            <button class="btn ghost" id="nav-clear" title="Wipe the whole grid back to nothing walkable">Clear all</button>
           </div>
           <div class="field"><span>Brush</span>
             <select id="nav-brush">
@@ -472,7 +503,7 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
             </select>
           </div>
           <div class="field"><span>Fill</span>
-            <select id="nav-shape"><option value="keep">Keep from file</option><option value="circle">Circle</option><option value="rect">Rectangle</option></select>
+            <select id="nav-shape" title="Flood the grid with a shape. Keep from file leaves it exactly as it is — which is what you want if you are painting by hand."><option value="keep">Keep from file</option><option value="circle">Circle</option><option value="rect">Rectangle</option></select>
           </div>
           <div class="field" id="nav-r-row"><span>Radius</span><input type="number" id="nav-r" value="5" min="1" max="17" step="0.25"></div>
           <div class="field" id="nav-w-row" style="display:none"><span>Width</span><input type="number" id="nav-w" value="7" min="1" max="34" step="0.25"></div>
@@ -498,11 +529,27 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
       <div class="sec">
         <h2>Map</h2>
         <div class="pad">
-          <div class="field"><span>Name</span><input type="text" id="m-name"></div>
-          <div class="field"><span>Author</span><input type="text" id="m-author"></div>
-          <div class="field"><span>ID</span><input type="text" id="m-guid" readonly></div>
-          <button class="btn ghost" id="b-newguid" style="width:100%;margin-top:2px">New ID</button>
+          <div class="field"><span>Name</span><input type="text" id="m-name"
+            title="Shown in the game's map list, and the first half of the exported file name"></div>
+          <div class="field"><span>Author</span><input type="text" id="m-author"
+            title="Shown beside the map in game. Your name, or whatever you want credited."></div>
+          <div class="field"><span>ID</span><input type="text" id="m-guid" readonly
+            title="The map's unique id. Two maps sharing one will collide in the game's list — take a New ID if you built this map by editing someone else's."></div>
+          <button class="btn ghost" id="b-newguid" style="width:100%;margin-top:2px"
+            title="Give this map a fresh identity, so the game treats it as a new map rather than a new version of the one it came from">New ID</button>
           <p class="hint" style="margin-top:8px">Exports as <code id="fname" style="font-family:var(--mono);color:var(--dim)"></code></p>
+        </div>
+      </div>
+
+      <div class="sec">
+        <h2>Checkpoints <span class="cnt" id="cp-count"></span></h2>
+        <div class="pad">
+          <div id="cp-list"></div>
+          <button class="btn ghost" id="cp-save" style="width:100%;margin-top:6px"
+            title="Take a checkpoint now, without waiting for the timer">Checkpoint now</button>
+          <button class="btn ghost" id="cp-clear" style="width:100%;margin-top:5px;color:var(--danger)"
+            title="Delete every checkpoint held in this browser">Clear all</button>
+          <p class="hint" style="margin-top:8px" id="cp-note"></p>
         </div>
       </div>
 
@@ -510,16 +557,21 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
         <h2>Shortcuts</h2>
         <div class="pad">
           <p class="hint">
-            <kbd>W</kbd><kbd>E</kbd><kbd>R</kbd> move / rotate / scale &middot;
             <kbd>G</kbd> group &middot; <kbd>Shift</kbd>+<kbd>G</kbd> ungroup &middot;
             <kbd>Ctrl</kbd>+<kbd>D</kbd> duplicate &middot;
             <kbd>Ctrl</kbd>+<kbd>C</kbd>/<kbd>V</kbd> copy / paste under the cursor &middot;
             <kbd>F</kbd> frame &middot;
-            <kbd>End</kbd> drop to floor &middot; <kbd>Del</kbd> delete &middot;
+            <kbd>End</kbd> to floor &middot;
+            <kbd>Shift</kbd>+<kbd>End</kbd> drop onto what is underneath &middot;
+            <kbd>Del</kbd> delete &middot;
             <kbd>Ctrl</kbd>+<kbd>A</kbd> select all<br><br>
             Left drag selects, middle drag orbits, right drag pans,
             <kbd>Alt</kbd>+left orbits. <kbd>Shift</kbd> adds to the selection,
-            <kbd>Ctrl</kbd> picks a single object out of a group.
+            <kbd>Ctrl</kbd> picks a single object out of a group.<br><br>
+            One gizmo does all three jobs: arrows move, the three coloured
+            circles turn about X, Y and Z, the cubes scale, and the disc in the
+            middle slides the selection across the view. Scaling holds the far
+            side still, so a piece grows the way you pull it.
           </p>
         </div>
       </div>
@@ -536,6 +588,7 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
 </div>
 
 <div id="marquee"></div>
+<div id="veil"></div>
 <div id="toast"></div>
 <input type="file" id="filepick" style="display:none">
 
@@ -549,7 +602,6 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 // ==== src/unity.js ====================================================
@@ -715,11 +767,12 @@ function wrap360(deg) {
 // (`Off`, `BlueTeam`, `Individual` …), and whether a flags field emptied to
 // nothing writes `"None"` or `""`. Both are noted where they occur.
 //
-// This module must stay free of three.js imports so the tests can run headless,
-// and free of `packs.js` too — it is built before it (see ORDER in build.mjs),
-// which is why the weapon ids below are spelled out rather than imported. They
-// are the same ids `specificWeapon` uses, in the rules screen's order rather
-// than the library's; `test/rules.test.mjs` holds the two lists to each other.
+// This module must stay free of three.js imports so it can run outside a
+// browser, and free of `packs.js` too — it is built before it (see ORDER in
+// build.mjs), which is why the weapon ids below are spelled out rather than
+// imported. They are the same ids `specificWeapon` uses, in the rules screen's
+// order rather than the library's, so the two lists have to be kept in step by
+// hand.
 // ---------------------------------------------------------------------------
 
 const INT = 'int';
@@ -1181,8 +1234,12 @@ function formatDuration(total) {
 // ---------------------------------------------------------------------------
 
 /**
- * The rule set list a brand new map starts with: five modes, all default,
- * matching what the game writes from an untouched rules screen exactly.
+ * The five modes, all default, exactly as the game writes them from an
+ * untouched rules screen.
+ *
+ * This is evidence about the format, not the editor's starting point: a map
+ * made here starts with no rule sets and gains one per mode as its objectives
+ * are placed. See `newMap` in format.js.
  */
 function defaultRuleSets() {
   return MODES.map((m) => emptyRuleSet(m.type, m.name));
@@ -1346,22 +1403,25 @@ function overrideCount(ruleSet) {
 // the set out from under the user because they moved a flag would be worse than
 // saying so.
 
+// The labels name the teams by colour, matching the library. `Team1` and
+// `Team2` are what the file says and never change; blue and orange are what the
+// game shows and what anyone building a map is actually looking at.
 const MODE_REQUIREMENTS = {
   FreeForAll: [],
   Survival: [{ label: 'an enemy spawner', types: ['EnemySpawnPoint'] }],
   TeamDeathMatch: [
-    { label: 'a team 1 spawn zone', types: ['PlayerSpawnZoneTeam1'] },
-    { label: 'a team 2 spawn zone', types: ['PlayerSpawnZoneTeam2'] },
+    { label: 'a blue team spawn zone', types: ['PlayerSpawnZoneTeam1'] },
+    { label: 'an orange team spawn zone', types: ['PlayerSpawnZoneTeam2'] },
   ],
   CaptureTheFlag: [
-    { label: 'a team 1 spawn zone', types: ['PlayerSpawnZoneTeam1'] },
-    { label: 'a team 2 spawn zone', types: ['PlayerSpawnZoneTeam2'] },
-    { label: 'a team 1 flag', types: ['CaptureFlagSpawnTeam1'] },
-    { label: 'a team 2 flag', types: ['CaptureFlagSpawnTeam2'] },
+    { label: 'a blue team spawn zone', types: ['PlayerSpawnZoneTeam1'] },
+    { label: 'an orange team spawn zone', types: ['PlayerSpawnZoneTeam2'] },
+    { label: 'a blue team flag', types: ['CaptureFlagSpawnTeam1'] },
+    { label: 'an orange team flag', types: ['CaptureFlagSpawnTeam2'] },
   ],
   Domination: [
-    { label: 'a team 1 spawn zone', types: ['PlayerSpawnZoneTeam1'] },
-    { label: 'a team 2 spawn zone', types: ['PlayerSpawnZoneTeam2'] },
+    { label: 'a blue team spawn zone', types: ['PlayerSpawnZoneTeam1'] },
+    { label: 'an orange team spawn zone', types: ['PlayerSpawnZoneTeam2'] },
     { label: 'a capture zone', types: ['DominationZoneA', 'DominationZoneB', 'DominationZoneC'] },
   ],
 };
@@ -1390,8 +1450,6 @@ function missingRequirements(type, present) {
 // formatting. Reproducing both rules exactly means an unmodified map can be
 // loaded and re-exported byte for byte.
 // ---------------------------------------------------------------------------
-
-
 
 const MAP_VERSION = 4;
 const DOTNET_MIN_DATE = '0001-01-01T00:00:00';
@@ -1745,8 +1803,44 @@ async function defaultNavCloud(radius = 5) {
   return stub;
 }
 
+/**
+ * A nav cloud of the right shape with nothing walkable in it.
+ *
+ * The grid is still 141 x 141 at 0.25 m, because those numbers describe the play
+ * space the headset was set up in rather than anything about the map, and every
+ * export the game has written carries them. Only the mask is empty — which is
+ * what a blank map should start as, so the first thing painted is the author's
+ * and not a five metre circle they have to clear first.
+ *
+ * Encoded properly rather than left as an empty string: an empty gzip payload is
+ * what the game would write for a grid nobody has walked, and a bare "" is a
+ * shape the format has only ever been *seen* to tolerate, not to use.
+ */
+async function emptyNavCloud() {
+  const stub = defaultNavCloudStub();
+  const { x, y } = stub.divisions;
+  stub.encodedPoints = await encodeNavCloud(new Uint8Array(x * y));
+  return stub;
+}
+
 // -- New map ----------------------------------------------------------------
 
+/**
+ * A blank map.
+ *
+ * No rule sets. The game's own new map carries five — one per mode, every
+ * setting at its default — and `defaultRuleSets` in rules.js still builds
+ * exactly that, because reproducing what the game writes is the standard the
+ * format code is held to. But four of the five are for modes an empty map
+ * cannot play, and a page of settings for a match nobody can start is not a
+ * useful place to begin.
+ * A mode is added here once its objectives are on the map. An empty `ruleSets`
+ * array is legal in the format either way.
+ *
+ * No bot grid either — see `emptyNavCloud`. The grid is a thing you paint where
+ * the bots may walk, and starting it as a five metre circle meant every map
+ * began by rubbing one out.
+ */
 async function newMap({ name = 'New Map', author = '' } = {}) {
   const ts = nowStamp();
   return {
@@ -1759,10 +1853,10 @@ async function newMap({ name = 'New Map', author = '' } = {}) {
     editedTime: ts,
     playedTime: DOTNET_MIN_DATE,
     mapBoundsSize: { x: 7, y: 3, z: 7 },
-    ruleSets: defaultRuleSets(),
+    ruleSets: [],
     anchors: [],
     mapObjects: [],
-    navCloud: await defaultNavCloud(5),
+    navCloud: await emptyNavCloud(),
     hasArUcoAnchor: false,
   };
 }
@@ -2022,11 +2116,11 @@ const ENEMIES = [
   { id: 'Drone', label: 'Drone', icon: 'filled_Icon_drone_silhouette', model: 'DroneBotSpawner' },
   { id: 'Helicopter', label: 'Helicopter', icon: 'Icon_Campaign_Chopper', model: 'ChopperBotSpawner' },
   { id: 'RPG', label: 'RPG', icon: 'filled_Icon_rpg_silhouette', model: 'RPGBotSpawner' },
-  { id: 'CorruptedSMG', label: 'SMG ✦', icon: 'filled_Icon_smg_corrupted_silhouette', model: 'SMGCorruptedBotSpawner' },
-  { id: 'CorruptedShotgun', label: 'Shotgun ✦', icon: 'filled_Icon_shotgun_corrupted_silhouette', model: 'ShotgunCorruptedBotSpawner' },
-  { id: 'CorruptedSniper', label: 'Sniper ✦', icon: 'filled_Icon_sniper_corrupted_silhouette', model: 'SniperCorruptedBotSpawner' },
-  { id: 'CorruptedHandgun', label: 'Handgun ✦', icon: 'filled_Icon_handgun_corrupted_silhouette', model: 'HandgunCorruptedBotSpawner' },
-  { id: 'CorruptedRPG', label: 'RPG ✦', icon: 'filled_Icon_rpg_corrupted_silhouette', model: 'RPGCorruptedBotSpawner' },
+  { id: 'CorruptedSMG', label: 'SMG Corrupted', icon: 'filled_Icon_smg_corrupted_silhouette', model: 'SMGCorruptedBotSpawner' },
+  { id: 'CorruptedShotgun', label: 'Shotgun Corrupted', icon: 'filled_Icon_shotgun_corrupted_silhouette', model: 'ShotgunCorruptedBotSpawner' },
+  { id: 'CorruptedSniper', label: 'Sniper Corrupted', icon: 'filled_Icon_sniper_corrupted_silhouette', model: 'SniperCorruptedBotSpawner' },
+  { id: 'CorruptedHandgun', label: 'Handgun Corrupted', icon: 'filled_Icon_handgun_corrupted_silhouette', model: 'HandgunCorruptedBotSpawner' },
+  { id: 'CorruptedRPG', label: 'RPG Corrupted', icon: 'filled_Icon_rpg_corrupted_silhouette', model: 'RPGCorruptedBotSpawner' },
 ];
 
 const ENEMY_TYPES = ENEMIES.map((e) => e.id);
@@ -2802,12 +2896,12 @@ const BUILTIN_PACKS = [
       rotationAxes: "xyz", floor: false, color: "#E0574B", defaultScale: [1, 1, 1],
       opacity: 0.25, model: "DamageBox", icon: "Icon_DamageBox" },
     { type: "DamageBoxTeam1", objectType: "DamageBox", props: { style: "Blue" },
-      label: "Damage Box Team 1", category: "Hazards", shape: "damageBox", size: [1, 1, 1],
+      label: "Damage Box Blue Team", category: "Hazards", shape: "damageBox", size: [1, 1, 1],
       pivot: "center", rotationAxes: "xyz", floor: false, color: "#4A90D9",
       defaultScale: [1, 1, 1], opacity: 0.25, model: "DamageBoxTeam1",
       icon: "Icon_DamageBoxTeam1" },
     { type: "DamageBoxTeam2", objectType: "DamageBox", props: { style: "Orange" },
-      label: "Damage Box Team 2", category: "Hazards", shape: "damageBox", size: [1, 1, 1],
+      label: "Damage Box Orange Team", category: "Hazards", shape: "damageBox", size: [1, 1, 1],
       pivot: "center", rotationAxes: "xyz", floor: false, color: "#E08A3C",
       defaultScale: [1, 1, 1], opacity: 0.25, model: "DamageBoxTeam2",
       icon: "Icon_DamageBoxTeam2" },
@@ -2828,11 +2922,11 @@ const BUILTIN_PACKS = [
   {
     id: "objectives", name: "Mode Objectives", group: "objectives", schema: PACK_SCHEMA_VERSION,
     objects: [
-    { type: "PlayerSpawnZoneTeam1", label: "Player Spawn Zone Team 1", category: "Spawn Zones",
+    { type: "PlayerSpawnZoneTeam1", label: "Player Spawn Zone Blue Team", category: "Spawn Zones",
       shape: "spawnZone", size: [1.202, 2.363, 1.392], pivot: "base", anchor: [0.5, 0.432], rotationAxes: "y", floor: true,
       color: "#4A90D9", defaultScale: [1, 1, 1],
       model: "PlayerSpawnZoneTeam1", texture: "TPgradientVerticalConcave00 1.png", tintModel: true, fixedParts: "Radio|SpawnPointMachine", area: SPAWN_ZONE_AREA, icon: "Icon_SpawnZoneTeam1" },
-    { type: "PlayerSpawnZoneTeam2", label: "Player Spawn Zone Team 2", category: "Spawn Zones",
+    { type: "PlayerSpawnZoneTeam2", label: "Player Spawn Zone Orange Team", category: "Spawn Zones",
       shape: "spawnZone", size: [1.202, 2.399, 1.392], pivot: "base", anchor: [0.5, 0.432], rotationAxes: "y", floor: true,
       color: "#E08A3C", defaultScale: [1, 1, 1],
       model: "PlayerSpawnZoneTeam2", texture: "TPgradientVerticalConcave00 1.png", tintModel: true, fixedParts: "Radio|SpawnPointMachine", area: SPAWN_ZONE_AREA, icon: "Icon_SpawnZoneTeam2" },
@@ -2857,14 +2951,25 @@ const BUILTIN_PACKS = [
       floor: true, color: "#5AD6A0", defaultScale: [1, 1, 1], model: "DominationZoneC",
       texture: "Circle Outline 1024px - Stroke 10px.png", tintModel: true, cutout: true,
       badge: "C", icon: "Icon_FlagC" },
-    { type: "CaptureFlagSpawnTeam1", label: "Capture Flag Spawn Team 1",
-      category: "Capture The Flag", shape: "flagSpawn", size: [0.6, 1.8, 0.6], pivot: "base",
-      rotationAxes: "y", floor: true, color: "#4A90D9", defaultScale: [1, 1, 1],
-      uncertain: true, model: "CaptureFlagSpawnPointTeam1", icon: "Icon_OrangeTeamFlag" },
-    { type: "CaptureFlagSpawnTeam2", label: "Capture Flag Spawn Team 2",
-      category: "Capture The Flag", shape: "flagSpawn", size: [0.6, 1.8, 0.6], pivot: "base",
-      rotationAxes: "y", floor: true, color: "#E08A3C", defaultScale: [1, 1, 1],
-      uncertain: true, model: "CaptureFlagSpawnPointTeam2", icon: "Icon_PurpleTeamFlag" },
+    // The two flag prefabs carry no meshes — the flag is built at runtime — so
+    // the placeholder is what the editor draws whether or not the asset dump is
+    // present. Its size is off the prefab's colliders, outline box and bone
+    // chain rather than off a mesh: a 2.15 m pole 0.2 m across, with the cloth
+    // hanging at y = 1.793 and reaching 0.537 m from it. `anchor` puts the pole
+    // on the object's origin, where the game has it, instead of in the middle
+    // of a footprint the cloth stretches to one side.
+    //
+    // Team 1 is blue and team 2 orange throughout the catalog — the spawn zone
+    // icons and the damage box styles both say so — and these two had each
+    // other's icons.
+    { type: "CaptureFlagSpawnTeam1", label: "Capture Flag Blue Team",
+      category: "Capture The Flag", shape: "flagSpawn", size: [0.637, 2.15, 0.2], pivot: "base",
+      anchor: [0.157, 0.5], rotationAxes: "y", floor: true, color: "#4A90D9",
+      defaultScale: [1, 1, 1], model: "CaptureFlagSpawnPointTeam1", icon: "Icon_PurpleTeamFlag" },
+    { type: "CaptureFlagSpawnTeam2", label: "Capture Flag Orange Team",
+      category: "Capture The Flag", shape: "flagSpawn", size: [0.637, 2.15, 0.2], pivot: "base",
+      anchor: [0.157, 0.5], rotationAxes: "y", floor: true, color: "#E08A3C",
+      defaultScale: [1, 1, 1], model: "CaptureFlagSpawnPointTeam2", icon: "Icon_OrangeTeamFlag" },
     ],
   },
 ];
@@ -4108,18 +4213,52 @@ const builders = {
   dominationZoneB: () => dominationZone(2),
   dominationZoneC: () => dominationZone(3),
 
-  // CaptureFlagSpawnPointTeam1 and Team2 contain **no meshes at all** — only
-  // nodes and UI, with the flag itself built at runtime — so unlike everything
-  // else here this one has nothing to measure and is designed from the library
-  // icon. Say so rather than implying it was traced.
-  flagSpawn: () =>
-    merge([
-      cyl(0.46, 0.06, 0.03, 16),
-      ring(0.4, 0.035, 0, 0.07),
-      cyl(0.05, 0.9, 0.5, 8),
-      cyl(0.07, 0.05, 0.94, 8),
-      prism([[0, 0], [0.44, -0.1], [0.44, 0.26], [0, 0.36]], 0.03, 0.03, 0.62, 0),
-    ]),
+  // CaptureFlagSpawnPointTeam1 and Team2, 0.637 x 2.15 x 0.2.
+  //
+  // These two prefabs hold **no meshes at all**: the flag is built at runtime,
+  // which is why looking for a flag model finds nothing. What they do hold is a
+  // rig, and a rig is measurable — every number below is off the prefab's own
+  // nodes rather than eyeballed:
+  //
+  //   Outline      a box from y = 0 to 2.15, 0.2 across in x and z: the pole
+  //   MidCollider  0.2 x 2.2 x 0.2 at y = 1.1, agreeing with it
+  //   FlagFloat    y = 0.8, and FlagBase 0.993 above it -> the cloth hangs from
+  //                y = 1.793
+  //   FlagBase -> FlagMiddle1 -> FlagMiddle2 -> FlagEnd, three horizontal bone
+  //                offsets of 0.162, 0.184 and 0.191 -> the cloth reaches
+  //                0.537 m from the pole, and those are the stations the game's
+  //                own cloth waves about, so they are the stations used here
+  //
+  // Two things are not measurable and come from the library icon
+  // (Icon_OrangeTeamFlag / Icon_PurpleTeamFlag) instead: how far the cloth
+  // hangs, and the swallowtail notch cut into its trailing edge. The notch is
+  // the whole reason this reads as a flag from across the arena rather than as
+  // a signpost, which the previous stand-in — a 0.44 m pennant on a 0.9 m stick
+  // — did not.
+  //
+  // The cell is not square (0.637 wide against 0.2 deep), so anything round has
+  // to be authored as the ellipse that comes out circular, and anything turned
+  // in the XZ plane would shear. Hence the local helpers.
+  flagSpawn: () => {
+    const W = 0.637, H = 2.15, D = 0.2, A = 0.157;   // must match the catalog
+    const cx = (m) => m / W - 0.5 + A;               // metres from the pole -> cell x
+    const cy = (m) => m / H;
+    const cz = (m) => m / D;
+    /** An upright round post of radius `r` metres, `h` tall, standing at `y`. */
+    const post = (r, h, y, seg = 12) =>
+      place(cyl(1, cy(h), 0, seg), { s: [r / W, 1, r / D], x: cx(0), y: cy(y + h / 2) });
+
+    return merge([
+      // Foot: the 0.2 m square the collider claims, drawn as the disc it reads
+      // as. Nothing in the prefab says there is a base — but an objective you
+      // drag around wants a visible footprint, and this is exactly the one the
+      // game reserves for it.
+      post(0.1, 0.05, 0),
+      post(0.03, 2.15, 0),          // the pole itself, full height
+      post(0.045, 0.06, 2.06),      // a collar under the tip, so it reads as a pole
+      flagCloth(cx, cy, cz),
+    ]);
+  },
 
   // EnemySpawnPoint, 1.061 x 0.289 x 1.059 — a flat ring on the floor with a
   // low marker, not the tall pillar it used to be drawn as.
@@ -4134,6 +4273,58 @@ const builders = {
   // Deliberately odd so an unrecognised type is impossible to mistake.
   unknown: () => octa(0.5, 0, 0.5, 0),
 };
+
+/**
+ * The cloth half of the capture flag, as a waving sheet.
+ *
+ * The one thing in this file that is a surface rather than an assembly of
+ * solids, because a flag is a surface: boxes and prisms can make a pennant, not
+ * something that reads as cloth at ten metres. Parameterised by u along the
+ * flag and v down it, both running 0 to 1, and evaluated in metres before the
+ * caller's cell mapping is applied.
+ *
+ *   u  0 at the pole, 1 at the free end 0.537 m out — the prefab's own bone
+ *      chain — waving in z, held still where it meets the pole
+ *   v  0 at the top edge, where FlagBase hangs it at y = 1.793, and 1 at the
+ *      bottom 0.55 m below, which the icon gives rather than the rig
+ *
+ * The trailing edge is cut back in the middle and full at the corners: the
+ * swallowtail both team icons have.
+ *
+ * Emitted twice, a few millimetres either side of the surface and wound the
+ * other way round, so the flag is solid whichever side you are standing on.
+ * geometryFor recomputes the normals afterwards, so only the winding matters.
+ */
+function flagCloth(cx, cy, cz) {
+  const REACH = 0.537, TOP = 1.793, DROP = 0.55, NOTCH = 0.22, WAVE = 0.055;
+  const NU = 10, NV = 6, SKIN = 0.008;
+
+  const at = (i, j, side) => {
+    const v = j / NV;
+    const u = (i / NU) * (1 - NOTCH * (1 - Math.abs(2 * v - 1)));
+    const z = WAVE * u * Math.sin(u * Math.PI * 2.1);   // the wave grows with reach
+    const y = TOP - DROP * v - 0.09 * u * v;            // and the free end sags
+    return [cx(REACH * u), cy(y), cz(z + side * SKIN)];
+  };
+
+  const pos = [];
+  const tri = (a, b, c) => pos.push(...a, ...b, ...c);
+  for (const side of [1, -1]) {
+    for (let i = 0; i < NU; i++) {
+      for (let j = 0; j < NV; j++) {
+        const a = at(i, j, side), b = at(i + 1, j, side);
+        const c = at(i + 1, j + 1, side), d = at(i, j + 1, side);
+        if (side > 0) { tri(a, d, c); tri(a, c, b); } else { tri(a, b, c); tri(a, c, d); }
+      }
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array(pos.length), 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array((pos.length / 3) * 2), 2));
+  g.computeVertexNormals();
+  return g;
+}
 
 function dominationZone(rings) {
   const parts = zonePad(0.44, 0.42, 3);
@@ -4194,7 +4385,7 @@ function localBox(def) {
   return geometryFor(def).boundingBox;
 }
 
-/** Shape ids the module can build, for the catalog tests. */
+/** Every shape id the module can build, for checking the catalog against. */
 function shapeIds() {
   return Object.keys(builders);
 }
@@ -4205,22 +4396,192 @@ function clearGeometryCache() {
 }
 
 
+// ==== src/checkpoints.js ==============================================
+// ---------------------------------------------------------------------------
+// Autosave checkpoints
+// ---------------------------------------------------------------------------
+// A ring of recent snapshots of the map, kept so that closing the tab is not
+// the same as losing the afternoon.
+//
+// **Where they live.** In the browser's `localStorage`, against the address the
+// editor is served from. Not next to the build on disk: a page cannot write to
+// the folder it was served from, and the one API that could (File System
+// Access) needs a folder picked by hand every session and does not exist in
+// every browser. Storage keyed to the origin is the version of "along with the
+// build" that a web page can actually keep — serve the editor from the same
+// address each time and the checkpoints are waiting.
+//
+// This is a safety net, not a save file. `Export` writes the real map the game
+// reads; a checkpoint is a copy of that same text, and restoring one loads it
+// back into the editor. Nothing here reaches the game on its own, which is why
+// restoring leaves you looking at a map that still needs exporting.
+//
+// **Layout.** One key per checkpoint plus a small index, rather than one blob:
+// the index is read on every page load to draw the list, and it has no business
+// dragging a megabyte of map text along with it.
+//
+//   spatialops.checkpoints        the index, newest first
+//   spatialops.checkpoint.<id>    one map's serialised text
+//
+// Every name here is prefixed or compounded on purpose. `build.mjs` flattens
+// the modules into one scope, so a bare `list` or `save` would collide with
+// something in app.js the moment the bundle is built.
+// ---------------------------------------------------------------------------
+
+const CHECKPOINT_INDEX_KEY = 'spatialops.checkpoints';
+const CHECKPOINT_PREFIX = 'spatialops.checkpoint.';
+const CHECKPOINT_LIMIT = 12;
+
+/**
+ * localStorage, or null where there is none.
+ *
+ * Private browsing and `file://` pages can both make `localStorage` throw on
+ * access rather than merely be empty, so every entry point goes through here
+ * and the feature turns itself off rather than taking the editor down with it.
+ */
+function checkpointStore() {
+  try {
+    const s = globalThis.localStorage;
+    if (!s) return null;
+    const probe = '__spatialops_probe__';
+    s.setItem(probe, '1');
+    s.removeItem(probe);
+    return s;
+  } catch {
+    return null;
+  }
+}
+
+const checkpointsAvailable = () => checkpointStore() !== null;
+
+function readCheckpointIndex(s) {
+  try {
+    const raw = s.getItem(CHECKPOINT_INDEX_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCheckpointIndex(s, entries) {
+  s.setItem(CHECKPOINT_INDEX_KEY, JSON.stringify(entries));
+}
+
+function dropCheckpoint(s, entry) {
+  if (entry) s.removeItem(CHECKPOINT_PREFIX + entry.id);
+}
+
+/** Every checkpoint, newest first. Metadata only — the map text stays put. */
+function checkpointList() {
+  const s = checkpointStore();
+  if (!s) return [];
+  const all = readCheckpointIndex(s);
+  // Drop any entry whose payload has gone: site data cleared by hand, or an
+  // eviction, leaves the index describing something that is no longer there.
+  const kept = all.filter((e) => s.getItem(CHECKPOINT_PREFIX + e.id) !== null);
+  if (kept.length !== all.length) writeCheckpointIndex(s, kept);
+  return kept;
+}
+
+function checkpointText(id) {
+  const s = checkpointStore();
+  return s ? s.getItem(CHECKPOINT_PREFIX + id) : null;
+}
+
+/**
+ * Add a checkpoint, evicting the oldest to stay under the limit and under
+ * whatever quota this browser hands out.
+ *
+ * Returns the entry written, or null when the map is unchanged since the last
+ * one — an idle timer firing over an untouched map must not push twelve
+ * identical copies through the ring and throw away the history that mattered.
+ */
+function saveCheckpoint({ text, name, author, guid, objects, reason = 'auto' }) {
+  const s = checkpointStore();
+  if (!s) return null;
+
+  const index = readCheckpointIndex(s);
+  const newest = index[0];
+  if (newest && newest.bytes === text.length && checkpointText(newest.id) === text) return null;
+
+  const entry = {
+    id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+    at: new Date().toISOString(),
+    name: name || 'Untitled',
+    author: author || '',
+    guid,
+    objects,
+    bytes: text.length,
+    reason,
+  };
+
+  const next = [entry, ...index];
+  // Trim to the limit first, then keep dropping the oldest for as long as the
+  // browser refuses the write. Losing the oldest checkpoint is the right thing
+  // to fail into; losing the newest is not.
+  while (next.length > CHECKPOINT_LIMIT) dropCheckpoint(s, next.pop());
+  for (;;) {
+    try {
+      s.setItem(CHECKPOINT_PREFIX + entry.id, text);
+      writeCheckpointIndex(s, next);
+      return entry;
+    } catch {
+      if (next.length <= 1) {
+        // Even on its own it will not fit. Leave what is stored already intact.
+        s.removeItem(CHECKPOINT_PREFIX + entry.id);
+        return null;
+      }
+      dropCheckpoint(s, next.pop());
+    }
+  }
+}
+
+function removeCheckpoint(id) {
+  const s = checkpointStore();
+  if (!s) return;
+  writeCheckpointIndex(s, readCheckpointIndex(s).filter((e) => e.id !== id));
+  s.removeItem(CHECKPOINT_PREFIX + id);
+}
+
+function clearCheckpoints() {
+  const s = checkpointStore();
+  if (!s) return;
+  for (const e of readCheckpointIndex(s)) dropCheckpoint(s, e);
+  s.removeItem(CHECKPOINT_INDEX_KEY);
+}
+
+/** Total bytes of map text held, for the panel's summary line. */
+function checkpointBytes() {
+  return checkpointList().reduce((n, e) => n + e.bytes, 0);
+}
+
+/** "just now", "6 min ago", "12 Aug 14:03" — the list is read at a glance. */
+function timeAgo(iso) {
+  const then = new Date(iso);
+  const mins = Math.floor((Date.now() - then.getTime()) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const clock = then.toTimeString().slice(0, 5);
+  if (then.toDateString() === new Date().toDateString()) return `${Math.floor(mins / 60)} h ago, ${clock}`;
+  return `${then.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} ${clock}`;
+}
+
+
 // ==== src/gizmo.js ====================================================
 // ---------------------------------------------------------------------------
 // Combined move / rotate / scale gizmo
 // ---------------------------------------------------------------------------
-// One gizmo that does all three, the way Blender's does: an arrow per axis to
-// move along it, an arc per axis to turn about it, a handle per axis to scale
-// along it, an outer ring that turns about the view axis, and a centre disc
-// that slides on the plane facing you. See reference/gizmo.jpeg.
+// The only gizmo the editor has, and it does all three: an arrow per axis to
+// move along it, a circle per axis to turn about it, a handle per axis to scale
+// along it, and a centre disc that slides the whole thing across the floor.
+// See reference/gizmo.jpeg.
 //
-// It is not TransformControls with extra parts. TransformControls decides which
-// handle you grabbed by raycasting its own meshes inside its own pointer
-// handler, so a second set of handles cannot be pushed into it — the axis it
-// picks always comes from its own geometry. This does its own hit testing and
-// its own drag maths instead, and exposes the same two events
-// (`dragging-changed`, `objectChange`) so `scene.js` can treat the two
-// interchangeably.
+// Rotation is always about X, Y or Z, and the three circles are coloured to say
+// which is which. There was an outer ring that turned about whatever axis the
+// camera happened to be looking down; it is gone, because an angle that depends
+// on where you are standing is not one you can reason about, and a map built
+// out of pieces at 15 degree steps needs the axis to be the same one every time.
 //
 // The drag maths is the ordinary stuff and worth stating once:
 //   move    the closest point between the pointer ray and the axis line, minus
@@ -4230,10 +4591,16 @@ function clearGeometryCache() {
 //   scale   the same projection as move, as a ratio of its distance at the
 //           start rather than a difference
 //
-// Everything downstream — snapping, the floor lock, uniform scaling, the scale
-// anchor that holds the far face still — belongs to `scene.js` and is reached
-// through the same `objectChange` event TransformControls raises, so none of it
-// is duplicated here.
+// Move and rotate work on the world axes. Scale cannot: `object.scale` stretches
+// the object's own x, y and z whatever direction the handle points, so a piece
+// turned 30 degrees dragged by a world-aligned handle would grow sideways. The
+// scale handles therefore sit in a sub-group carrying the object's own rotation
+// and are dragged along the object's own axes — which is also what makes the
+// far side hold still in `scene.js`.
+//
+// Everything downstream — snapping, uniform scaling, the scale anchor that
+// holds the far face still — belongs to `scene.js` and is reached through the
+// `objectChange` event raised here, so none of it is duplicated in this file.
 // ---------------------------------------------------------------------------
 
 
@@ -4251,14 +4618,12 @@ const UNIT = { x: new THREE.Vector3(1, 0, 0), y: new THREE.Vector3(0, 1, 0), z: 
 //
 // **No two grabbable parts may share a radius.** The first cut had the
 // translate handles grabbable along their whole shaft, which put them on top of
-// the rotation arcs at the arcs' own radius — reaching for a turn got you a
-// slide instead. Each ring of handles now has the band to itself, and the
-// arrows sit entirely outside the outer ring, which is also how the reference
-// picture has it.
-const R_CENTRE = 0.17;     // centre disc, slides on the view plane
+// the rotation circles at the circles' own radius — reaching for a turn got you
+// a slide instead. Each ring of handles has the band to itself, and the arrows
+// sit entirely outside the circles.
+const R_CENTRE = 0.17;     // centre disc, slides on the ground plane
 const R_SCALE = 0.42;      // scale cubes
-const R_ARC = 0.66;        // rotation arcs
-const R_RING = 0.9;        // outer view-axis ring
+const R_ARC = 0.78;        // the three rotation circles
 const R_CONE = 1;          // where the arrow cone starts — outside everything
 const R_ARROW = 1.2;       // arrow tip
 const ARC_SEGMENTS = 64;
@@ -4291,7 +4656,6 @@ class ComboGizmo extends THREE.Object3D {
     this.axis = null;          // 'x' | 'y' | 'z' | 'view'
     this.activeMode = null;    // 'translate' | 'rotate' | 'scale'
     this.hovered = null;
-    this.space = 'world';
     this.size = 1;
     this.translationSnap = null;
     this.rotationSnap = null;
@@ -4315,6 +4679,10 @@ class ComboGizmo extends THREE.Object3D {
   _build() {
     this._root = new THREE.Group();
     this.add(this._root);
+    // Everything in here is world-aligned except the scale handles, which have
+    // to follow the object or they would promise a stretch they cannot deliver.
+    this._scaleRoot = new THREE.Group();
+    this._root.add(this._scaleRoot);
 
     for (const axis of AXES) {
       const colour = AXIS_COLOUR[axis];
@@ -4344,7 +4712,8 @@ class ComboGizmo extends THREE.Object3D {
       grab.quaternion.setFromUnitVectors(UNIT.y, dir);
       this._registerPicker(grab, axis, 'translate');
 
-      // rotate: an arc in the plane whose normal is this axis
+      // rotate: a full circle in the plane whose normal is this axis, in the
+      // axis's own colour — the whole of how you tell one turn from another.
       const arc = new THREE.Line(this._arcGeometry(), lineMaterial(colour, 3));
       arc.userData.arcAxis = axis;
       this._orientArc(arc, axis);
@@ -4373,15 +4742,9 @@ class ComboGizmo extends THREE.Object3D {
       this._registerPicker(cubeGrab, axis, 'scale');
     }
 
-    // Outer ring: turn about the axis you are looking down. Rebuilt to face the
-    // camera every frame, so it is a plain circle here.
-    this._viewRing = new THREE.Line(this._circleGeometry(R_RING), lineMaterial(VIEW_COLOUR, 2));
-    this._register(this._viewRing, 'view', 'rotate');
-    const ringGrab = new THREE.Mesh(new THREE.TorusGeometry(R_RING, 0.06, 4, 40), pickerMaterial());
-    this._viewRingGrab = ringGrab;
-    this._registerPicker(ringGrab, 'view', 'rotate');
-
-    // Centre: slide on the plane facing you.
+    // Centre: slide across the floor. It faces the camera so it is always a
+    // disc you can hit, but what it drags on is the ground plane — see
+    // `_pointerDown`.
     this._centre = new THREE.Line(this._circleGeometry(R_CENTRE), lineMaterial(VIEW_COLOUR, 1));
     this._register(this._centre, 'view', 'translate');
     const centreGrab = new THREE.Mesh(new THREE.SphereGeometry(R_CENTRE, 10, 8), pickerMaterial());
@@ -4392,19 +4755,24 @@ class ComboGizmo extends THREE.Object3D {
     this._root.add(dot);
   }
 
+  /** Which frame a handle is drawn in: the object's for scale, the world's otherwise. */
+  _frameFor(mode) {
+    return mode === 'scale' ? this._scaleRoot : this._root;
+  }
+
   _register(obj, axis, mode) {
     obj.userData.axis = axis;
     obj.userData.mode = mode;
     obj.renderOrder = 1000;
     this._parts.push(obj);
-    this._root.add(obj);
+    this._frameFor(mode).add(obj);
   }
 
   _registerPicker(obj, axis, mode) {
     obj.userData.axis = axis;
     obj.userData.mode = mode;
     this._pickers.push(obj);
-    this._root.add(obj);
+    this._frameFor(mode).add(obj);
   }
 
   _circleGeometry(radius, segments = ARC_SEGMENTS) {
@@ -4449,7 +4817,7 @@ class ComboGizmo extends THREE.Object3D {
 
   /**
    * Keep the gizmo the same size on screen and pointing the right way, and fade
-   * the far half of each ring.
+   * the far half of each circle.
    *
    * Called every frame from the render loop rather than on demand: it depends
    * on the camera, and the camera moves without anything else happening.
@@ -4459,12 +4827,9 @@ class ComboGizmo extends THREE.Object3D {
     this.object.updateMatrixWorld();
     const pos = new THREE.Vector3().setFromMatrixPosition(this.object.matrixWorld);
     this.position.copy(pos);
-
-    if (this.space === 'local' && this.object.quaternion) {
-      this.quaternion.copy(this.object.getWorldQuaternion(new THREE.Quaternion()));
-    } else {
-      this.quaternion.identity();
-    }
+    // Arrows and circles are world axes, always, so the red circle means the
+    // same turn wherever the camera is and whatever the piece is doing.
+    this.quaternion.identity();
 
     // Constant screen size. For a perspective camera that is distance times the
     // vertical field of view; an orthographic one has no distance term.
@@ -4475,12 +4840,11 @@ class ComboGizmo extends THREE.Object3D {
     const s = (factor * this.size) / 7;
     this.scale.setScalar(s);
 
-    // The two view-facing parts look at the camera.
+    // Scale handles ride the object; the centre disc faces the camera.
+    this._scaleRoot.quaternion.copy(this.object.getWorldQuaternion(new THREE.Quaternion()));
     const camQuat = this.camera.getWorldQuaternion(new THREE.Quaternion());
-    const local = this.quaternion.clone().invert().multiply(camQuat);
-    for (const o of [this._viewRing, this._viewRingGrab, this._centre, this._centreGrab]) {
-      o.quaternion.copy(local);
-    }
+    this._centre.quaternion.copy(camQuat);
+    this._centreGrab.quaternion.copy(camQuat);
 
     this._updateVisibility();
     this._fadeBackHalves(pos);
@@ -4496,12 +4860,12 @@ class ComboGizmo extends THREE.Object3D {
   }
 
   /**
-   * Dim the half of each rotation ring that is behind the object.
+   * Dim the half of each rotation circle that is behind the object.
    *
-   * A full bright circle for each of three axes plus the outer ring is four
-   * overlapping circles and reads as a ball of wire. Blender's answer is to
-   * draw only the near half; this fades the far half instead, which keeps the
-   * ring readable as a whole while making clear which part you can reach.
+   * Three full bright circles overlap and read as a ball of wire. Blender's
+   * answer is to draw only the near half; this fades the far half instead,
+   * which keeps each circle readable as a whole while making clear which part
+   * of it you can reach.
    */
   _fadeBackHalves(pos) {
     const toCam = this.camera.position.clone().sub(pos).normalize();
@@ -4598,7 +4962,7 @@ class ComboGizmo extends THREE.Object3D {
       quaternion: this.object.quaternion.clone(),
       scale: this.object.scale.clone(),
       centre: pos,
-      axisWorld: this._axisWorld(hit.axis),
+      axisWorld: this._axisWorld(hit.axis, hit.mode),
     };
     this._ray.setFromCamera(this._start.pointer, this.camera);
 
@@ -4607,8 +4971,12 @@ class ComboGizmo extends THREE.Object3D {
       this._start.from = this._planePoint(this._start.plane, pos);
       this._start.angle = 0;
     } else if (hit.axis === 'view') {
-      this._start.plane = new THREE.Plane().setFromNormalAndCoplanarPoint(
-        this.camera.getWorldDirection(new THREE.Vector3()).negate(), pos);
+      // The centre disc slides on the ground, not on the plane facing the
+      // camera. A map is a floor plan: sliding a crate about is a thing you do
+      // in X and Z, and a view-plane drag lifted it into the air by however
+      // much the camera happened to be tilted — which then had to be undone.
+      // Height is what the green arrow is for.
+      this._start.plane = new THREE.Plane().setFromNormalAndCoplanarPoint(UNIT.y, pos);
       this._start.from = this._planePoint(this._start.plane, pos);
     } else {
       this._start.offset = this._axisPoint(pos, this._start.axisWorld);
@@ -4628,11 +4996,20 @@ class ComboGizmo extends THREE.Object3D {
     this.dispatchEvent({ type: 'dragging-changed', value: false });
   }
 
-  /** The dragged axis in world space, honouring local vs world orientation. */
-  _axisWorld(axis) {
+  /**
+   * The dragged axis in world space.
+   *
+   * Move and rotate use the world axis, matching the handle you grabbed. Scale
+   * uses the object's own, because that is the only thing `object.scale` can
+   * stretch — and it is the axis the cube was drawn along, since the scale
+   * handles live in `_scaleRoot`.
+   */
+  _axisWorld(axis, mode) {
     if (axis === 'view') return this.camera.getWorldDirection(new THREE.Vector3()).negate();
     const v = UNIT[axis].clone();
-    if (this.space === 'local' && this.object) v.applyQuaternion(this.object.getWorldQuaternion(new THREE.Quaternion()));
+    if (mode === 'scale' && this.object) {
+      v.applyQuaternion(this.object.getWorldQuaternion(new THREE.Quaternion()));
+    }
     return v.normalize();
   }
 
@@ -4669,6 +5046,14 @@ class ComboGizmo extends THREE.Object3D {
       if (this.axis === 'view') {
         const now = this._planePoint(s.plane, s.centre);
         next.add(now.sub(s.from));
+        // Both points are in the same horizontal plane, so the height cannot
+        // have moved — but say so rather than trusting the arithmetic, and snap
+        // the two axes that did, the same way the arrows do.
+        next.y = s.position.y;
+        if (this.translationSnap) {
+          next.x = Math.round(next.x / this.translationSnap) * this.translationSnap;
+          next.z = Math.round(next.z / this.translationSnap) * this.translationSnap;
+        }
       } else {
         let delta = this._axisPoint(s.centre, s.axisWorld) - s.offset;
         if (this.translationSnap) delta = Math.round(delta / this.translationSnap) * this.translationSnap;
@@ -4699,8 +5084,16 @@ class ComboGizmo extends THREE.Object3D {
       ratio = Math.max(0.01, ratio);
       if (this.scaleSnap) ratio = Math.max(0.01, Math.round(ratio / this.scaleSnap) * this.scaleSnap);
       const next = s.scale.clone();
-      if (this.uniform) next.multiplyScalar(ratio);
-      else next[this.axis] = Math.max(0.001, s.scale[this.axis] * ratio);
+      if (this.uniform) {
+        next.multiplyScalar(ratio);
+      } else {
+        // A mirrored piece carries a negative scale on one axis, which is the
+        // whole of how it is flipped. Resize its magnitude and leave the sign
+        // where it was, or dragging a handle would quietly unflip it.
+        const was = s.scale[this.axis];
+        const sign = was < 0 ? -1 : 1;
+        next[this.axis] = sign * Math.max(0.001, Math.abs(was) * ratio);
+      }
       this.object.scale.copy(next);
     }
 
@@ -4725,9 +5118,23 @@ class ComboGizmo extends THREE.Object3D {
 
 
 
-
 const ACCENT = 0xe8c547;
 const CYAN = 0x4ec9e0;
+
+/**
+ * The half turn every mesh carries relative to the map's own frame — see
+ * MODEL_YAW in unity.js, which explains where it comes from.
+ *
+ * It matters here because the pivot the gizmo drives has to be in the *map's*
+ * frame, not the mesh's. Left in the mesh's, an unrotated object's own +X
+ * points along world −X, so the scale cube for X sat on the opposite side of
+ * the gizmo from the X arrow, and the array tool stepped backwards along its
+ * own axes. Turning the pivot by the same half turn and letting `attach` push
+ * it down onto the mesh cancels both: the object's world transform is untouched
+ * (a half turn about Y commutes with any diagonal scale), and every axis the
+ * editor draws now means what the map file means by it.
+ */
+const MAP_FRAME = new THREE.Quaternion().fromArray(MODEL_YAW);
 
 // -- prefab meshes -----------------------------------------------------------
 // A missing asset is normal, not an error, so each one is mentioned once.
@@ -4827,15 +5234,100 @@ function cutout() {
  */
 const displayMaterials = new Map();
 
-function displayMaterial(material, tint, opacity = 1, force = false, cut = false) {
-  if (Array.isArray(material)) return material.map((m) => displayMaterial(m, tint, opacity, force, cut));
+/**
+ * Team colours recoverable from a material's *name*, for art that arrived
+ * without any.
+ *
+ * The same trick the damage boxes need, and for the same reason: Unity put the
+ * colour in a shader glTF has no slot for, and the only thing that survived the
+ * export is what the artist called the material.
+ */
+const NAME_TINTS = [
+  [/orange[ _]?team/i, 0xe08a3c],
+  [/blue[ _]?team/i, 0x4a90d9],
+  [/crystal/i, 0xd98a4a],
+];
+
+const nameTint = (name) => NAME_TINTS.find(([re]) => re.test(name || ''))?.[1] ?? null;
+
+const normalMapVerdicts = new Map();
+
+/**
+ * Is this texture a normal map wearing a base colour's clothes?
+ *
+ * The five Corrupted enemy prefabs each carry one, and it is why they render as
+ * a wash of violet and blue: the glTF export wrote the humanoid's *normal* map
+ * into `baseColorTexture` and left the diffuse behind entirely. A tangent-space
+ * normal map is unmistakable — it is a field of (0.5, 0.5, 1.0), so the average
+ * pixel is mid red, mid green, near-full blue, and blue is the largest channel
+ * almost everywhere. Measured across all thirteen enemy prefabs, the five
+ * corrupted bodies score 97-98% blue-dominant with an average of (0.50, 0.50,
+ * 0.96) and nothing else comes close, so the test separates them cleanly.
+ *
+ * Sampled at 32x32, which is plenty for an average, and remembered per texture.
+ * A cross-origin image would taint the canvas and throw; that answers "no",
+ * because guessing wrong here would strip the art off a perfectly good model.
+ */
+function isNormalMapTexture(texture) {
+  if (!texture?.image) return false;
+  if (normalMapVerdicts.has(texture.uuid)) return normalMapVerdicts.get(texture.uuid);
+  let verdict = false;
+  try {
+    const N = 32;
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = N;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(texture.image, 0, 0, N, N);
+    const { data } = ctx.getImageData(0, 0, N, N);
+    let n = 0, blueWins = 0, sr = 0, sg = 0, sb = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i + 3] < 8) continue;
+      sr += data[i]; sg += data[i + 1]; sb += data[i + 2];
+      if (data[i + 2] >= data[i] && data[i + 2] >= data[i + 1]) blueWins++;
+      n++;
+    }
+    if (n) {
+      const r = sr / n / 255, g = sg / n / 255, b = sb / n / 255;
+      verdict = blueWins / n > 0.9 && b > 0.6 && b > r + 0.12 && b > g + 0.12
+        && Math.abs(r - 0.5) < 0.2 && Math.abs(g - 0.5) < 0.25;
+    }
+  } catch {
+    verdict = false;
+  }
+  normalMapVerdicts.set(texture.uuid, verdict);
+  return verdict;
+}
+
+function displayMaterial(material, tint, opacity = 1, force = false, cut = false, litByVertex = true) {
+  if (Array.isArray(material)) {
+    return material.map((m) => displayMaterial(m, tint, opacity, force, cut, litByVertex));
+  }
   if (!material) return material;
-  const key = `${material.uuid}|${tint ?? ''}|${opacity}|${force}|${cut}`;
+  const key = `${material.uuid}|${tint ?? ''}|${opacity}|${force}|${cut}|${litByVertex}`;
   if (displayMaterials.has(key)) return displayMaterials.get(key);
   const out = material.clone();
   if (out.metalness !== undefined && !out.envMap) {
     out.metalness = Math.min(out.metalness, 0.25);
     out.roughness = Math.max(out.roughness ?? 0.5, 0.45);
+  }
+  // Vertex colours the merged geometry cannot supply, or that were only ever
+  // black, must not be read. See `usableColour`.
+  if (!litByVertex) out.vertexColors = false;
+  // A normal map in the base colour slot is put where it belongs — the surface
+  // detail it carries is real and worth having — and the colour it was standing
+  // in for comes from the material's name. Not the diffuse the artist painted:
+  // that texture is not in the file at all. It reads as a crystallised orange
+  // bot rather than a violet one, which is what the crystals on its own back
+  // say it should be.
+  if (out.map && isNormalMapTexture(out.map)) {
+    if (!out.normalMap) {
+      const bumps = out.map.clone();
+      bumps.colorSpace = THREE.NoColorSpace;   // it is geometry, not colour
+      bumps.needsUpdate = true;
+      out.normalMap = bumps;
+    }
+    out.map = null;
+    out.color.set(nameTint(material.name) ?? 0xb9c3cc);
   }
   // `force` is for prefabs whose art is deliberately colourless and gets its
   // team colour from a shader the export could not carry — the player spawn
@@ -4878,6 +5370,30 @@ function neutralColour(template, count) {
 }
 
 /**
+ * A part's vertex colours, if they are colours at all.
+ *
+ * The player spawn zone's machine ships a COLOR_0 that is **entirely zero**, and
+ * glTF says a base colour is multiplied by it — so the machine, which has a
+ * perfectly good 1024px texture atlas, rendered pure black, and both teams'
+ * spawn zones looked like scorched metal. Nothing dressed as a base colour can
+ * have meant "multiply the artwork by nothing"; Unity's own shader read that
+ * channel as a mask for an effect glTF has nowhere to put, and the exporter
+ * wrote it out anyway.
+ *
+ * So an all-black colour attribute is treated as no colour attribute. A single
+ * non-zero component anywhere is enough to take it at its word — this is only
+ * ever meant to catch the degenerate case, not to second-guess dark shading.
+ */
+function usableColour(geometry) {
+  const attr = geometry.getAttribute('color');
+  if (!attr) return null;
+  for (let i = 0; i < attr.count; i++) {
+    if (attr.getX(i) || attr.getY(i) || attr.getZ(i)) return attr;
+  }
+  return null;
+}
+
+/**
  * One geometry for the whole prefab. Merging needs every part to carry the same
  * attributes, which is not guaranteed across a prefab's meshes, so trim each to
  * position and normal first; if a merge still fails, the largest single part is
@@ -4893,7 +5409,8 @@ function mergeForDisplay(parts, tint, opacity, force, cut) {
   // the solid primitives do, the props do not. GLTFLoader turns that into
   // material.vertexColors, so a part that loses the attribute renders black.
   // Anything missing one gets opaque white, which multiplies to no change.
-  const template = parts.map(({ geometry }) => geometry.getAttribute('color')).find(Boolean);
+  const colours = parts.map(({ geometry }) => usableColour(geometry));
+  const template = colours.find(Boolean);
 
   const trimmed = parts.map(({ geometry }, i) => {
     // Non-indexed throughout, or a mix of indexed and not refuses to merge.
@@ -4908,7 +5425,9 @@ function mergeForDisplay(parts, tint, opacity, force, cut) {
     const uv = g.getAttribute('uv');
     out.setAttribute('uv', uv ?? new THREE.BufferAttribute(new Float32Array(position.count * 2), 2));
     if (template) {
-      const colour = g.getAttribute('color');
+      // `toNonIndexed` above rebuilt the attribute, so the usable one is looked
+      // up again on the trimmed copy rather than reused from `colours`.
+      const colour = g === geometry ? colours[i] : usableColour(g);
       out.setAttribute('color', matchesTemplate(colour, template)
         ? colour
         : neutralColour(template, position.count));
@@ -4916,6 +5435,10 @@ function mergeForDisplay(parts, tint, opacity, force, cut) {
     if (!normal) out.computeVertexNormals();
     return out;
   });
+  // A material may only read vertex colours if the merged geometry has some to
+  // read: bound to nothing, the shader's `color` attribute is black and takes
+  // the whole mesh with it.
+  const lit = !!template;
   try {
     // useGroups keeps one draw group per part, so the prefab's own materials
     // survive as a material array and the object arrives textured.
@@ -4923,7 +5446,7 @@ function mergeForDisplay(parts, tint, opacity, force, cut) {
     if (merged) {
       return {
         geometry: merged,
-        materials: parts.map((p) => displayMaterial(p.material, tint, opacityOf(p), force, cut)),
+        materials: parts.map((p) => displayMaterial(p.material, tint, opacityOf(p), force, cut, lit)),
       };
     }
   } catch { /* fall through to the largest part */ }
@@ -4933,8 +5456,76 @@ function mergeForDisplay(parts, tint, opacity, force, cut) {
   });
   return {
     geometry: trimmed[best],
-    materials: displayMaterial(parts[best].material, tint, opacityOf(parts[best]), force, cut),
+    materials: displayMaterial(parts[best].material, tint, opacityOf(parts[best]), force, cut, lit),
   };
+}
+
+// -- mirror symmetry ---------------------------------------------------------
+// Copying the selection to the far side of the arena is a reflection, and a
+// reflection is not a rotation: a corner barrier reflected is a piece no amount
+// of turning produces. Working the transform through,
+//
+//   reflect · T(p)·R(q)·S(s)  =  T(reflect p) · R(q') · S(s with one sign flipped)
+//
+// where q' is the mirrored quaternion the mirror already writes — and the sign
+// that flips is always the object's *local* x for a mirror across world X, and
+// its local z for one across world Z, whatever the piece is rotated to.
+//
+// A negative scale in an exported map is not something the game has ever been
+// seen to write, so it is worth spending only where it buys something. Most
+// pieces are their own reflection: a crate, a cylinder, a plain wall. Those are
+// mirrored by rotation alone and export exactly as they always did.
+
+const symmetryCache = new WeakMap();
+
+// One centimetre. Loose on purpose: this is asking whether a piece has a left
+// and a right, and the answer is measured in the tens of centimetres a barrier
+// arm or a ramp's slope spans. Exact matching answers "chiral" for everything,
+// because the traced numbers carry the real prefabs' own asymmetries — the U
+// barrier's notch runs -0.186 to 0.185, one millimetre off centre, which is a
+// measurement and not a shape.
+const SYMMETRY_EPSILON = 0.01;
+
+/**
+ * Is `geometry` unchanged by flipping the sign of `axis` about the origin?
+ *
+ * Answered off the vertices rather than a hand-kept list of which pieces are
+ * chiral: bin every vertex into a coarse grid, then ask of each whether its
+ * mirror image has a vertex near it. Triangulation is ignored, so a symmetric
+ * shape cut into asymmetric triangles still answers yes; the neighbouring bins
+ * are checked as well as the exact one, so a vertex that lands a hair the wrong
+ * side of a bin edge does not answer no on its own.
+ */
+function isMirrorSymmetric(geometry, axis) {
+  if (!geometry) return true;
+  let entry = symmetryCache.get(geometry);
+  if (!entry) symmetryCache.set(geometry, (entry = {}));
+  if (entry[axis] !== undefined) return entry[axis];
+
+  const pos = geometry.getAttribute('position');
+  const bin = (v) => Math.floor(v / SYMMETRY_EPSILON);
+  const filled = new Set();
+  for (let i = 0; i < pos.count; i++) {
+    filled.add(`${bin(pos.getX(i))},${bin(pos.getY(i))},${bin(pos.getZ(i))}`);
+  }
+  const near = (x, y, z) => {
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dz = -1; dz <= 1; dz++) if (filled.has(`${x + dx},${y + dy},${z + dz}`)) return true;
+      }
+    }
+    return false;
+  };
+
+  let symmetric = true;
+  for (let i = 0; i < pos.count && symmetric; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    symmetric = axis === 'x'
+      ? near(bin(-x), bin(y), bin(z))
+      : near(bin(x), bin(y), bin(-z));
+  }
+  entry[axis] = symmetric;
+  return symmetric;
 }
 
 /**
@@ -4980,12 +5571,7 @@ class Viewport extends EventTarget {
     this.objects = [];
     this.selection = new Set();
     this.uniformScale = true;
-    this.floorLock = true;
     this.snap = { translate: 0.25, rotate: 15, scale: 0 };
-    // The combined gizmo is the one you get on a fresh selection; Move, Rotate
-    // and Scale switch to the single-purpose ones.
-    this.gizmoMode = 'combined';
-    this.gizmoSpace = 'world';
     // Draw the procedural stand-ins even when the real prefabs are on disk, so
     // the two can be compared. Off by default: the real art is better when it
     // is there.
@@ -5114,32 +5700,21 @@ class Viewport extends EventTarget {
     };
     this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
-    this.gizmo = new TransformControls(this.camera, this.canvas);
-    this.gizmo.setSize(0.9);
-    // three r169+ exposes the visual half of TransformControls separately.
-    this._gizmoHelper =
-      typeof this.gizmo.getHelper === 'function' ? this.gizmo.getHelper() : this.gizmo;
-    this.scene.add(this._gizmoHelper);
+    // One gizmo, doing move, rotate and scale at once. There used to be a mode
+    // switch and three single-purpose gizmos behind it; the combined one covers
+    // all of it, so the switch went and TransformControls with it.
+    this.gizmo = new ComboGizmo(this.camera, this.canvas);
+    this.scene.add(this.gizmo);
 
-    // The combined gizmo does move, rotate and scale at once. It speaks the
-    // same two events, so both go through one pair of handlers and everything
-    // downstream — snapping, floor lock, the scale anchor — is shared.
-    this.combo = new ComboGizmo(this.camera, this.canvas);
-    this.scene.add(this.combo);
-
-    const onDragChange = (e) => {
+    this.gizmo.addEventListener('dragging-changed', (e) => {
       this.orbit.enabled = !e.value;
       if (e.value) this._beginDrag();
       else this._endDrag();
-    };
-    const onObjectChange = () => {
+    });
+    this.gizmo.addEventListener('objectChange', () => {
       this._constrainDuringDrag();
       this.emit('transform');
-    };
-    for (const g of [this.gizmo, this.combo]) {
-      g.addEventListener('dragging-changed', onDragChange);
-      g.addEventListener('objectChange', onObjectChange);
-    }
+    });
 
     addEventListener('keydown', (e) => {
       if (e.key === 'Alt') this.orbit.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
@@ -5498,6 +6073,20 @@ class Viewport extends EventTarget {
   }
 
   /**
+   * Put the selection where the inspector's three boxes say, in map values.
+   *
+   * Goes through the pivot because the pivot is what carries a selection's
+   * placement while it is selected, and through here rather than from `app.js`
+   * because the pivot is in the map's frame and the quaternion a map rotation
+   * converts to is in the mesh's — the half turn between them is this module's
+   * business, not the panel's.
+   */
+  placeSelection(unityPosition, unityRotation) {
+    this.pivot.position.set(unityPosition.x, unityPosition.y, -unityPosition.z);
+    this.pivot.quaternion.fromArray(unityEulerToQuat(unityRotation)).multiply(MAP_FRAME);
+  }
+
+  /**
    * Change one of a subtype's extra fields — which weapon a spawner holds,
    * how an enemy spawn behaves. Swapping the value can mean a different
    * catalog entry and so a different placeholder, so the mesh is re-skinned.
@@ -5606,6 +6195,22 @@ class Viewport extends EventTarget {
     return box;
   }
 
+  /**
+   * Does mirroring this object across `axis` need a scale sign flipped, or will
+   * the mirrored rotation alone do it?
+   *
+   * Asked of the placeholder rather than of whatever mesh is on screen. The
+   * placeholders are the traced silhouette built out of boxes and cylinders, so
+   * a symmetric piece is symmetric to the last decimal and the answer is clean.
+   * The real prefabs are not: an artist's crate is symmetric to look at and off
+   * by a millimetre here and there in fact, which makes every object in the map
+   * read as chiral and puts a negative scale on all of them. Same shape, better
+   * evidence.
+   */
+  needsMirrorFlip(mesh, axis) {
+    return !isMirrorSymmetric(geometryFor(mesh.userData.def), axis);
+  }
+
   // -- gizmo ----------------------------------------------------------------
 
   rebuildPivot() {
@@ -5614,9 +6219,6 @@ class Viewport extends EventTarget {
 
     if (!this.selection.size) {
       this.gizmo.detach();
-      // The combined one too. It used to be left attached here, so it hung in
-      // the air over nothing after a deselect.
-      this.combo.detach();
       return;
     }
     const list = [...this.selection];
@@ -5628,7 +6230,7 @@ class Viewport extends EventTarget {
       const s = new THREE.Vector3();
       m.matrixWorld.decompose(p, q, s);
       this.pivot.position.copy(p);
-      this.pivot.quaternion.copy(q);
+      this.pivot.quaternion.copy(q).multiply(MAP_FRAME);
     } else {
       this.pivot.position.copy(this.selectionBounds().getCenter(new THREE.Vector3()));
       this.pivot.quaternion.identity();
@@ -5637,68 +6239,47 @@ class Viewport extends EventTarget {
     this.pivot.updateMatrixWorld(true);
     for (const m of list) this.pivot.attach(m);
 
-    if (this.gizmoMode === 'combined') {
-      this.gizmo.detach();
-      this.combo.attach(this.pivot);
-    } else {
-      this.combo.detach();
-      this.gizmo.attach(this.pivot);
-    }
+    this.gizmo.attach(this.pivot);
     this._applyGizmoConstraints();
   }
 
-  setGizmoMode(mode) {
-    this.gizmoMode = mode;
-    if (mode !== 'combined') this.gizmo.setMode(mode);
-    this.rebuildPivot();
-    this.emit('mode');
-  }
-
-  setGizmoSpace(space) {
-    this.gizmoSpace = space;
-    this.gizmo.setSpace(space);
-    this.combo.space = space;
-    this.emit('mode');
-  }
-
   /**
-   * Which of the three a drag is actually doing. TransformControls is in one
-   * mode at a time and says so; the combined gizmo only knows once a handle has
-   * been grabbed. `_beginDrag` needs the answer to decide whether to capture a
-   * scale anchor.
+   * Which of the three a drag is actually doing. The gizmo offers all three at
+   * once, so it only knows once a handle has been grabbed. `_beginDrag` needs
+   * the answer to decide whether to capture a scale anchor.
    */
   _activeMode() {
-    return this.gizmoMode === 'combined' ? this.combo.activeMode : this.gizmoMode;
+    return this.gizmo.activeMode;
   }
 
   _applyGizmoConstraints() {
-    const list = [...this.selection];
-    const yawOnly = list.length > 0 && list.every((m) => m.userData.def.rotationAxes === 'y');
-    this.gizmo.showX = true;
-    this.gizmo.showY = true;
-    this.gizmo.showZ = true;
-    if (this.gizmoMode === 'rotate' && yawOnly) {
-      this.gizmo.showX = false;
-      this.gizmo.showZ = false;
-    }
     this.gizmo.translationSnap = this.snap.translate || null;
     this.gizmo.rotationSnap = this.snap.rotate ? THREE.MathUtils.degToRad(this.snap.rotate) : null;
     this.gizmo.scaleSnap = this.snap.scale || null;
-    this.gizmo.setSpace(this.gizmoSpace);
-
-    // The combined gizmo keeps its move and scale arms on whatever the piece
-    // allows and drops only the rotation arcs it may not turn about, so a
-    // yaw-only object still shows two of its three arcs' worth of handles.
-    this.combo.translationSnap = this.snap.translate || null;
-    this.combo.rotationSnap = this.snap.rotate ? THREE.MathUtils.degToRad(this.snap.rotate) : null;
-    this.combo.scaleSnap = this.snap.scale || null;
-    this.combo.space = this.gizmoSpace;
-    this.combo.uniform = this.uniformScale;
-    this.combo.showRotate = { x: !yawOnly, y: true, z: !yawOnly };
+    this.gizmo.uniform = this.uniformScale;
+    // All three circles, on everything. The catalog's `rotationAxes` used to
+    // hide X and Z on a yaw-only piece, which is what the in-game editor allows
+    // rather than what the format allows: the map file stores a full euler for
+    // every object, and the reference exports themselves contain damage boxes
+    // turned 90 degrees about X and a solid box turned freely. Hiding two
+    // thirds of the gizmo enforced a rule the file does not have.
+    this.gizmo.showRotate = { x: true, y: true, z: true };
   }
 
   setSnap(part, value) {
     this.snap[part] = value;
+    this._applyGizmoConstraints();
+    this.emit('mode');
+  }
+
+  /**
+   * Scale every axis together, or one at a time. Pushed through to the gizmo
+   * here rather than left for the next `rebuildPivot`, which is what used to
+   * happen — so ticking the box mid-selection did nothing until you clicked
+   * something else.
+   */
+  setUniformScale(on) {
+    this.uniformScale = !!on;
     this._applyGizmoConstraints();
     this.emit('mode');
   }
@@ -5725,16 +6306,20 @@ class Viewport extends EventTarget {
       }
       this._applyScaleAnchor();
     }
-    if (this.floorLock) this._applyFloorLock();
   }
 
   // -- scale anchoring -------------------------------------------------------
-  // TransformControls scales about the object's origin, so a crate shrinks away
-  // from every face at once: pull the right-hand handle in and the left-hand
-  // face comes with it, and shrink a centre-pivot box standing on the floor and
-  // it ends up hanging in the air. The side you are not dragging should stay
+  // Scaling an object multiplies its own origin outwards, so a crate grows away
+  // from every face at once: pull the right-hand handle out and the left-hand
+  // face moves too, and shrink a centre-pivot box standing on the floor and it
+  // ends up hanging in the air. The side you are *not* dragging should stay
   // exactly where it is, which is what the game's own stretcher does — its
   // spawn zones carry PosX, NegX, PosZ and NegZ handles, one per edge.
+  //
+  // So the far face is pinned: the point opposite the handle is held still and
+  // the children are shifted each frame to keep it there. This applies to
+  // uniform scaling as well as per-axis, since "the opposite side stays put" is
+  // no less true when the other two axes come along for the ride.
 
   /**
    * Bounding box of the selection's own geometry in pivot-local space.
@@ -5769,51 +6354,26 @@ class Viewport extends EventTarget {
   }
 
   /**
-   * Which end of an axis the user grabbed: +1, -1, or 0 when it cannot be told.
+   * The point that must not move during this drag, in pivot-local space.
    *
-   * TransformControls names both ends of a scale axis "X", so the handle does
-   * not say which side the drag started from. The pointer does: project the
-   * axis onto the screen and see which way along it the cursor sits.
+   * Every scale handle sits on the positive end of its axis and is drawn in the
+   * pivot's own frame, so the side to hold still is always that axis's minimum.
+   * There is nothing to guess: this used to project the axis to the screen and
+   * read which end the cursor was nearer, because the old gizmo labelled both
+   * ends of an axis the same, and the answer stopped meaning anything the
+   * moment the gizmo stopped having two.
+   *
+   * The other two axes hold at the bottom in Y and at the middle in the
+   * remaining horizontal, so a piece standing on the floor is still standing on
+   * it afterwards and a uniform scale grows evenly sideways.
    */
-  _handleSign(a) {
-    if (!this._pointer) return 0;
-    const r = this.canvas.getBoundingClientRect();
-    const project = (v) => {
-      const p = v.clone().project(this.camera);
-      return new THREE.Vector2(((p.x + 1) / 2) * r.width, ((1 - p.y) / 2) * r.height);
-    };
-    // The scale gizmo is drawn in the object's own frame whatever `gizmoSpace`
-    // says, so the axis to project is the pivot's. Length only has to put the
-    // probe somewhere near the handle; which of the two ends is nearer the
-    // cursor does not depend on how far out it sits.
-    const dir = new THREE.Vector3(+(a === 'x'), +(a === 'y'), +(a === 'z'))
-      .applyQuaternion(this.pivot.quaternion)
-      .multiplyScalar(this.camera.position.distanceTo(this.pivot.position) * 0.1);
-    const origin = project(this.pivot.position);
-    const along = project(this.pivot.position.clone().add(dir)).sub(origin);
-    if (along.lengthSq() < 1) return 0;      // edge on: no side to read
-    const cursor = new THREE.Vector2(this._pointer.clientX - r.left, this._pointer.clientY - r.top);
-    return Math.sign(cursor.sub(origin).dot(along));
-  }
-
-  /** The point that must not move during this drag, in pivot-local space. */
   _captureScaleAnchor() {
     const box = this._selectionLocalBox();
     if (box.isEmpty()) return null;
     const centre = box.getCenter(new THREE.Vector3());
-    // Y holds at the bottom whatever axis is being dragged, so something that
-    // was standing on the floor is still standing on it afterwards. That is the
-    // case uniform scaling gets wrong even when no vertical handle is touched.
     const point = new THREE.Vector3(centre.x, box.min.y, centre.z);
-    const axis = this.gizmo.axis || '';
-    // The uniform handle sits in the middle and has no near end to read.
-    if (axis !== 'XYZ') {
-      for (const a of ['x', 'y', 'z']) {
-        if (!axis.includes(a.toUpperCase())) continue;
-        const sign = this._handleSign(a);
-        if (sign) point[a] = sign > 0 ? box.min[a] : box.max[a];
-      }
-    }
+    const axis = this.gizmo.axis;
+    if (axis && axis !== 'view') point[axis] = box.min[axis];
     return { point, positions: new Map([...this.selection].map((m) => [m, m.position.clone()])) };
   }
 
@@ -5823,11 +6383,11 @@ class Viewport extends EventTarget {
    * A point at pivot-local `p` lands at `S * p`, so restoring it to where `S0`
    * had it means offsetting every child by `(S0/S - 1) * anchor`. Recomputed
    * from the drag-start positions each frame rather than accumulated, so
-   * nothing drifts and floor lock is free to overrule the Y it produces.
+   * nothing drifts however long the drag goes on.
    *
-   * The children move rather than the pivot, deliberately: TransformControls
-   * measures the drag against a plane through the gizmo's own position, so
-   * moving the gizmo mid-drag feeds straight back into the scale it computes.
+   * The children move rather than the pivot, deliberately: the gizmo measures
+   * the drag against a plane through its own position, so moving the gizmo
+   * mid-drag would feed straight back into the scale it computes.
    */
   _applyScaleAnchor() {
     const anchor = this._scaleAnchor;
@@ -5844,36 +6404,97 @@ class Viewport extends EventTarget {
     }
   }
 
-  _applyFloorLock() {
-    for (const m of this.selection) {
-      if (!m.userData.def.floor) continue;
+  /**
+   * Let the selection fall until it rests on something.
+   *
+   * `onto` is 'floor' for the ground, always, or 'surface' for whatever is
+   * actually underneath — the top of another object if there is one, the ground
+   * if there is not. The second is how a crate goes on a crate: put it roughly
+   * over the target and drop it, rather than reading a height off the inspector
+   * and typing it.
+   *
+   * Height is otherwise unconstrained. This used to run on every edit, off a
+   * Floor tick that was on by default, which made anything the catalog marks
+   * `floor` impossible to lift — and maps want that: a walkway over a gap, a
+   * barrier used as a ceiling.
+   *
+   * Each object falls on its own rather than the selection moving as one, which
+   * is what makes dropping a scattered handful of props onto uneven ground do
+   * the useful thing.
+   */
+  dropSelection(onto = 'floor') {
+    const targets = [...this.selection];
+    if (!targets.length) return 0;
+    // Only things outside the selection can be landed on. Otherwise a stack
+    // dropped as a group would rest on itself and never move.
+    const others = onto === 'surface' ? this.objects.filter((m) => !this.selection.has(m)) : [];
+
+    let moved = 0;
+    for (const m of targets) {
       m.updateWorldMatrix(true, false);
       const box = new THREE.Box3().setFromObject(m);
-      const drop = box.min.y;
-      if (Math.abs(drop) > 1e-5) {
-        const world = new THREE.Vector3();
-        m.getWorldPosition(world);
-        world.y -= drop;
-        const local = this.pivot.worldToLocal(world.clone());
-        if (m.parent === this.pivot) m.position.copy(local);
-        else m.position.copy(world);
-      }
-    }
-  }
-
-  dropToFloor() {
-    const targets = this.selection.size ? [...this.selection] : [];
-    for (const m of targets) {
-      const box = new THREE.Box3().setFromObject(m);
+      if (box.isEmpty()) continue;
+      const rest = others.length ? this._surfaceUnder(box, others) : 0;
+      const drop = box.min.y - rest;
+      if (Math.abs(drop) < 1e-5) continue;
       const world = new THREE.Vector3();
       m.getWorldPosition(world);
-      world.y -= box.min.y;
-      const local = m.parent === this.pivot ? this.pivot.worldToLocal(world.clone()) : world;
-      m.position.copy(local);
+      world.y -= drop;
+      m.position.copy(m.parent === this.pivot ? this.pivot.worldToLocal(world.clone()) : world);
       this.markDirty(m);
+      moved++;
     }
+    // The gizmo hangs off the pivot, and the pivot does not follow a child that
+    // moves underneath it — so without this the gizmo stayed in the air above
+    // whatever had just been dropped until the object was selected again.
+    this.rebuildPivot();
     this.emit('transform');
     this.emit('commit-end');
+    return moved;
+  }
+
+  /** Kept for the old name; the floor is the common case. */
+  dropToFloor() {
+    return this.dropSelection('floor');
+  }
+
+  /**
+   * The height of the highest thing under `box`, or 0 for the ground.
+   *
+   * Nine rays straight down through the object's footprint — corners, edge
+   * middles and centre — rather than one down the middle, so a crate sitting
+   * half over the edge of a table lands on the table rather than dropping
+   * through it. The highest surface any of them finds wins.
+   *
+   * Hits above the object's own top are ignored: those are things it is under,
+   * not things it is on. Hits between its bottom and its top are kept, so a
+   * piece pushed into another one rises to sit on it instead of staying sunk —
+   * which is what "drop it on that" means when you have eyeballed the position.
+   */
+  _surfaceUnder(box, others) {
+    const ray = new THREE.Raycaster();
+    ray.ray.direction.set(0, -1, 0);
+    const size = box.getSize(new THREE.Vector3());
+    // Inset from the edges so a ray grazing the side of the object's own
+    // footprint is not decided by floating point.
+    const ix = Math.min(0.02, size.x / 3);
+    const iz = Math.min(0.02, size.z / 3);
+    const xs = [box.min.x + ix, (box.min.x + box.max.x) / 2, box.max.x - ix];
+    const zs = [box.min.z + iz, (box.min.z + box.max.z) / 2, box.max.z - iz];
+    const ceiling = box.max.y - 1e-4;
+
+    let best = 0;
+    for (const x of xs) {
+      for (const z of zs) {
+        ray.ray.origin.set(x, box.max.y + 0.05, z);
+        for (const hit of ray.intersectObjects(others, true)) {
+          if (hit.point.y > ceiling) continue;   // an overhang, not a shelf
+          if (hit.point.y > best) best = hit.point.y;
+          break;                                  // hits are sorted, so this is the top
+        }
+      }
+    }
+    return best;
   }
 
   _endDrag() {
@@ -5900,9 +6521,9 @@ class Viewport extends EventTarget {
     let down = null;
 
     this.canvas.addEventListener('pointerdown', (e) => {
-      // Recorded before the early return below: a scale drag reads it to work
-      // out which end of the handle was grabbed, and a press with no move
-      // before it would otherwise leave it stale.
+      // Recorded before the early returns below: `beginPlacement` puts what it
+      // is carrying under the cursor straight away, and a press with no move
+      // before it would otherwise leave this stale.
       this._pointer = { clientX: e.clientX, clientY: e.clientY };
       // While a brush is up, the left button paints the bot grid and does not
       // select. Checked before the gizmo, because the gizmo is hidden anyway
@@ -5915,10 +6536,9 @@ class Viewport extends EventTarget {
         this._paintNavAt(e);
         return;
       }
-      // this.gizmo.axis is set while a handle is hovered; TransformControls
-      // registers its listeners first, so this reliably wins.
-      if (e.button !== 0 || e.altKey || this.gizmo.dragging || this.gizmo.axis) return;
-      if (this.combo.dragging || this.combo.hovered) return;
+      // `hovered` is set while a handle is under the pointer, so a press meant
+      // for the gizmo never starts a marquee behind it.
+      if (e.button !== 0 || e.altKey || this.gizmo.dragging || this.gizmo.hovered) return;
       if (this.placing) return;   // that click drops what is being placed
       down = { x: e.clientX, y: e.clientY, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey };
       this.emit('marquee-start', down);
@@ -6035,14 +6655,18 @@ class Viewport extends EventTarget {
   /**
    * Carry `meshes` under the pointer until a left click drops them. They ride
    * on the pivot like any other selection, so this only has to move the pivot
-   * and floor lock keeps working unchanged. Ends by emitting 'placement-end'
-   * with { committed, meshes }; a cancelled placement leaves the meshes in the
-   * scene for the caller to dispose of.
+   * and each piece keeps whatever height it was created at. Ends by emitting
+   * 'placement-end' with { committed, meshes }; a cancelled placement leaves the
+   * meshes in the scene for the caller to dispose of.
    */
   beginPlacement(meshes) {
     if (this.placing) this._endPlacement(false);
     if (!meshes.length) return;
 
+    // Reaching for an object puts any bot-grid brush down. The left button
+    // cannot both paint the floor and drop what is riding on the cursor, and of
+    // the two the thing in your hand is obviously the one you meant.
+    this.setNavPaint(null);
     this.setSelection(meshes);
     // The gizmo would swallow the click that drops them, and there is nothing
     // worth transforming until they have landed.
@@ -6067,7 +6691,6 @@ class Viewport extends EventTarget {
         this.pivot.position.x = Math.round(this.pivot.position.x / s) * s;
         this.pivot.position.z = Math.round(this.pivot.position.z / s) * s;
       }
-      if (this.floorLock) this._applyFloorLock();
       this.emit('transform');
     };
     const drop = (e) => { if (e.button === 0) this._endPlacement(true); };
@@ -6510,7 +7133,7 @@ class Viewport extends EventTarget {
 
   _frame() {
     this.orbit.update();
-    this.combo.update();
+    this.gizmo.update();
     this._holdFixedParts();
     this._placeBadges();
     this.renderer.render(this.scene, this.camera);
@@ -6558,16 +7181,20 @@ let placingLabel = null;    // set while a library pick-up is following the curs
   wireToolbar();
   wireBotGrid();
   wireInspectorTabs();
+  wireMirrorTool();
   wireArrayTool();
   wireInspector();
   wireKeyboard();
   wireDragDrop();
   wireViewport();
+  wireAutosave();
+  await loadNavCloud();
   resize();
   addEventListener('resize', resize);
   current = snapshot();
   refreshAll();
   toast('Ready. Open a map file, or drag objects in from the library.');
+  greetWithCheckpoints();
 })();
 
 function resize() {
@@ -6663,6 +7290,9 @@ function redo() {
 
 function touchEdited() {
   if (map) map.editedTime = nowStamp();
+  // Everything that changes the map goes through here, which makes it the one
+  // place autosave has to watch to know a checkpoint would be worth taking.
+  mapTouched = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -6875,6 +7505,9 @@ function thumbnail(def) {
 
 function newObject(def, worldPoint) {
   vp.cancelPlacement();   // reaching for the library abandons a pending paste
+  // ...and puts down a bot-grid brush, which would otherwise still own the left
+  // button while an object sat waiting to be placed with it.
+  if (vp.navPaint) vp.setNavPaint(null);
   // The scale a piece is placed at comes from the catalog, not from 1,1,1: a
   // solid cylinder is 0.5 x 2 x 0.5 in every map the game wrote, and a tunnel
   // is 1 x 2 x 1.
@@ -7085,35 +7718,43 @@ function arraySelection({ nx, ny, nz, dx, dy, dz }) {
       }
     }
   }
-  if (vp.floorLock) vp._applyFloorLock();
   vp.setSelection([...source, ...made]);
   commit();
   toast(`Arrayed ${made.length} cop${made.length === 1 ? 'y' : 'ies'} — ${nx} x ${ny} x ${nz}.`);
+  tip('array',
+    'Each copy is its own group, so you can pull one out of the wall afterwards without dragging '
+    + 'the rest with it.');
 }
 
 /**
- * Copy the selection to the other side of the map.
+ * Copy the selection to the other side of the map, as a true reflection.
  *
  * `axis` is 'x' or 'z' — the two horizontal ones; mirroring in Y would put the
  * map underground. The plane is the middle of the arena, which is the origin,
  * so a piece two metres to the left comes back two metres to the right.
  *
- * The rotation is reflected too, or the far half would not be a reflection of
- * the near one: under a mirror, a rotation about an axis becomes a rotation
- * about the mirrored axis by the opposite angle, which for the quaternion is
- * negating the two components perpendicular to the plane. A chiral piece — a
- * corner barrier — cannot truly be mirrored by a rotation, so it comes out as
- * the nearest turn, which is the piece the far half wants anyway.
+ * A reflection is three things, not one. The position flips, obviously. The
+ * rotation is reflected — under a mirror, a rotation about an axis becomes one
+ * about the mirrored axis, which for the quaternion is negating the two
+ * components perpendicular to the plane. And the piece itself has to be turned
+ * inside out, which no rotation can do: that is a negative scale, always on the
+ * object's own axis matching the mirror plane, and it is the difference between
+ * a corner barrier that faces the right way and one that actually closes the
+ * far corner.
+ *
+ * The flip is spent only where it buys something. `needsMirrorFlip` asks the
+ * geometry whether the piece is already its own reflection; a crate, a cylinder
+ * and a plain wall all are, and they export exactly as they always did.
  *
  * `packId` renders the copy in another theme, which is how you get a blue half
  * and an orange half. An entry with no equivalent there keeps its own.
  */
 function mirrorSelection(axis, packId = null) {
   if (!vp.selection.size) return toast('Select something to mirror.');
-  const flip = axis === 'x' ? [1, -1, -1] : [-1, -1, 1];   // quaternion x,y,z signs
+  const turn = axis === 'x' ? [1, -1, -1] : [-1, -1, 1];   // quaternion x,y,z signs
   const made = [];
   const remap = new Map();
-  let swapped = 0, kept = 0;
+  let swapped = 0, kept = 0, flipped = 0;
 
   for (const m of [...vp.selection]) {
     m.updateWorldMatrix(true, false);
@@ -7134,8 +7775,14 @@ function mirrorSelection(axis, packId = null) {
       dirty: true,
     });
     copy.position.set(axis === 'x' ? -p.x : p.x, p.y, axis === 'z' ? -p.z : p.z);
-    copy.quaternion.set(q.x * flip[0], q.y * flip[1], q.z * flip[2], q.w);
+    copy.quaternion.set(q.x * turn[0], q.y * turn[1], q.z * turn[2], q.w);
     copy.scale.copy(s);
+    // Chirality is the source piece's, so it is asked of the source: the copy's
+    // model may still be loading, and a themed swap is the same shape anyway.
+    if (vp.needsMirrorFlip(m, axis)) {
+      copy.scale[axis] = -copy.scale[axis];
+      flipped++;
+    }
     if (m.userData.group) {
       if (!remap.has(m.userData.group)) remap.set(m.userData.group, `g${groupSeq++}`);
       copy.userData.group = remap.get(m.userData.group);
@@ -7143,12 +7790,31 @@ function mirrorSelection(axis, packId = null) {
     made.push(copy);
   }
 
-  if (vp.floorLock) vp._applyFloorLock();
   vp.setSelection(made);
   commit();
   const where = packId ? ` as ${getPack(packId)?.name ?? packId}` : '';
   const missing = kept ? `, ${kept} with no equivalent kept as they were` : '';
-  toast(`Mirrored ${made.length} object${made.length === 1 ? '' : 's'} across ${axis.toUpperCase()}${where}${missing}.`);
+  const turned = flipped ? `, ${flipped} turned inside out to face the other way` : '';
+  toast(`Mirrored ${made.length} object${made.length === 1 ? '' : 's'} across ${axis.toUpperCase()}${where}${missing}${turned}.`);
+  tip('mirror',
+    'The copies are a reflection, not just a move: a piece with a left and a right comes out the '
+    + 'other way round. Build one half of the arena, then mirror it.');
+}
+
+/**
+ * Drop the selection onto whatever is under it. The viewport does the work;
+ * this is here to say what happened, because a drop that finds nothing to land
+ * on looks identical to a drop that did not run.
+ */
+function dropOntoSurface() {
+  if (!vp.selection.size) return toast('Select something to drop.');
+  const moved = vp.dropSelection('surface');
+  toast(moved
+    ? `Dropped ${moved} object${moved === 1 ? '' : 's'} onto what was underneath.`
+    : 'Already resting on something — nothing to drop.');
+  tip('drop',
+    'Drop lands a piece on the top of whatever is beneath it, so a crate goes on a crate. '
+    + 'To floor ignores all that and puts it on the ground.');
 }
 
 function groupSelection() {
@@ -7180,36 +7846,40 @@ function deleteSelection() {
 // ---------------------------------------------------------------------------
 
 function wireToolbar() {
-  $('b-new').onclick = async () => {
-    if (vp.objects.length && !confirm('Start a new map? Anything unexported is lost.')) return;
+  const startNewMap = async () => {
     map = await newMap({ name: 'New Map', author: map?.author || '' });
     vp.clearObjects();
     applyMapMeta();
+    await loadNavCloud();
     activeRuleSet = 0;
     buildRules();
     undoStack = []; redoStack = []; current = snapshot();
     refreshAll();
-    toast('New map started.');
+    toast('New map started. It has no bot grid and no rule sets yet — both are yours to add.');
+  };
+  $('b-new').onclick = () => {
+    if (!vp.objects.length) return void startNewMap();
+    // A checkpoint first, so "start again" is recoverable even though undo
+    // deliberately does not reach across a new map.
+    confirmDialog({
+      title: 'Start a new map',
+      body: `This clears the ${vp.objects.length} object${vp.objects.length === 1 ? '' : 's'} on `
+        + 'screen and everything set against them. A checkpoint of the current map is taken first, '
+        + 'so you can get back to it from the Map tab.',
+      confirmLabel: 'New map',
+      run: () => { takeCheckpoint('manual', true); startNewMap(); },
+    });
   };
   $('b-open').onclick = () => $('filepick').click();
   $('filepick').onchange = (e) => { const f = e.target.files[0]; if (f) openFile(f); e.target.value = ''; };
   $('b-save').onclick = exportMap;
-
-  for (const mode of ['combined', 'translate', 'rotate', 'scale']) {
-    $(`m-${mode}`).onclick = () => vp.setGizmoMode(mode);
-  }
-  $('m-space').onclick = () => {
-    vp.setGizmoSpace(vp.gizmoSpace === 'world' ? 'local' : 'world');
-    $('m-space').textContent = vp.gizmoSpace === 'world' ? 'World' : 'Local';
-  };
 
   const syncSnap = () => {
     vp.setSnap('translate', $('snap-t').checked ? parseFloat($('snap-t-v').value) : 0);
     vp.setSnap('rotate', $('snap-r').checked ? parseFloat($('snap-r-v').value) : 0);
   };
   ['snap-t', 'snap-t-v', 'snap-r', 'snap-r-v'].forEach((id) => ($(id).onchange = syncSnap));
-  $('uniform').onchange = (e) => { vp.uniformScale = e.target.checked; };
-  $('floorlock').onchange = (e) => { vp.floorLock = e.target.checked; };
+  $('uniform').onchange = (e) => vp.setUniformScale(e.target.checked);
 
   // Nothing about the map changes here, so no commit and no edited stamp — it
   // is a way of looking at the scene, not a way of changing it.
@@ -7219,15 +7889,6 @@ function wireToolbar() {
       ? 'Showing the built-in stand-in shapes.'
       : 'Showing the game\'s own models where they are on disk.');
   };
-
-  const packSelect = $('mirror-pack');
-  for (const p of packsInGroup('virtual')) {
-    const o = document.createElement('option');
-    o.value = p.id;
-    o.textContent = p.name;
-    packSelect.appendChild(o);
-  }
-  $('b-mirror').onclick = () => mirrorSelection($('mirror-axis').value, packSelect.value || null);
 
   $('b-undo').onclick = undo;
   $('b-redo').onclick = redo;
@@ -7289,18 +7950,53 @@ async function regenerateNav() {
 }
 
 /**
- * The inspector's tabs. Build is first and default because it holds the two
- * things touched constantly — the selection's numbers and the object list —
- * with the array tool between them, where it is next to what it acts on.
+ * The inspector's tabs. Build is first and default because it holds the things
+ * touched constantly — the selection's numbers and the object list — with the
+ * mirror and array tools between them, next to what they act on.
+ *
+ * Leaving World puts any bot-grid brush down. The brush is modal in the worst
+ * way — it takes the left button away from selection everywhere in the viewport
+ * — and its only controls are on that tab, so walking away from them while it
+ * is still up leaves no visible sign of why clicking an object stopped working.
  */
 function wireInspectorTabs() {
   const tabs = [...document.querySelectorAll('.itab')];
   const show = (name) => {
+    if (name !== 'world' && vp.navPaint) {
+      vp.setNavPaint(null);
+      toast('Brush put down.');
+    }
     for (const t of tabs) t.classList.toggle('on', t.dataset.pane === name);
     for (const t of tabs) $(`pane-${t.dataset.pane}`).hidden = t.dataset.pane !== name;
+    if (name === 'rules') {
+      tip('rules',
+        'A mode can be added once the map holds what it needs to play it — the picker lists the '
+        + 'rest greyed out, saying what is missing.');
+    }
+    if (name === 'world') {
+      tip('world',
+        'The bot grid is the ground the bots may walk on. A new map starts with none: paint what '
+        + 'you want them to reach.');
+    }
   };
   for (const t of tabs) t.onclick = () => show(t.dataset.pane);
   show('build');
+}
+
+/**
+ * The mirror tool. It lives in the Build tab beside Array because the two are
+ * the same kind of thing — one selection in, a lot of objects out — and both
+ * want the object list they act on within reach.
+ */
+function wireMirrorTool() {
+  const packSelect = $('mirror-pack');
+  for (const p of packsInGroup('virtual')) {
+    const o = document.createElement('option');
+    o.value = p.id;
+    o.textContent = p.name;
+    packSelect.appendChild(o);
+  }
+  $('b-mirror').onclick = () => mirrorSelection($('mirror-axis').value, packSelect.value || null);
 }
 
 /**
@@ -7340,20 +8036,34 @@ function refreshArrayDefaults() {
 /**
  * The brushes. Picking one up takes the left button away from selection until
  * it is put down again, which is why they toggle rather than fire.
+ *
+ * The buttons are painted from `vp.navPaint` rather than from whichever click
+ * last happened, because the viewport puts the brush down by itself — leaving
+ * the World tab, or picking an object out of the library, both drop it. A brush
+ * still lit while the left button had gone back to selecting was the worst of
+ * both: clicks that neither painted nor selected.
  */
 function wireBotGrid() {
   const buttons = { add: $('nav-add'), remove: $('nav-remove') };
+  const showBrush = () => {
+    for (const [id, b] of Object.entries(buttons)) b.classList.toggle('on', vp.navPaint === id);
+  };
   const paint = (mode) => {
     const next = vp.navPaint === mode ? null : mode;
     vp.setNavPaint(next, parseFloat($('nav-brush').value) || 0.5);
-    for (const [id, b] of Object.entries(buttons)) b.classList.toggle('on', vp.navPaint === id);
     toast(next
       ? `${next === 'add' ? 'Adding to' : 'Removing from'} the bot grid. Click the button again to stop.`
       : 'Brush put down.');
+    if (next) {
+      tip('brush',
+        'While a brush is up the left button paints the floor instead of selecting. It puts itself '
+        + 'down when you leave this tab or reach for the library.');
+    }
   };
   buttons.add.onclick = () => paint('add');
   buttons.remove.onclick = () => paint('remove');
   $('nav-brush').onchange = () => vp.setNavPaint(vp.navPaint, parseFloat($('nav-brush').value) || 0.5);
+  vp.addEventListener('mode', showBrush);
 
   $('nav-clear').onclick = async () => {
     vp.clearNavMask();
@@ -7363,6 +8073,23 @@ function wireBotGrid() {
 
   // One undo step per stroke rather than per cell, so a long drag is one edit.
   vp.addEventListener('nav-painted', () => { commitNavMask(); });
+}
+
+/**
+ * Hand the map's bot grid to the viewport, so there is something to paint on.
+ *
+ * Called for every map that arrives, new ones included. It used not to be: a
+ * new map's grid only reached the viewport if you changed the Fill setting,
+ * which is why the brushes did nothing on a fresh map until you set Fill to
+ * Circle and back to Keep. There was no mask to paint into.
+ */
+async function loadNavCloud() {
+  await vp.setNavCloud(map.navCloud);
+  $('nav-shape').value = 'keep';
+  $('nav-r-row').style.display = '';
+  $('nav-w-row').style.display = 'none';
+  $('nav-d-row').style.display = 'none';
+  refreshNavCount();
 }
 
 /** Re-encode the painted mask back into the map. */
@@ -7413,10 +8140,14 @@ function buildSelectionPanel() {
     ${vecRow('Rotation', 'r', multi ? 'disabled' : '')}
     ${vecRow('Scale', 's', multi ? 'disabled' : '')}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:9px">
-      <button class="btn ghost" id="s-dup">Duplicate</button>
-      <button class="btn ghost" id="s-floor">To floor</button>
-      <button class="btn ghost" id="s-group">Group</button>
-      <button class="btn ghost" id="s-ungroup">Ungroup</button>
+      <button class="btn ghost" id="s-dup" title="Copy in place (Ctrl+D)">Duplicate</button>
+      <button class="btn ghost" id="s-drop"
+        title="Let it fall until it rests on whatever is underneath — the top of another object, or the ground (Shift+End)">Drop</button>
+      <button class="btn ghost" id="s-floor"
+        title="Put it on the ground, whatever is in the way (End)">To floor</button>
+      <button class="btn ghost" id="s-group" title="Move these together from now on (G)">Group</button>
+      <button class="btn ghost" id="s-ungroup" title="Break the group up (Shift+G)">Ungroup</button>
+      <span></span>
     </div>
     <button class="btn ghost" id="s-del" style="width:100%;margin-top:5px;color:var(--danger)">Delete</button>
   `;
@@ -7433,7 +8164,8 @@ function buildSelectionPanel() {
     }
   }
   $('s-dup').onclick = duplicate;
-  $('s-floor').onclick = () => vp.dropToFloor();
+  $('s-drop').onclick = dropOntoSurface;
+  $('s-floor').onclick = () => vp.dropSelection('floor');
   $('s-group').onclick = groupSelection;
   $('s-ungroup').onclick = ungroupSelection;
   $('s-del').onclick = deleteSelection;
@@ -7677,8 +8409,7 @@ function applyNumericEdit() {
     const r = read(selFields.r, mo.rotation);
     const s = read(selFields.s, mo.scale);
     // The pivot carries the object's world placement while it is selected.
-    vp.pivot.position.set(p.x, p.y, -p.z);
-    vp.pivot.quaternion.fromArray(unityEulerToQuat(r));
+    vp.placeSelection(p, r);
     list[0].scale.set(s.x || 0.001, s.y || 0.001, s.z || 0.001);
     vp.markDirty(list[0]);
   } else {
@@ -7690,7 +8421,6 @@ function applyNumericEdit() {
     );
     for (const m of list) vp.markDirty(m);
   }
-  if (vp.floorLock) vp._applyFloorLock();
   vp.rebuildPivot();
   commit();
 }
@@ -7727,6 +8457,22 @@ function rulesEdited() {
   buildRules();
 }
 
+/**
+ * Redraw the rules panel when — and only when — the set of object types on the
+ * map changes, because that is what decides which modes can be added and what
+ * the warning at the top of an existing set says. Guarded by a signature rather
+ * than rebuilt on every object move: the panel holds live inputs, and throwing
+ * them away underneath somebody mid-edit loses focus and the caret with it.
+ */
+let placedSignature = null;
+
+function refreshModeAvailability() {
+  const now = [...placedTypes()].sort().join('|');
+  if (now === placedSignature) return;
+  placedSignature = now;
+  buildRules();
+}
+
 function buildRules() {
   const tabs = $('mode-tabs');
   const body = $('rules-body');
@@ -7760,9 +8506,10 @@ function buildRules() {
 
   if (!sets.length) {
     body.innerHTML =
-      '<p class="hint">This map has no rule sets. The game writes five — one per ' +
-      'mode, all at their defaults — so a map without any is unusual but legal. ' +
-      'Add one above.</p>';
+      '<p class="hint">No rule sets yet, which is where a new map starts: a mode ' +
+      'is worth adding once the map can play it, and not before. Add above — the ' +
+      'list offers whatever the objectives on the map allow, and says what the ' +
+      'rest are waiting for.</p>';
     return;
   }
   if (activeRuleSet >= sets.length) activeRuleSet = sets.length - 1;
@@ -7845,9 +8592,18 @@ function buildRules() {
 /**
  * Adding a set means picking its mode, and the mode it is given becomes its
  * name — so "Free For All" from this list produces a set called Free For All
- * running Free For All. A mode the map cannot play yet is still offered, with
- * a note saying what it is waiting for, because maps get built in some order
- * and the rules are as reasonable a place to start as the geometry.
+ * running Free For All.
+ *
+ * A mode whose objectives are not on the map cannot be picked. The game will
+ * not offer that mode either, so a rule set for it is a page of settings for a
+ * match nobody can start — and offering it invited exactly that. The entry
+ * stays in the list rather than disappearing, greyed, saying on hover what the
+ * map is missing, because "Capture The Flag needs a team 1 flag" is a useful
+ * thing to be told and an absent line is not.
+ *
+ * A set already in the file is never touched by any of this: maps get edited in
+ * whatever order suits, and deleting somebody's rules because they moved a flag
+ * would be much worse than leaving a warning at the top of the panel.
  */
 function addRuleSetPicker() {
   const sel = document.createElement('select');
@@ -7863,6 +8619,10 @@ function addRuleSetPicker() {
     o.value = m.type;
     const missing = missingRequirements(m.type, present);
     o.textContent = missing.length ? `${m.name} — needs ${missing.join(', ')}` : m.name;
+    o.disabled = missing.length > 0;
+    o.title = missing.length
+      ? `Place ${missing.join(', ')} and this mode becomes available.`
+      : `${m.name} can be played on this map.`;
     sel.appendChild(o);
   }
   sel.onchange = () => {
@@ -8426,13 +9186,9 @@ function wireKeyboard() {
     if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); exportMap(); return; }
 
     switch (e.key) {
-      case 'q': case 'Q': vp.setGizmoMode('combined'); break;
-      case 'w': case 'W': vp.setGizmoMode('translate'); break;
-      case 'e': case 'E': vp.setGizmoMode('rotate'); break;
-      case 'r': case 'R': vp.setGizmoMode('scale'); break;
       case 'f': case 'F': vp.frameSelection(); break;
       case 'g': case 'G': e.shiftKey ? ungroupSelection() : groupSelection(); break;
-      case 'End': vp.dropToFloor(); break;
+      case 'End': e.shiftKey ? dropOntoSurface() : vp.dropSelection('floor'); break;
       case 'Delete': case 'Backspace': deleteSelection(); break;
       case 'Escape': vp.setSelection([]); break;
     }
@@ -8525,6 +9281,9 @@ function wireViewport() {
       toast(fresh
         ? `Placed ${fresh}.`
         : `Pasted ${meshes.length} object${meshes.length === 1 ? '' : 's'}.`);
+      tip('gizmo',
+        'One gizmo does everything: arrows move, the three coloured circles turn about X, Y and Z, '
+        + 'the cubes scale from the far side, and the disc in the middle slides it across the view.');
       return;
     }
     vp.removeObjects(meshes);
@@ -8533,7 +9292,11 @@ function wireViewport() {
     toast(fresh ? 'Placement cancelled.' : 'Paste cancelled.');
   });
   vp.addEventListener('mode', refreshStatus);
-  vp.addEventListener('change', () => { buildOutliner(); refreshStatus(); });
+  vp.addEventListener('change', () => {
+    buildOutliner();
+    refreshModeAvailability();
+    refreshStatus();
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -8542,42 +9305,77 @@ function wireViewport() {
 
 async function openFile(file) {
   try {
-    const text = await file.text();
-    const parsed = parseMap(text);
-    map = parsed;
-    vp.clearObjects();
-    for (const mo of parsed.mapObjects) vp.addObject(mo);
-    applyMapMeta();
-    activeRuleSet = 0;
-    buildRules();
-    await vp.setNavCloud(map.navCloud);
-    refreshNavCount();
-    $('nav-shape').value = 'keep';
-    vp.setSelection([]);
-    vp.setView('persp');
-    undoStack = []; redoStack = []; current = snapshot();
-    refreshAll();
-
-    const unknown = new Set(
-      vp.objects.filter((m) => m.userData.def.unknown).map((m) => m.userData.def.type)
-    );
-    let msg = `Loaded "${map.name}" — ${parsed.mapObjects.length} objects.`;
-    if (parsed.version !== MAP_VERSION) msg += ` Map format v${parsed.version}, editor targets v${MAP_VERSION}.`;
-    if (unknown.size) msg += ` ${unknown.size} type(s) not in any loaded pack: ${[...unknown].join(', ')}.`;
-    toast(msg, unknown.size > 0);
-    $('st-file').textContent = file.name;
+    await loadMapText(await file.text(), file.name);
   } catch (err) {
     console.error(err);
     toast(`Could not read that file: ${err.message}`, true);
   }
 }
 
+/**
+ * Replace everything on screen with a map read from `text`.
+ *
+ * Shared by the file picker, drag and drop, and restoring a checkpoint — all
+ * three are the same act, and a checkpoint that took a different path through
+ * this would be a checkpoint that restored subtly differently from the file it
+ * was a copy of.
+ */
+async function loadMapText(text, sourceName) {
+  const parsed = parseMap(text);
+  map = parsed;
+  vp.clearObjects();
+  for (const mo of parsed.mapObjects) vp.addObject(mo);
+  applyMapMeta();
+  activeRuleSet = 0;
+  buildRules();
+  await loadNavCloud();
+  vp.setSelection([]);
+  vp.setView('persp');
+  undoStack = []; redoStack = []; current = snapshot();
+  refreshAll();
+
+  const unknown = new Set(
+    vp.objects.filter((m) => m.userData.def.unknown).map((m) => m.userData.def.type)
+  );
+  let msg = `Loaded "${map.name}" — ${parsed.mapObjects.length} objects.`;
+  if (parsed.version !== MAP_VERSION) msg += ` Map format v${parsed.version}, editor targets v${MAP_VERSION}.`;
+  if (unknown.size) msg += ` ${unknown.size} type(s) not in any loaded pack: ${[...unknown].join(', ')}.`;
+  toast(msg, unknown.size > 0);
+  $('st-file').textContent = sourceName;
+}
+
+/** The map as the game would read it. Used by both Export and autosave. */
+function currentMapText() {
+  map.editedTime = nowStamp();
+  map.version = map.version || MAP_VERSION;
+  map.mapObjects = vp.objects.map((m) => vp.toMapObject(m));
+  return serializeMap(map);
+}
+
+/** A map still wearing the name it was born with has not been named. */
+const UNNAMED = (name) => !name || !name.trim() || /^new map$/i.test(name.trim());
+
+/**
+ * Export, after a word about the two fields the game puts on screen beside the
+ * map and nothing else in the editor forces you to fill in.
+ *
+ * The prompt is a reminder rather than a gate — "Export anyway" is right there,
+ * because someone testing a throwaway map twenty times an hour should not have
+ * to name it, and the Tips switch turns the reminder off for good. But the
+ * default is to ask: a maps folder full of "New Map" is not recoverable after
+ * the fact, since the name is most of how you tell one from another.
+ */
 function exportMap() {
+  if (tipsOn() && (UNNAMED(map.name) || !map.author.trim())) {
+    promptForMapDetails();
+    return;
+  }
+  writeMapFile();
+}
+
+function writeMapFile() {
   try {
-    map.editedTime = nowStamp();
-    map.version = map.version || MAP_VERSION;
-    map.mapObjects = vp.objects.map((m) => vp.toMapObject(m));
-    const text = serializeMap(map);
+    const text = currentMapText();
     const name = mapFileName(map.name, map.guid);
     // Not application/json: `download` names the file without an extension,
     // and browsers append one inferred from the MIME type when it is missing.
@@ -8589,11 +9387,355 @@ function exportMap() {
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 4000);
     $('st-file').textContent = name;
+    // An export is the best moment there is to take a checkpoint: it is the one
+    // point where the author has said this state is worth keeping.
+    takeCheckpoint('export');
     toast(`Exported ${name} — ${map.mapObjects.length} objects. Copy it into the game's maps folder with no file extension.`);
   } catch (err) {
     console.error(err);
     toast(`Export failed: ${err.message}`, true);
   }
+}
+
+function promptForMapDetails() {
+  const missing = UNNAMED(map.name) && !map.author.trim() ? 'a name and an author'
+    : UNNAMED(map.name) ? 'a name' : 'an author';
+  openDialog({
+    title: 'Before you export',
+    body: `This map still needs ${missing}. Both are shown in the game's map list, and the name ` +
+      'becomes the file name — a folder of maps all called "New Map" is hard to sort out later. ' +
+      'Fill them in here, or export as it is.',
+    fields: [
+      { id: 'dlg-name', label: 'Name', value: UNNAMED(map.name) ? '' : map.name, placeholder: 'Map name' },
+      { id: 'dlg-author', label: 'Author', value: map.author, placeholder: 'Your name' },
+    ],
+    actions: [
+      { label: 'Export anyway', ghost: true, run: () => writeMapFile() },
+      {
+        label: 'Save and export',
+        run: (values) => {
+          if (values['dlg-name'].trim()) map.name = values['dlg-name'].trim();
+          map.author = values['dlg-author'].trim();
+          touchEdited();
+          refreshMeta();
+          writeMapFile();
+        },
+      },
+    ],
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Dialogs
+// ---------------------------------------------------------------------------
+// A handful of moments deserve more than a toast that fades in five seconds:
+// the export reminder, and confirming something destructive. `confirm()` would
+// do the job in three characters, but it freezes the page — including the
+// render loop — and cannot say more than one line, so this builds its own.
+
+let dialogClose = null;
+
+function openDialog({ title, body, fields = [], actions }) {
+  closeDialog();
+  const veil = $('veil');
+  const box = document.createElement('div');
+  box.className = 'dlg';
+  box.setAttribute('role', 'dialog');
+  box.setAttribute('aria-modal', 'true');
+
+  const h = document.createElement('h3');
+  h.textContent = title;
+  box.appendChild(h);
+  const p = document.createElement('p');
+  p.textContent = body;
+  box.appendChild(p);
+
+  const inputs = {};
+  for (const f of fields) {
+    const row = document.createElement('div');
+    row.className = 'field';
+    const label = document.createElement('span');
+    label.textContent = f.label;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.id = f.id;
+    input.value = f.value || '';
+    input.placeholder = f.placeholder || '';
+    inputs[f.id] = input;
+    row.append(label, input);
+    box.appendChild(row);
+  }
+
+  const acts = document.createElement('div');
+  acts.className = 'acts';
+  const values = () => Object.fromEntries(Object.entries(inputs).map(([k, el]) => [k, el.value]));
+  for (const a of actions) {
+    const b = document.createElement('button');
+    b.className = 'btn' + (a.ghost ? ' ghost' : '');
+    b.textContent = a.label;
+    b.onclick = () => { const v = values(); closeDialog(); a.run(v); };
+    acts.appendChild(b);
+  }
+  box.appendChild(acts);
+
+  veil.innerHTML = '';
+  veil.appendChild(box);
+  veil.classList.add('show');
+
+  // Escape cancels, which is always the last action listed — the harmless one.
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); closeDialog(); }
+    if (e.key === 'Enter' && fields.length) {
+      e.preventDefault();
+      const v = values();
+      const primary = actions[actions.length - 1];
+      closeDialog();
+      primary.run(v);
+    }
+  };
+  addEventListener('keydown', onKey, true);
+  dialogClose = () => {
+    removeEventListener('keydown', onKey, true);
+    veil.classList.remove('show');
+    veil.innerHTML = '';
+    dialogClose = null;
+  };
+  (fields.length ? inputs[fields[0].id] : acts.lastChild)?.focus();
+}
+
+function closeDialog() {
+  dialogClose?.();
+}
+
+/** Ask before something that cannot be undone. */
+function confirmDialog({ title, body, confirmLabel, run }) {
+  openDialog({
+    title,
+    body,
+    actions: [
+      { label: 'Cancel', ghost: true, run: () => {} },
+      { label: confirmLabel, run },
+    ],
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Tips
+// ---------------------------------------------------------------------------
+// First-time hints. Every one of them is something the editor cannot make
+// obvious by looking at it — where a mode came from, why the left button
+// stopped selecting — and every one of them is worth saying exactly once.
+// The switch in the toolbar turns the lot off, including the export reminder.
+
+const TIPS_KEY = 'spatialops.tips';
+const SEEN_KEY = 'spatialops.tips.seen';
+let tipsSeen = new Set();
+
+const tipsOn = () => $('tips')?.checked !== false;
+
+function loadTipState() {
+  try {
+    const on = localStorage.getItem(TIPS_KEY);
+    if (on !== null) $('tips').checked = on === '1';
+    tipsSeen = new Set(JSON.parse(localStorage.getItem(SEEN_KEY) || '[]'));
+  } catch { /* no storage: tips stay on and repeat, which is harmless */ }
+}
+
+/** Say `message` the first time `id` comes up, and never again. */
+function tip(id, message) {
+  if (!tipsOn() || tipsSeen.has(id)) return;
+  tipsSeen.add(id);
+  try { localStorage.setItem(SEEN_KEY, JSON.stringify([...tipsSeen])); } catch { /* fine */ }
+  toast(message);
+}
+
+// ---------------------------------------------------------------------------
+// Autosave
+// ---------------------------------------------------------------------------
+// The editor holds the only copy of an unexported map, and a browser tab is a
+// fragile place to keep one. So the map is snapshotted into this browser's
+// storage every couple of minutes of actual editing, on export, and on the way
+// out of the page — and the Map tab lists what is there to be restored.
+//
+// See checkpoints.js for where they live and why it is not the build folder.
+
+const AUTOSAVE_KEY = 'spatialops.autosave';
+const AUTOSAVE_EVERY = 120_000;   // ms of wall clock between timed checkpoints
+let mapTouched = false;
+
+const autosaveOn = () => $('autosave')?.checked !== false;
+
+function wireAutosave() {
+  loadTipState();
+  try {
+    const on = localStorage.getItem(AUTOSAVE_KEY);
+    if (on !== null) $('autosave').checked = on === '1';
+  } catch { /* no storage */ }
+
+  if (!checkpointsAvailable()) {
+    // Private windows and file:// pages have nowhere to put these. Say so once
+    // rather than offering a switch that silently does nothing.
+    $('autosave').checked = false;
+    $('autosave').disabled = true;
+    $('autosave-sw').title =
+      'This browser will not give the page any storage — private window, or opened from disk. ' +
+      'Serve the editor over http:// to get autosave.';
+  }
+
+  $('autosave').onchange = () => {
+    try { localStorage.setItem(AUTOSAVE_KEY, autosaveOn() ? '1' : '0'); } catch { /* fine */ }
+    toast(autosaveOn()
+      ? 'Autosave on. Checkpoints are kept in this browser and listed under Map.'
+      : 'Autosave off. Nothing is kept but what you export.');
+    refreshCheckpoints();
+  };
+  $('tips').onchange = () => {
+    try { localStorage.setItem(TIPS_KEY, tipsOn() ? '1' : '0'); } catch { /* fine */ }
+    toast(tipsOn() ? 'Hints on.' : 'Hints off, including the reminder before exporting.');
+  };
+
+  $('cp-save').onclick = () => {
+    const entry = takeCheckpoint('manual', true);
+    toast(entry ? 'Checkpoint taken.' : 'Nothing has changed since the last checkpoint.');
+  };
+  $('cp-clear').onclick = () => {
+    if (!checkpointList().length) return toast('There are no checkpoints to clear.');
+    confirmDialog({
+      title: 'Clear every checkpoint',
+      body: 'This deletes all of the autosaved snapshots held in this browser. Anything you have '
+        + 'exported is a file on disk and is not affected.',
+      confirmLabel: 'Clear them',
+      run: () => { clearCheckpoints(); refreshCheckpoints(); toast('Checkpoints cleared.'); },
+    });
+  };
+
+  setInterval(() => { if (mapTouched) takeCheckpoint('auto'); }, AUTOSAVE_EVERY);
+  // `pagehide` fires where `beforeunload` is unreliable — a closed tab, a
+  // navigation, the phone being locked — and localStorage is synchronous, so
+  // the write finishes even as the page goes away.
+  addEventListener('pagehide', () => { if (mapTouched) takeCheckpoint('exit'); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && mapTouched) takeCheckpoint('exit');
+  });
+}
+
+/**
+ * Write a checkpoint if there is anything to write. `force` is for the button,
+ * which should work whether or not the switch is on.
+ */
+function takeCheckpoint(reason, force = false) {
+  if (!map || (!force && !autosaveOn())) return null;
+  try {
+    const entry = saveCheckpoint({
+      text: currentMapText(),
+      name: map.name,
+      author: map.author,
+      guid: map.guid,
+      objects: vp.objects.length,
+      reason,
+    });
+    mapTouched = false;
+    if (entry) refreshCheckpoints();
+    return entry;
+  } catch (err) {
+    console.warn('Checkpoint failed', err);
+    return null;
+  }
+}
+
+function refreshCheckpoints() {
+  const host = $('cp-list');
+  if (!host) return;
+  const entries = checkpointList();
+  $('cp-count').textContent = entries.length ? `${entries.length}` : '';
+  host.innerHTML = '';
+
+  if (!checkpointsAvailable()) {
+    $('cp-note').textContent =
+      'This browser gives the page no storage, so nothing can be kept here. Serve the editor '
+      + 'over http:// rather than opening the file from disk.';
+    return;
+  }
+  if (!entries.length) {
+    $('cp-note').textContent = autosaveOn()
+      ? 'Nothing kept yet. With Autosave on, a snapshot is taken every couple of minutes of '
+        + 'editing, when you export, and when you leave the page.'
+      : 'Autosave is off. Turn it on above the view, or take one by hand.';
+    return;
+  }
+
+  for (const e of entries) {
+    const row = document.createElement('div');
+    row.className = 'cprow';
+
+    const meta = document.createElement('div');
+    meta.className = 'cpm';
+    const n = document.createElement('div');
+    n.className = 'cpn';
+    n.textContent = e.name;
+    const w = document.createElement('div');
+    w.className = 'cpw';
+    w.textContent = `${timeAgo(e.at)} · ${e.objects} object${e.objects === 1 ? '' : 's'}`
+      + (e.reason === 'export' ? ' · exported' : e.reason === 'manual' ? ' · by hand' : '');
+    meta.append(n, w);
+    meta.title = `${e.name}${e.author ? ` by ${e.author}` : ''}\n${new Date(e.at).toLocaleString()}`
+      + `\n${e.objects} objects, ${(e.bytes / 1024).toFixed(1)} kB`;
+
+    const restore = document.createElement('button');
+    restore.className = 'btn ghost';
+    restore.textContent = 'Restore';
+    restore.title = 'Load this snapshot, replacing what is on screen';
+    restore.onclick = () => restoreCheckpoint(e);
+
+    const kill = document.createElement('button');
+    kill.className = 'kill';
+    kill.type = 'button';
+    kill.textContent = '×';
+    kill.title = 'Delete this checkpoint';
+    kill.onclick = () => { removeCheckpoint(e.id); refreshCheckpoints(); };
+
+    row.append(meta, restore, kill);
+    host.appendChild(row);
+  }
+
+  const kb = checkpointBytes() / 1024;
+  $('cp-note').textContent =
+    `${entries.length} kept in this browser, ${kb.toFixed(0)} kB. The newest ${entries.length === 1
+      ? 'one is' : 'few are'} kept and the oldest drop off. These live with the address the editor `
+    + 'is served from, not in the map folder — Export is still what makes a file the game can read.';
+}
+
+function restoreCheckpoint(entry) {
+  const text = checkpointText(entry.id);
+  if (!text) { refreshCheckpoints(); return toast('That checkpoint is no longer stored.', true); }
+  const go = async () => {
+    try {
+      await loadMapText(text, `${entry.name} (checkpoint)`);
+      refreshCheckpoints();
+    } catch (err) {
+      console.error(err);
+      toast(`That checkpoint would not load: ${err.message}`, true);
+    }
+  };
+  if (!vp.objects.length) return void go();
+  confirmDialog({
+    title: 'Restore this checkpoint',
+    body: `"${entry.name}" from ${timeAgo(entry.at)}, ${entry.objects} objects. What is on screen `
+      + 'now will be replaced, and undo does not reach back past it. A checkpoint of where you are '
+      + 'is taken first.',
+    confirmLabel: 'Restore',
+    run: () => { takeCheckpoint('manual', true); go(); },
+  });
+}
+
+/** On the way in, mention what is waiting rather than leaving it to be found. */
+function greetWithCheckpoints() {
+  const entries = checkpointList();
+  if (!entries.length) return;
+  refreshCheckpoints();
+  tip('checkpoints',
+    `${entries.length} autosaved checkpoint${entries.length === 1 ? '' : 's'} from a previous `
+    + `session — the newest is "${entries[0].name}", ${timeAgo(entries[0].at)}. Map tab, Checkpoints.`);
 }
 
 // ---------------------------------------------------------------------------
@@ -8618,6 +9760,7 @@ function refreshMeta() {
 function refreshAll() {
   buildOutliner();
   buildSelectionPanel();
+  refreshModeAvailability();
   refreshMeta();
   refreshStatus();
   $('b-undo').disabled = !undoStack.length;
@@ -8628,15 +9771,13 @@ function refreshStatus() {
   const n = vp.selection.size;
   $('sel-count').textContent = n ? `${n} selected` : 'none';
   $('st-mode').textContent =
-    `${vp.gizmoMode.toUpperCase()} · ${vp.gizmoSpace.toUpperCase()} · ` +
+    `${vp.uniformScale ? 'uniform' : 'per-axis'} · ` +
     `grid ${vp.snap.translate ? vp.snap.translate + 'm' : 'off'} · ` +
-    `angle ${vp.snap.rotate ? vp.snap.rotate + '°' : 'off'}`;
+    `angle ${vp.snap.rotate ? vp.snap.rotate + '°' : 'off'}` +
+    (vp.navPaint ? ` · brush ${vp.navPaint}` : '');
   $('st-sel').textContent = `${vp.objects.length} objects · ${n} selected`;
   $('b-undo').disabled = !undoStack.length;
   $('b-redo').disabled = !redoStack.length;
-  for (const mode of ['combined', 'translate', 'rotate', 'scale']) {
-    $(`m-${mode}`).classList.toggle('on', vp.gizmoMode === mode);
-  }
 
   const b = map ? map.mapBoundsSize : { x: 0, y: 0, z: 0 };
   let extra = '';

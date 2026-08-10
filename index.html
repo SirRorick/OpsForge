@@ -144,6 +144,9 @@ label.sw:has(input:checked){color:var(--text)}
 .arrl[data-a=Y]::before{color:#7FD17F}
 .arrl[data-a=Z]::before{color:#6C9BE0}
 
+/* ---------- mirror tool ---------- */
+.mirrorrow{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+
 /* ---------- bot grid ---------- */
 .navtools{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:8px}
 .navtools .btn{padding:5px 4px;font-size:12px}
@@ -306,6 +309,30 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
   font-family:var(--hud);font-size:16px;letter-spacing:.2em;text-transform:uppercase;color:var(--accent)}
 #stage.dropping #drophint{display:grid}
 
+/* ---------- checkpoints ---------- */
+.cprow{display:grid;grid-template-columns:1fr auto auto;gap:6px;align-items:center;
+  padding:5px 0;border-bottom:1px solid var(--line-soft)}
+.cprow:last-of-type{border-bottom:0}
+.cprow .cpm{min-width:0}
+.cprow .cpn{font-size:11.5px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cprow .cpw{font-family:var(--mono);font-size:9.5px;color:var(--faint)}
+.cprow .btn{padding:3px 7px;font-size:11px}
+.cprow .kill{background:none;border:0;padding:0 2px;cursor:pointer;color:var(--faint);font-size:14px;line-height:1}
+.cprow .kill:hover{color:var(--danger)}
+
+/* ---------- dialog ---------- */
+#veil{position:fixed;inset:0;z-index:200;display:none;place-items:center;
+  background:rgba(6,10,14,.62)}
+#veil.show{display:grid}
+.dlg{width:min(440px,92vw);background:var(--panel);border:1px solid var(--line);
+  border-top:2px solid var(--accent);border-radius:6px;padding:16px 18px 14px;
+  box-shadow:0 18px 50px rgba(0,0,0,.6)}
+.dlg h3{margin:0 0 8px;font-family:var(--hud);font-size:15px;font-weight:600;
+  letter-spacing:.14em;text-transform:uppercase;color:var(--accent)}
+.dlg p{margin:0 0 12px;font-size:12px;line-height:1.55;color:var(--dim)}
+.dlg .field{grid-template-columns:66px 1fr}
+.dlg .acts{display:flex;gap:6px;justify-content:flex-end;margin-top:14px}
+
 /* ---------- toast ---------- */
 #toast{position:fixed;left:50%;bottom:52px;transform:translateX(-50%) translateY(10px);
   background:var(--raise);border:1px solid var(--line);border-left:3px solid var(--accent);
@@ -323,40 +350,26 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
     <div class="brand"><b>Spatial Ops</b><span>Map Editor</span></div>
 
     <div class="grp">
-      <button class="btn" id="b-new">New</button>
-      <button class="btn" id="b-open">Open</button>
-      <button class="btn" id="b-save">Export</button>
+      <button class="btn" id="b-new" title="Start again with an empty arena. Anything unexported is lost, so a checkpoint is taken first.">New</button>
+      <button class="btn" id="b-open" title="Open a map exported from the game. Dropping the file anywhere on the page works too.">Open</button>
+      <button class="btn" id="b-save" title="Write the map out as a file the game can read (Ctrl+S). It has no file extension — that is correct.">Export</button>
     </div>
 
     <div class="grp">
-      <button class="btn" id="m-combined" title="Move, rotate and scale in one gizmo (Q)">All</button>
-      <button class="btn" id="m-translate" title="Move (W)">Move</button>
-      <button class="btn" id="m-rotate" title="Rotate (E)">Rotate</button>
-      <button class="btn" id="m-scale" title="Scale (R)">Scale</button>
-      <button class="btn ghost" id="m-space" title="Toggle world/local axes">World</button>
-    </div>
-
-    <div class="grp">
-      <label class="sw" title="Snap movement to a grid"><input type="checkbox" id="snap-t" checked>Grid</label>
+      <label class="sw" title="Snap movement to a grid, so pieces line up with each other"><input type="checkbox" id="snap-t" checked>Grid</label>
       <select id="snap-t-v" style="width:64px"><option value="0.05">5cm</option><option value="0.1">10cm</option><option value="0.25" selected>25cm</option><option value="0.5">50cm</option><option value="1">1m</option></select>
-      <label class="sw" title="Snap rotation to an angle"><input type="checkbox" id="snap-r" checked>Angle</label>
+      <label class="sw" title="Snap turns to whole steps, so two pieces meant to face the same way do"><input type="checkbox" id="snap-r" checked>Angle</label>
       <select id="snap-r-v" style="width:56px"><option value="5">5&deg;</option><option value="15" selected>15&deg;</option><option value="45">45&deg;</option><option value="90">90&deg;</option></select>
     </div>
 
     <div class="grp">
-      <label class="sw" title="Scale all axes together"><input type="checkbox" id="uniform" checked>Uniform</label>
-      <label class="sw" title="Keep floor pieces resting on the ground"><input type="checkbox" id="floorlock" checked>Floor</label>
+      <label class="sw" title="Scale all axes together, so a piece keeps its proportions"><input type="checkbox" id="uniform" checked>Uniform</label>
       <label class="sw" title="Draw the built-in stand-in shapes instead of the game's own models, to check them against each other"><input type="checkbox" id="placeholders">Stand-ins</label>
     </div>
 
     <div class="grp">
-      <button class="btn ghost" id="b-mirror" title="Copy the selection to the other side of the map">Mirror</button>
-      <select id="mirror-axis" style="width:52px" title="Which way to mirror">
-        <option value="x">X</option><option value="z">Z</option>
-      </select>
-      <select id="mirror-pack" style="width:104px" title="Draw the mirrored copy from another theme">
-        <option value="">Same pack</option>
-      </select>
+      <label class="sw" id="autosave-sw" title="Keep a rolling set of recent snapshots in this browser, so closing the tab does not lose the map. Restore them from the Map tab."><input type="checkbox" id="autosave" checked>Autosave</label>
+      <label class="sw" title="Show first-time hints and the reminders before exporting"><input type="checkbox" id="tips" checked>Tips</label>
     </div>
 
     <div class="grp" style="margin-left:auto">
@@ -369,7 +382,7 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
   <aside id="library">
     <div class="sec">
       <h2>Library <span class="cnt" id="lib-count"></span></h2>
-      <div id="search"><input type="text" id="q" placeholder="Filter objects"></div>
+      <div id="search"><input type="text" id="q" placeholder="Filter objects" title="Search every pack at once by name or type"></div>
     </div>
     <div class="scroll" id="lib-list"></div>
     <div class="sec" style="border-bottom:0;border-top:1px solid var(--line-soft)">
@@ -386,10 +399,9 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
       <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
       <div id="readout"></div>
       <div id="viewbtns">
-        <button class="btn ghost" data-view="top">Top</button>
-        <button class="btn ghost" data-view="front">Front</button>
-        <button class="btn ghost" data-view="side">Side</button>
-        <button class="btn ghost" data-view="persp">3D</button>
+        <button class="btn ghost" data-view="top" title="Look straight down">Top</button>
+        <button class="btn ghost" data-view="front" title="Look along Z">Front</button>
+        <button class="btn ghost" data-view="side" title="Look along X">Side</button>
       </div>
     </div>
     <div id="drophint">Release to place</div>
@@ -412,6 +424,25 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
       </div>
 
       <div class="sec">
+        <h2>Mirror</h2>
+        <div class="pad">
+          <div class="mirrorrow">
+            <select id="mirror-axis" title="Which way to mirror">
+              <option value="x">Across X</option><option value="z">Across Z</option>
+            </select>
+            <select id="mirror-pack" title="Draw the mirrored copy from another theme">
+              <option value="">Same pack</option>
+            </select>
+          </div>
+          <button class="btn ghost" id="b-mirror" style="width:100%;margin-top:6px"
+            title="Copy the selection to the other side of the map">Mirror</button>
+          <p class="hint" style="margin-top:7px">Copies the selection across the middle of the arena,
+            reflected rather than just moved: a piece that has a left and a right comes out the other
+            way round, so the two halves match. Pick another theme to make the far half a different colour.</p>
+        </div>
+      </div>
+
+      <div class="sec">
         <h2>Array <span class="cnt" id="arr-count"></span></h2>
         <div class="pad">
           <div class="arrgrid">
@@ -426,7 +457,7 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
             <input type="number" id="arr-nz" value="1" min="1" max="100" step="1">
             <input type="number" id="arr-dz" value="1" step="0.05">
           </div>
-          <button class="btn ghost" id="b-array" style="width:100%;margin-top:8px">Array</button>
+          <button class="btn ghost" id="b-array" style="width:100%;margin-top:8px" title="Repeat the selection into a grid of copies">Array</button>
           <p class="hint" style="margin-top:7px">Spacing starts at the selection's own size, so copies sit flush.
             Widen it for gaps. Steps follow the object's own axes, so a turned piece arrays along its face.</p>
         </div>
@@ -461,7 +492,7 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
           <div class="navtools">
             <button class="btn ghost" id="nav-add" title="Paint walkable ground">Add</button>
             <button class="btn ghost" id="nav-remove" title="Paint it back out">Remove</button>
-            <button class="btn ghost" id="nav-clear" title="Wipe the whole grid">Clear all</button>
+            <button class="btn ghost" id="nav-clear" title="Wipe the whole grid back to nothing walkable">Clear all</button>
           </div>
           <div class="field"><span>Brush</span>
             <select id="nav-brush">
@@ -472,7 +503,7 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
             </select>
           </div>
           <div class="field"><span>Fill</span>
-            <select id="nav-shape"><option value="keep">Keep from file</option><option value="circle">Circle</option><option value="rect">Rectangle</option></select>
+            <select id="nav-shape" title="Flood the grid with a shape. Keep from file leaves it exactly as it is — which is what you want if you are painting by hand."><option value="keep">Keep from file</option><option value="circle">Circle</option><option value="rect">Rectangle</option></select>
           </div>
           <div class="field" id="nav-r-row"><span>Radius</span><input type="number" id="nav-r" value="5" min="1" max="17" step="0.25"></div>
           <div class="field" id="nav-w-row" style="display:none"><span>Width</span><input type="number" id="nav-w" value="7" min="1" max="34" step="0.25"></div>
@@ -498,11 +529,27 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
       <div class="sec">
         <h2>Map</h2>
         <div class="pad">
-          <div class="field"><span>Name</span><input type="text" id="m-name"></div>
-          <div class="field"><span>Author</span><input type="text" id="m-author"></div>
-          <div class="field"><span>ID</span><input type="text" id="m-guid" readonly></div>
-          <button class="btn ghost" id="b-newguid" style="width:100%;margin-top:2px">New ID</button>
+          <div class="field"><span>Name</span><input type="text" id="m-name"
+            title="Shown in the game's map list, and the first half of the exported file name"></div>
+          <div class="field"><span>Author</span><input type="text" id="m-author"
+            title="Shown beside the map in game. Your name, or whatever you want credited."></div>
+          <div class="field"><span>ID</span><input type="text" id="m-guid" readonly
+            title="The map's unique id. Two maps sharing one will collide in the game's list — take a New ID if you built this map by editing someone else's."></div>
+          <button class="btn ghost" id="b-newguid" style="width:100%;margin-top:2px"
+            title="Give this map a fresh identity, so the game treats it as a new map rather than a new version of the one it came from">New ID</button>
           <p class="hint" style="margin-top:8px">Exports as <code id="fname" style="font-family:var(--mono);color:var(--dim)"></code></p>
+        </div>
+      </div>
+
+      <div class="sec">
+        <h2>Checkpoints <span class="cnt" id="cp-count"></span></h2>
+        <div class="pad">
+          <div id="cp-list"></div>
+          <button class="btn ghost" id="cp-save" style="width:100%;margin-top:6px"
+            title="Take a checkpoint now, without waiting for the timer">Checkpoint now</button>
+          <button class="btn ghost" id="cp-clear" style="width:100%;margin-top:5px;color:var(--danger)"
+            title="Delete every checkpoint held in this browser">Clear all</button>
+          <p class="hint" style="margin-top:8px" id="cp-note"></p>
         </div>
       </div>
 
@@ -510,16 +557,21 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
         <h2>Shortcuts</h2>
         <div class="pad">
           <p class="hint">
-            <kbd>W</kbd><kbd>E</kbd><kbd>R</kbd> move / rotate / scale &middot;
             <kbd>G</kbd> group &middot; <kbd>Shift</kbd>+<kbd>G</kbd> ungroup &middot;
             <kbd>Ctrl</kbd>+<kbd>D</kbd> duplicate &middot;
             <kbd>Ctrl</kbd>+<kbd>C</kbd>/<kbd>V</kbd> copy / paste under the cursor &middot;
             <kbd>F</kbd> frame &middot;
-            <kbd>End</kbd> drop to floor &middot; <kbd>Del</kbd> delete &middot;
+            <kbd>End</kbd> to floor &middot;
+            <kbd>Shift</kbd>+<kbd>End</kbd> drop onto what is underneath &middot;
+            <kbd>Del</kbd> delete &middot;
             <kbd>Ctrl</kbd>+<kbd>A</kbd> select all<br><br>
             Left drag selects, middle drag orbits, right drag pans,
             <kbd>Alt</kbd>+left orbits. <kbd>Shift</kbd> adds to the selection,
-            <kbd>Ctrl</kbd> picks a single object out of a group.
+            <kbd>Ctrl</kbd> picks a single object out of a group.<br><br>
+            One gizmo does all three jobs: arrows move, the three coloured
+            circles turn about X, Y and Z, the cubes scale, and the disc in the
+            middle slides the selection across the view. Scaling holds the far
+            side still, so a piece grows the way you pull it.
           </p>
         </div>
       </div>
@@ -536,6 +588,7 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
 </div>
 
 <div id="marquee"></div>
+<div id="veil"></div>
 <div id="toast"></div>
 <input type="file" id="filepick" style="display:none">
 

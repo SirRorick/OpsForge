@@ -1,18 +1,16 @@
 // ---------------------------------------------------------------------------
 // Combined move / rotate / scale gizmo
 // ---------------------------------------------------------------------------
-// One gizmo that does all three, the way Blender's does: an arrow per axis to
-// move along it, an arc per axis to turn about it, a handle per axis to scale
-// along it, an outer ring that turns about the view axis, and a centre disc
-// that slides on the plane facing you. See reference/gizmo.jpeg.
+// The only gizmo the editor has, and it does all three: an arrow per axis to
+// move along it, a circle per axis to turn about it, a handle per axis to scale
+// along it, and a centre disc that slides the whole thing across the floor.
+// See reference/gizmo.jpeg.
 //
-// It is not TransformControls with extra parts. TransformControls decides which
-// handle you grabbed by raycasting its own meshes inside its own pointer
-// handler, so a second set of handles cannot be pushed into it — the axis it
-// picks always comes from its own geometry. This does its own hit testing and
-// its own drag maths instead, and exposes the same two events
-// (`dragging-changed`, `objectChange`) so `scene.js` can treat the two
-// interchangeably.
+// Rotation is always about X, Y or Z, and the three circles are coloured to say
+// which is which. There was an outer ring that turned about whatever axis the
+// camera happened to be looking down; it is gone, because an angle that depends
+// on where you are standing is not one you can reason about, and a map built
+// out of pieces at 15 degree steps needs the axis to be the same one every time.
 //
 // The drag maths is the ordinary stuff and worth stating once:
 //   move    the closest point between the pointer ray and the axis line, minus
@@ -22,10 +20,16 @@
 //   scale   the same projection as move, as a ratio of its distance at the
 //           start rather than a difference
 //
-// Everything downstream — snapping, the floor lock, uniform scaling, the scale
-// anchor that holds the far face still — belongs to `scene.js` and is reached
-// through the same `objectChange` event TransformControls raises, so none of it
-// is duplicated here.
+// Move and rotate work on the world axes. Scale cannot: `object.scale` stretches
+// the object's own x, y and z whatever direction the handle points, so a piece
+// turned 30 degrees dragged by a world-aligned handle would grow sideways. The
+// scale handles therefore sit in a sub-group carrying the object's own rotation
+// and are dragged along the object's own axes — which is also what makes the
+// far side hold still in `scene.js`.
+//
+// Everything downstream — snapping, uniform scaling, the scale anchor that
+// holds the far face still — belongs to `scene.js` and is reached through the
+// `objectChange` event raised here, so none of it is duplicated in this file.
 // ---------------------------------------------------------------------------
 
 import * as THREE from 'three';
@@ -43,14 +47,12 @@ const UNIT = { x: new THREE.Vector3(1, 0, 0), y: new THREE.Vector3(0, 1, 0), z: 
 //
 // **No two grabbable parts may share a radius.** The first cut had the
 // translate handles grabbable along their whole shaft, which put them on top of
-// the rotation arcs at the arcs' own radius — reaching for a turn got you a
-// slide instead. Each ring of handles now has the band to itself, and the
-// arrows sit entirely outside the outer ring, which is also how the reference
-// picture has it.
-const R_CENTRE = 0.17;     // centre disc, slides on the view plane
+// the rotation circles at the circles' own radius — reaching for a turn got you
+// a slide instead. Each ring of handles has the band to itself, and the arrows
+// sit entirely outside the circles.
+const R_CENTRE = 0.17;     // centre disc, slides on the ground plane
 const R_SCALE = 0.42;      // scale cubes
-const R_ARC = 0.66;        // rotation arcs
-const R_RING = 0.9;        // outer view-axis ring
+const R_ARC = 0.78;        // the three rotation circles
 const R_CONE = 1;          // where the arrow cone starts — outside everything
 const R_ARROW = 1.2;       // arrow tip
 const ARC_SEGMENTS = 64;
@@ -83,7 +85,6 @@ export class ComboGizmo extends THREE.Object3D {
     this.axis = null;          // 'x' | 'y' | 'z' | 'view'
     this.activeMode = null;    // 'translate' | 'rotate' | 'scale'
     this.hovered = null;
-    this.space = 'world';
     this.size = 1;
     this.translationSnap = null;
     this.rotationSnap = null;
@@ -107,6 +108,10 @@ export class ComboGizmo extends THREE.Object3D {
   _build() {
     this._root = new THREE.Group();
     this.add(this._root);
+    // Everything in here is world-aligned except the scale handles, which have
+    // to follow the object or they would promise a stretch they cannot deliver.
+    this._scaleRoot = new THREE.Group();
+    this._root.add(this._scaleRoot);
 
     for (const axis of AXES) {
       const colour = AXIS_COLOUR[axis];
@@ -136,7 +141,8 @@ export class ComboGizmo extends THREE.Object3D {
       grab.quaternion.setFromUnitVectors(UNIT.y, dir);
       this._registerPicker(grab, axis, 'translate');
 
-      // rotate: an arc in the plane whose normal is this axis
+      // rotate: a full circle in the plane whose normal is this axis, in the
+      // axis's own colour — the whole of how you tell one turn from another.
       const arc = new THREE.Line(this._arcGeometry(), lineMaterial(colour, 3));
       arc.userData.arcAxis = axis;
       this._orientArc(arc, axis);
@@ -165,15 +171,9 @@ export class ComboGizmo extends THREE.Object3D {
       this._registerPicker(cubeGrab, axis, 'scale');
     }
 
-    // Outer ring: turn about the axis you are looking down. Rebuilt to face the
-    // camera every frame, so it is a plain circle here.
-    this._viewRing = new THREE.Line(this._circleGeometry(R_RING), lineMaterial(VIEW_COLOUR, 2));
-    this._register(this._viewRing, 'view', 'rotate');
-    const ringGrab = new THREE.Mesh(new THREE.TorusGeometry(R_RING, 0.06, 4, 40), pickerMaterial());
-    this._viewRingGrab = ringGrab;
-    this._registerPicker(ringGrab, 'view', 'rotate');
-
-    // Centre: slide on the plane facing you.
+    // Centre: slide across the floor. It faces the camera so it is always a
+    // disc you can hit, but what it drags on is the ground plane — see
+    // `_pointerDown`.
     this._centre = new THREE.Line(this._circleGeometry(R_CENTRE), lineMaterial(VIEW_COLOUR, 1));
     this._register(this._centre, 'view', 'translate');
     const centreGrab = new THREE.Mesh(new THREE.SphereGeometry(R_CENTRE, 10, 8), pickerMaterial());
@@ -184,19 +184,24 @@ export class ComboGizmo extends THREE.Object3D {
     this._root.add(dot);
   }
 
+  /** Which frame a handle is drawn in: the object's for scale, the world's otherwise. */
+  _frameFor(mode) {
+    return mode === 'scale' ? this._scaleRoot : this._root;
+  }
+
   _register(obj, axis, mode) {
     obj.userData.axis = axis;
     obj.userData.mode = mode;
     obj.renderOrder = 1000;
     this._parts.push(obj);
-    this._root.add(obj);
+    this._frameFor(mode).add(obj);
   }
 
   _registerPicker(obj, axis, mode) {
     obj.userData.axis = axis;
     obj.userData.mode = mode;
     this._pickers.push(obj);
-    this._root.add(obj);
+    this._frameFor(mode).add(obj);
   }
 
   _circleGeometry(radius, segments = ARC_SEGMENTS) {
@@ -241,7 +246,7 @@ export class ComboGizmo extends THREE.Object3D {
 
   /**
    * Keep the gizmo the same size on screen and pointing the right way, and fade
-   * the far half of each ring.
+   * the far half of each circle.
    *
    * Called every frame from the render loop rather than on demand: it depends
    * on the camera, and the camera moves without anything else happening.
@@ -251,12 +256,9 @@ export class ComboGizmo extends THREE.Object3D {
     this.object.updateMatrixWorld();
     const pos = new THREE.Vector3().setFromMatrixPosition(this.object.matrixWorld);
     this.position.copy(pos);
-
-    if (this.space === 'local' && this.object.quaternion) {
-      this.quaternion.copy(this.object.getWorldQuaternion(new THREE.Quaternion()));
-    } else {
-      this.quaternion.identity();
-    }
+    // Arrows and circles are world axes, always, so the red circle means the
+    // same turn wherever the camera is and whatever the piece is doing.
+    this.quaternion.identity();
 
     // Constant screen size. For a perspective camera that is distance times the
     // vertical field of view; an orthographic one has no distance term.
@@ -267,12 +269,11 @@ export class ComboGizmo extends THREE.Object3D {
     const s = (factor * this.size) / 7;
     this.scale.setScalar(s);
 
-    // The two view-facing parts look at the camera.
+    // Scale handles ride the object; the centre disc faces the camera.
+    this._scaleRoot.quaternion.copy(this.object.getWorldQuaternion(new THREE.Quaternion()));
     const camQuat = this.camera.getWorldQuaternion(new THREE.Quaternion());
-    const local = this.quaternion.clone().invert().multiply(camQuat);
-    for (const o of [this._viewRing, this._viewRingGrab, this._centre, this._centreGrab]) {
-      o.quaternion.copy(local);
-    }
+    this._centre.quaternion.copy(camQuat);
+    this._centreGrab.quaternion.copy(camQuat);
 
     this._updateVisibility();
     this._fadeBackHalves(pos);
@@ -288,12 +289,12 @@ export class ComboGizmo extends THREE.Object3D {
   }
 
   /**
-   * Dim the half of each rotation ring that is behind the object.
+   * Dim the half of each rotation circle that is behind the object.
    *
-   * A full bright circle for each of three axes plus the outer ring is four
-   * overlapping circles and reads as a ball of wire. Blender's answer is to
-   * draw only the near half; this fades the far half instead, which keeps the
-   * ring readable as a whole while making clear which part you can reach.
+   * Three full bright circles overlap and read as a ball of wire. Blender's
+   * answer is to draw only the near half; this fades the far half instead,
+   * which keeps each circle readable as a whole while making clear which part
+   * of it you can reach.
    */
   _fadeBackHalves(pos) {
     const toCam = this.camera.position.clone().sub(pos).normalize();
@@ -390,7 +391,7 @@ export class ComboGizmo extends THREE.Object3D {
       quaternion: this.object.quaternion.clone(),
       scale: this.object.scale.clone(),
       centre: pos,
-      axisWorld: this._axisWorld(hit.axis),
+      axisWorld: this._axisWorld(hit.axis, hit.mode),
     };
     this._ray.setFromCamera(this._start.pointer, this.camera);
 
@@ -399,8 +400,12 @@ export class ComboGizmo extends THREE.Object3D {
       this._start.from = this._planePoint(this._start.plane, pos);
       this._start.angle = 0;
     } else if (hit.axis === 'view') {
-      this._start.plane = new THREE.Plane().setFromNormalAndCoplanarPoint(
-        this.camera.getWorldDirection(new THREE.Vector3()).negate(), pos);
+      // The centre disc slides on the ground, not on the plane facing the
+      // camera. A map is a floor plan: sliding a crate about is a thing you do
+      // in X and Z, and a view-plane drag lifted it into the air by however
+      // much the camera happened to be tilted — which then had to be undone.
+      // Height is what the green arrow is for.
+      this._start.plane = new THREE.Plane().setFromNormalAndCoplanarPoint(UNIT.y, pos);
       this._start.from = this._planePoint(this._start.plane, pos);
     } else {
       this._start.offset = this._axisPoint(pos, this._start.axisWorld);
@@ -420,11 +425,20 @@ export class ComboGizmo extends THREE.Object3D {
     this.dispatchEvent({ type: 'dragging-changed', value: false });
   }
 
-  /** The dragged axis in world space, honouring local vs world orientation. */
-  _axisWorld(axis) {
+  /**
+   * The dragged axis in world space.
+   *
+   * Move and rotate use the world axis, matching the handle you grabbed. Scale
+   * uses the object's own, because that is the only thing `object.scale` can
+   * stretch — and it is the axis the cube was drawn along, since the scale
+   * handles live in `_scaleRoot`.
+   */
+  _axisWorld(axis, mode) {
     if (axis === 'view') return this.camera.getWorldDirection(new THREE.Vector3()).negate();
     const v = UNIT[axis].clone();
-    if (this.space === 'local' && this.object) v.applyQuaternion(this.object.getWorldQuaternion(new THREE.Quaternion()));
+    if (mode === 'scale' && this.object) {
+      v.applyQuaternion(this.object.getWorldQuaternion(new THREE.Quaternion()));
+    }
     return v.normalize();
   }
 
@@ -461,6 +475,14 @@ export class ComboGizmo extends THREE.Object3D {
       if (this.axis === 'view') {
         const now = this._planePoint(s.plane, s.centre);
         next.add(now.sub(s.from));
+        // Both points are in the same horizontal plane, so the height cannot
+        // have moved — but say so rather than trusting the arithmetic, and snap
+        // the two axes that did, the same way the arrows do.
+        next.y = s.position.y;
+        if (this.translationSnap) {
+          next.x = Math.round(next.x / this.translationSnap) * this.translationSnap;
+          next.z = Math.round(next.z / this.translationSnap) * this.translationSnap;
+        }
       } else {
         let delta = this._axisPoint(s.centre, s.axisWorld) - s.offset;
         if (this.translationSnap) delta = Math.round(delta / this.translationSnap) * this.translationSnap;
@@ -491,8 +513,16 @@ export class ComboGizmo extends THREE.Object3D {
       ratio = Math.max(0.01, ratio);
       if (this.scaleSnap) ratio = Math.max(0.01, Math.round(ratio / this.scaleSnap) * this.scaleSnap);
       const next = s.scale.clone();
-      if (this.uniform) next.multiplyScalar(ratio);
-      else next[this.axis] = Math.max(0.001, s.scale[this.axis] * ratio);
+      if (this.uniform) {
+        next.multiplyScalar(ratio);
+      } else {
+        // A mirrored piece carries a negative scale on one axis, which is the
+        // whole of how it is flipped. Resize its magnitude and leave the sign
+        // where it was, or dragging a handle would quietly unflip it.
+        const was = s.scale[this.axis];
+        const sign = was < 0 ? -1 : 1;
+        next[this.axis] = sign * Math.max(0.001, Math.abs(was) * ratio);
+      }
       this.object.scale.copy(next);
     }
 

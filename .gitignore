@@ -10,8 +10,7 @@ reference/GameAssets/
 
 # reference/ is a private working directory in its entirety: the AssetRipper
 # extraction, the packaged builds, design references, notes. None of it is
-# published. The evidence the test suite needs travels in test/fixtures/maps/
-# instead, so a fresh clone still verifies the format byte for byte.
+# published.
 reference/
 
 # assets/Icons is committed — the library thumbnails. assets/Prefabs is not:
@@ -25,7 +24,9 @@ assets/Prefabs/*
 # committed — that single bundled file is the build — but this is a copy of it
 # plus the icons, zipped up for a GitHub release and rebuilt on demand.
 dist/spatial-ops-map-editor/
+
+# Local working directories, kept on the machine.
 test/
 
-# Development notes for Claude Code — kept locally, not published.
+# Local development notes — kept on the machine, not published.
 CLAUDE.md

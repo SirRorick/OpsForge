@@ -36,11 +36,12 @@
 // (`Off`, `BlueTeam`, `Individual` …), and whether a flags field emptied to
 // nothing writes `"None"` or `""`. Both are noted where they occur.
 //
-// This module must stay free of three.js imports so the tests can run headless,
-// and free of `packs.js` too — it is built before it (see ORDER in build.mjs),
-// which is why the weapon ids below are spelled out rather than imported. They
-// are the same ids `specificWeapon` uses, in the rules screen's order rather
-// than the library's; `test/rules.test.mjs` holds the two lists to each other.
+// This module must stay free of three.js imports so it can run outside a
+// browser, and free of `packs.js` too — it is built before it (see ORDER in
+// build.mjs), which is why the weapon ids below are spelled out rather than
+// imported. They are the same ids `specificWeapon` uses, in the rules screen's
+// order rather than the library's, so the two lists have to be kept in step by
+// hand.
 // ---------------------------------------------------------------------------
 
 export const INT = 'int';
@@ -502,8 +503,12 @@ export function formatDuration(total) {
 // ---------------------------------------------------------------------------
 
 /**
- * The rule set list a brand new map starts with: five modes, all default,
- * matching what the game writes from an untouched rules screen exactly.
+ * The five modes, all default, exactly as the game writes them from an
+ * untouched rules screen.
+ *
+ * This is evidence about the format, not the editor's starting point: a map
+ * made here starts with no rule sets and gains one per mode as its objectives
+ * are placed. See `newMap` in format.js.
  */
 export function defaultRuleSets() {
   return MODES.map((m) => emptyRuleSet(m.type, m.name));
@@ -667,22 +672,25 @@ export function overrideCount(ruleSet) {
 // the set out from under the user because they moved a flag would be worse than
 // saying so.
 
+// The labels name the teams by colour, matching the library. `Team1` and
+// `Team2` are what the file says and never change; blue and orange are what the
+// game shows and what anyone building a map is actually looking at.
 export const MODE_REQUIREMENTS = {
   FreeForAll: [],
   Survival: [{ label: 'an enemy spawner', types: ['EnemySpawnPoint'] }],
   TeamDeathMatch: [
-    { label: 'a team 1 spawn zone', types: ['PlayerSpawnZoneTeam1'] },
-    { label: 'a team 2 spawn zone', types: ['PlayerSpawnZoneTeam2'] },
+    { label: 'a blue team spawn zone', types: ['PlayerSpawnZoneTeam1'] },
+    { label: 'an orange team spawn zone', types: ['PlayerSpawnZoneTeam2'] },
   ],
   CaptureTheFlag: [
-    { label: 'a team 1 spawn zone', types: ['PlayerSpawnZoneTeam1'] },
-    { label: 'a team 2 spawn zone', types: ['PlayerSpawnZoneTeam2'] },
-    { label: 'a team 1 flag', types: ['CaptureFlagSpawnTeam1'] },
-    { label: 'a team 2 flag', types: ['CaptureFlagSpawnTeam2'] },
+    { label: 'a blue team spawn zone', types: ['PlayerSpawnZoneTeam1'] },
+    { label: 'an orange team spawn zone', types: ['PlayerSpawnZoneTeam2'] },
+    { label: 'a blue team flag', types: ['CaptureFlagSpawnTeam1'] },
+    { label: 'an orange team flag', types: ['CaptureFlagSpawnTeam2'] },
   ],
   Domination: [
-    { label: 'a team 1 spawn zone', types: ['PlayerSpawnZoneTeam1'] },
-    { label: 'a team 2 spawn zone', types: ['PlayerSpawnZoneTeam2'] },
+    { label: 'a blue team spawn zone', types: ['PlayerSpawnZoneTeam1'] },
+    { label: 'an orange team spawn zone', types: ['PlayerSpawnZoneTeam2'] },
     { label: 'a capture zone', types: ['DominationZoneA', 'DominationZoneB', 'DominationZoneC'] },
   ],
 };

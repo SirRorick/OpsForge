@@ -251,11 +251,11 @@ export const ENEMIES = [
   { id: 'Drone', label: 'Drone', icon: 'filled_Icon_drone_silhouette', model: 'DroneBotSpawner' },
   { id: 'Helicopter', label: 'Helicopter', icon: 'Icon_Campaign_Chopper', model: 'ChopperBotSpawner' },
   { id: 'RPG', label: 'RPG', icon: 'filled_Icon_rpg_silhouette', model: 'RPGBotSpawner' },
-  { id: 'CorruptedSMG', label: 'SMG ✦', icon: 'filled_Icon_smg_corrupted_silhouette', model: 'SMGCorruptedBotSpawner' },
-  { id: 'CorruptedShotgun', label: 'Shotgun ✦', icon: 'filled_Icon_shotgun_corrupted_silhouette', model: 'ShotgunCorruptedBotSpawner' },
-  { id: 'CorruptedSniper', label: 'Sniper ✦', icon: 'filled_Icon_sniper_corrupted_silhouette', model: 'SniperCorruptedBotSpawner' },
-  { id: 'CorruptedHandgun', label: 'Handgun ✦', icon: 'filled_Icon_handgun_corrupted_silhouette', model: 'HandgunCorruptedBotSpawner' },
-  { id: 'CorruptedRPG', label: 'RPG ✦', icon: 'filled_Icon_rpg_corrupted_silhouette', model: 'RPGCorruptedBotSpawner' },
+  { id: 'CorruptedSMG', label: 'SMG Corrupted', icon: 'filled_Icon_smg_corrupted_silhouette', model: 'SMGCorruptedBotSpawner' },
+  { id: 'CorruptedShotgun', label: 'Shotgun Corrupted', icon: 'filled_Icon_shotgun_corrupted_silhouette', model: 'ShotgunCorruptedBotSpawner' },
+  { id: 'CorruptedSniper', label: 'Sniper Corrupted', icon: 'filled_Icon_sniper_corrupted_silhouette', model: 'SniperCorruptedBotSpawner' },
+  { id: 'CorruptedHandgun', label: 'Handgun Corrupted', icon: 'filled_Icon_handgun_corrupted_silhouette', model: 'HandgunCorruptedBotSpawner' },
+  { id: 'CorruptedRPG', label: 'RPG Corrupted', icon: 'filled_Icon_rpg_corrupted_silhouette', model: 'RPGCorruptedBotSpawner' },
 ];
 
 export const ENEMY_TYPES = ENEMIES.map((e) => e.id);
@@ -1031,12 +1031,12 @@ export const BUILTIN_PACKS = [
       rotationAxes: "xyz", floor: false, color: "#E0574B", defaultScale: [1, 1, 1],
       opacity: 0.25, model: "DamageBox", icon: "Icon_DamageBox" },
     { type: "DamageBoxTeam1", objectType: "DamageBox", props: { style: "Blue" },
-      label: "Damage Box Team 1", category: "Hazards", shape: "damageBox", size: [1, 1, 1],
+      label: "Damage Box Blue Team", category: "Hazards", shape: "damageBox", size: [1, 1, 1],
       pivot: "center", rotationAxes: "xyz", floor: false, color: "#4A90D9",
       defaultScale: [1, 1, 1], opacity: 0.25, model: "DamageBoxTeam1",
       icon: "Icon_DamageBoxTeam1" },
     { type: "DamageBoxTeam2", objectType: "DamageBox", props: { style: "Orange" },
-      label: "Damage Box Team 2", category: "Hazards", shape: "damageBox", size: [1, 1, 1],
+      label: "Damage Box Orange Team", category: "Hazards", shape: "damageBox", size: [1, 1, 1],
       pivot: "center", rotationAxes: "xyz", floor: false, color: "#E08A3C",
       defaultScale: [1, 1, 1], opacity: 0.25, model: "DamageBoxTeam2",
       icon: "Icon_DamageBoxTeam2" },
@@ -1057,11 +1057,11 @@ export const BUILTIN_PACKS = [
   {
     id: "objectives", name: "Mode Objectives", group: "objectives", schema: PACK_SCHEMA_VERSION,
     objects: [
-    { type: "PlayerSpawnZoneTeam1", label: "Player Spawn Zone Team 1", category: "Spawn Zones",
+    { type: "PlayerSpawnZoneTeam1", label: "Player Spawn Zone Blue Team", category: "Spawn Zones",
       shape: "spawnZone", size: [1.202, 2.363, 1.392], pivot: "base", anchor: [0.5, 0.432], rotationAxes: "y", floor: true,
       color: "#4A90D9", defaultScale: [1, 1, 1],
       model: "PlayerSpawnZoneTeam1", texture: "TPgradientVerticalConcave00 1.png", tintModel: true, fixedParts: "Radio|SpawnPointMachine", area: SPAWN_ZONE_AREA, icon: "Icon_SpawnZoneTeam1" },
-    { type: "PlayerSpawnZoneTeam2", label: "Player Spawn Zone Team 2", category: "Spawn Zones",
+    { type: "PlayerSpawnZoneTeam2", label: "Player Spawn Zone Orange Team", category: "Spawn Zones",
       shape: "spawnZone", size: [1.202, 2.399, 1.392], pivot: "base", anchor: [0.5, 0.432], rotationAxes: "y", floor: true,
       color: "#E08A3C", defaultScale: [1, 1, 1],
       model: "PlayerSpawnZoneTeam2", texture: "TPgradientVerticalConcave00 1.png", tintModel: true, fixedParts: "Radio|SpawnPointMachine", area: SPAWN_ZONE_AREA, icon: "Icon_SpawnZoneTeam2" },
@@ -1086,14 +1086,25 @@ export const BUILTIN_PACKS = [
       floor: true, color: "#5AD6A0", defaultScale: [1, 1, 1], model: "DominationZoneC",
       texture: "Circle Outline 1024px - Stroke 10px.png", tintModel: true, cutout: true,
       badge: "C", icon: "Icon_FlagC" },
-    { type: "CaptureFlagSpawnTeam1", label: "Capture Flag Spawn Team 1",
-      category: "Capture The Flag", shape: "flagSpawn", size: [0.6, 1.8, 0.6], pivot: "base",
-      rotationAxes: "y", floor: true, color: "#4A90D9", defaultScale: [1, 1, 1],
-      uncertain: true, model: "CaptureFlagSpawnPointTeam1", icon: "Icon_OrangeTeamFlag" },
-    { type: "CaptureFlagSpawnTeam2", label: "Capture Flag Spawn Team 2",
-      category: "Capture The Flag", shape: "flagSpawn", size: [0.6, 1.8, 0.6], pivot: "base",
-      rotationAxes: "y", floor: true, color: "#E08A3C", defaultScale: [1, 1, 1],
-      uncertain: true, model: "CaptureFlagSpawnPointTeam2", icon: "Icon_PurpleTeamFlag" },
+    // The two flag prefabs carry no meshes — the flag is built at runtime — so
+    // the placeholder is what the editor draws whether or not the asset dump is
+    // present. Its size is off the prefab's colliders, outline box and bone
+    // chain rather than off a mesh: a 2.15 m pole 0.2 m across, with the cloth
+    // hanging at y = 1.793 and reaching 0.537 m from it. `anchor` puts the pole
+    // on the object's origin, where the game has it, instead of in the middle
+    // of a footprint the cloth stretches to one side.
+    //
+    // Team 1 is blue and team 2 orange throughout the catalog — the spawn zone
+    // icons and the damage box styles both say so — and these two had each
+    // other's icons.
+    { type: "CaptureFlagSpawnTeam1", label: "Capture Flag Blue Team",
+      category: "Capture The Flag", shape: "flagSpawn", size: [0.637, 2.15, 0.2], pivot: "base",
+      anchor: [0.157, 0.5], rotationAxes: "y", floor: true, color: "#4A90D9",
+      defaultScale: [1, 1, 1], model: "CaptureFlagSpawnPointTeam1", icon: "Icon_PurpleTeamFlag" },
+    { type: "CaptureFlagSpawnTeam2", label: "Capture Flag Orange Team",
+      category: "Capture The Flag", shape: "flagSpawn", size: [0.637, 2.15, 0.2], pivot: "base",
+      anchor: [0.157, 0.5], rotationAxes: "y", floor: true, color: "#E08A3C",
+      defaultScale: [1, 1, 1], model: "CaptureFlagSpawnPointTeam2", icon: "Icon_OrangeTeamFlag" },
     ],
   },
 ];
