@@ -1608,6 +1608,12 @@ export class Viewport extends EventTarget {
       if (!mods.shift && !mods.ctrl) this.setSelection([]);
       return;
     }
+    // A locked object is not a target. `setSelection` would drop it anyway, so
+    // the click would have come out as "select nothing" and taken the rest of
+    // the selection with it — a lock that clears your work is not much of a
+    // lock. Clicking one now does nothing at all, and the right-click menu
+    // still reaches it, which is what makes locking reversible.
+    if (hit.userData.locked) return;
     const picked = this.expandGroup(hit, mods.ctrl);
     if (mods.shift) {
       const next = new Set(this.selection);
@@ -1628,6 +1634,11 @@ export class Viewport extends EventTarget {
     const corner = new THREE.Vector3();
     const inside = [];
     for (const m of this.objects) {
+      // Dragged over rather than clicked, but a lock is a lock: the box does
+      // not see it. Filtering these out here rather than leaving it to
+      // `setSelection` also keeps a locked piece from dragging its unlocked
+      // group-mates in through `expandGroup` below.
+      if (m.userData.locked) continue;
       m.updateWorldMatrix(true, false);
       const bb = new THREE.Box3().setFromObject(m);
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, visible = false;
@@ -1648,7 +1659,9 @@ export class Viewport extends EventTarget {
     }
 
     const expanded = new Set();
-    for (const m of inside) for (const g of this.expandGroup(m, mods.ctrl)) expanded.add(g);
+    for (const m of inside) {
+      for (const g of this.expandGroup(m, mods.ctrl)) if (!g.userData.locked) expanded.add(g);
+    }
 
     if (mods.shift) {
       const next = new Set(this.selection);

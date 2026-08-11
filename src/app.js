@@ -2003,6 +2003,7 @@ function showContextMenu(x, y, meshes) {
   el.appendChild(sep);
 
   item('Select', '', () => vp.setSelection(meshes), locked);
+  item('Replace…', '', () => openReplace(meshes), locked);
   item('Duplicate', 'Ctrl D', () => { vp.setSelection(meshes); duplicate(); }, locked);
   item('Copy', 'Ctrl C', () => { vp.setSelection(meshes); copySelection(); }, locked);
   item('Delete', 'Del', () => { vp.setSelection(meshes); deleteSelection(); }, locked);
@@ -2018,6 +2019,120 @@ function showContextMenu(x, y, meshes) {
 function hideContextMenu() {
   contextMenuEl?.remove();
   contextMenuEl = null;
+}
+
+// -- replace ----------------------------------------------------------------
+// Swapping one kind of object for another where it already stands. Rebuilding a
+// wall out of a different theme's pieces is otherwise: read six numbers off the
+// old one, delete it, place the new one, type the six numbers back — per piece.
+//
+// The panel floats rather than sitting behind the usual veil, because the
+// gesture it is waiting for starts in the library, and a modal backdrop would
+// swallow it. Nothing else is blocked while it is up; it goes on Escape, on
+// Cancel, or on a successful drop.
+
+let replaceEl = null;
+
+function openReplace(meshes) {
+  closeReplace();
+  const targets = meshes.filter((m) => !m.userData.locked);
+  if (!targets.length) return;
+  const many = targets.length > 1;
+
+  const el = document.createElement('div');
+  el.id = 'replace';
+
+  const h = document.createElement('h3');
+  h.textContent = 'Replace';
+  const p = document.createElement('p');
+  p.textContent = many
+    ? `Drag an object out of the library onto the panel below. It takes the place of all `
+      + `${targets.length} selected objects, each keeping its own position, rotation and scale.`
+    : `Drag an object out of the library onto the panel below. It takes the place of `
+      + `${targets[0].userData.def.label}, keeping its position, rotation and scale.`;
+
+  const zone = document.createElement('div');
+  zone.className = 'dropzone';
+  zone.textContent = 'Drag asset here';
+  // Every one of these stops propagating: the panel sits over the viewport, and
+  // the stage's own drop handler would otherwise *also* fire and place a second
+  // object where the pointer happened to be.
+  zone.addEventListener('dragenter', (e) => {
+    e.preventDefault(); e.stopPropagation(); zone.classList.add('over');
+  });
+  zone.addEventListener('dragover', (e) => {
+    e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'copy';
+  });
+  zone.addEventListener('dragleave', (e) => { e.stopPropagation(); zone.classList.remove('over'); });
+  zone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    zone.classList.remove('over');
+    const key = e.dataTransfer.getData('text/spatial-ops-key');
+    const def = key && getByKey(key);
+    if (!def) return toast('Drag an object from the library, not a file.', true);
+    closeReplace();
+    replaceWith(def, targets);
+  });
+
+  const acts = document.createElement('div');
+  acts.className = 'acts';
+  const cancel = document.createElement('button');
+  cancel.className = 'btn ghost';
+  cancel.textContent = 'Cancel';
+  cancel.onclick = closeReplace;
+  acts.appendChild(cancel);
+
+  el.append(h, p, zone, acts);
+  document.body.appendChild(el);
+  replaceEl = el;
+}
+
+function closeReplace() {
+  replaceEl?.remove();
+  replaceEl = null;
+}
+
+/**
+ * Put `def` where each of `targets` stands, and take the old ones away.
+ *
+ * Position, rotation and scale are copied across exactly as they are, which is
+ * what was asked for and is worth being clear about: scale is a multiplier, not
+ * a size, so a piece whose mesh is a different shape comes out a different size
+ * at the same numbers. And a `center`-pivot object standing where a `base`-pivot
+ * one did sits half in the floor until it is dropped. Both are visible the
+ * moment it lands, and both are one undo away.
+ *
+ * Group membership carries over — replacing one piece of a group leaves it in
+ * that group — and the new objects come out selected, so the swap can be nudged
+ * straight away.
+ */
+function replaceWith(def, targets) {
+  const live = targets.filter((m) => vp.objects.includes(m));
+  if (!live.length) return toast('Those objects are no longer on the map.', true);
+
+  const made = [];
+  for (const m of live) {
+    m.updateWorldMatrix(true, false);
+    const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+    m.matrixWorld.decompose(p, q, s);
+    const next = vp.addObject({
+      $type: def.objectType,
+      type: def.type,
+      props: def.props ? { ...def.props } : undefined,
+      position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 },
+      dirty: true,
+    });
+    next.position.copy(p);
+    next.quaternion.copy(q);
+    next.scale.copy(s);
+    next.userData.group = m.userData.group;
+    made.push(next);
+  }
+  vp.removeObjects(live);
+  vp.setSelection(made);
+  commit();
+  toast(`Replaced ${live.length} object${live.length === 1 ? '' : 's'} with ${def.label}.`);
 }
 
 /** The padlock beside a row — and the only way back for a locked object. */
@@ -2045,6 +2160,11 @@ function wireKeyboard() {
     const typing = /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement?.tagName || '');
     if (typing) return;
     const mod = e.ctrlKey || e.metaKey;
+
+    // The replace panel is waiting for a drag, so Escape belongs to it before
+    // it belongs to the selection — otherwise dismissing the panel would clear
+    // the very objects it was about to swap.
+    if (replaceEl && e.key === 'Escape') { e.preventDefault(); closeReplace(); return; }
 
     // While something is riding the cursor, the only thing to say is "not there".
     if (vp.placing) {
