@@ -329,7 +329,7 @@ const SPAWN_ZONE_AREA = {
 export const BUILTIN_PACKS = [
   {
     id: "default", name: "Default", group: "virtual", schema: PACK_SCHEMA_VERSION,
-    color: "#8B99A6",
+    color: "#6E7A48",
     objects: [
     { type: "BarrierCorner", label: "Barrier Corner", category: "Objects",
       shape: "barrierCorner", size: [1.14, 2, 1.143], pivot: "base", anchor: [0.888, 0.888],
@@ -580,7 +580,7 @@ export const BUILTIN_PACKS = [
   },
   {
     id: "camo", name: "Camo", group: "virtual", schema: PACK_SCHEMA_VERSION,
-    color: "#6E7A48",
+    color: "#8B99A6",
     objects: [
     { type: "CamoBarrierCorner", label: "Barrier Corner", category: "Objects",
       shape: "barrierCorner", size: [1.107, 2.002, 1.107], pivot: "base",
