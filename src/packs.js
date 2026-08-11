@@ -882,7 +882,7 @@ export const BUILTIN_PACKS = [
   },
   {
     id: "hatchetcorp", name: "Hatchet Corp", group: "virtual", schema: PACK_SCHEMA_VERSION,
-    color: "#6B7784",
+    color: "#56708C",
     objects: [
     { type: "HatchetCorpBarrierCorner", label: "Barrier Corner", category: "Objects",
       shape: "barrierCorner", size: [1.075, 2, 1.077], pivot: "base", anchor: [0.93, 0.878],
@@ -947,7 +947,7 @@ export const BUILTIN_PACKS = [
   },
   {
     id: "corrupted", name: "Corrupted Technology", group: "virtual", schema: PACK_SCHEMA_VERSION,
-    color: "#56708C",
+    color: "#6B7784",
     objects: [
     { type: "WireContainer", label: "Wire Container", category: "Objects",
       shape: "wireContainer", size: [0.554, 0.718, 0.534], pivot: "base", rotationAxes: "y",

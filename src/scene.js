@@ -1200,7 +1200,11 @@ export class Viewport extends EventTarget {
   _applyGizmoConstraints() {
     this.gizmo.translationSnap = this.snap.translate || null;
     this.gizmo.rotationSnap = this.snap.rotate ? THREE.MathUtils.degToRad(this.snap.rotate) : null;
-    this.gizmo.scaleSnap = this.snap.scale || null;
+    // Deliberately off. The gizmo can round the scale *factor*, and rounding
+    // the resulting *size* to the grid is the thing worth having — see
+    // `_snapScaleToGrid`, which does it in `_constrainDuringDrag` where the
+    // object's own extent is known.
+    this.gizmo.scaleSnap = null;
     this.gizmo.uniform = this.uniformScale;
     // All three circles, on everything. The catalog's `rotationAxes` used to
     // hide X and Z on a yaw-only piece, which is what the in-game editor allows
@@ -1249,8 +1253,48 @@ export class Viewport extends EventTarget {
         for (const v of r) if (Math.abs(v - 1) > Math.abs(best - 1)) best = v;
         s.set(s0.x * best, s0.y * best, s0.z * best);
       }
+      this._snapScaleToGrid(force);
       this._applyScaleAnchor();
     }
+  }
+
+  /**
+   * Step a scale drag by the grid, when the grid is on.
+   *
+   * The grid is a distance, so what steps is the object's *size*: at 25 cm, a
+   * crate goes 0.5 m, 0.75 m, 1 m, however far the pointer has actually moved
+   * in between. Snapping the scale *factor* instead — which is what the gizmo's
+   * own `scaleSnap` does, and why it is left switched off below — steps by
+   * something different for every object, since a factor of 0.25 is 13 cm of a
+   * crate and 50 cm of a two metre barrier. One grid, one meaning.
+   *
+   * Measured along the dragged axis, against the selection's own extent at the
+   * start of the drag, in the pivot's frame: the same box the anchor is read
+   * off. A turned piece therefore steps along its own face rather than along
+   * world X, which is the axis the handle was pulled down anyway.
+   *
+   * With uniform scale the whole thing is then multiplied by the same
+   * correction, so the axis you are dragging lands on the grid and the other
+   * two keep their proportions rather than each rounding somewhere else.
+   */
+  _snapScaleToGrid(uniform) {
+    const step = this.snap.translate;
+    const axis = this.gizmo.axis;
+    const size = this._scaleAnchor?.size;
+    if (!step || !size || !axis || axis === 'view') return;
+
+    const base = Math.abs(size[axis]);
+    const scale = this.pivot.scale;
+    const extent = base * Math.abs(scale[axis]);
+    if (base < 1e-6 || extent < 1e-9) return;
+    // Never round away to nothing: an object that snapped to zero size is one
+    // no further drag can recover, since every scale from there is zero too.
+    const wanted = Math.max(step, Math.round(extent / step) * step);
+    const correction = wanted / extent;
+    if (!Number.isFinite(correction) || correction <= 0) return;
+
+    if (uniform) scale.multiplyScalar(correction);
+    else scale[axis] *= correction;
   }
 
   // -- scale anchoring -------------------------------------------------------
@@ -1322,7 +1366,15 @@ export class Viewport extends EventTarget {
     if (axis && axis !== 'view') {
       point[axis] = this.gizmo.scaleSign[axis] < 0 ? box.max[axis] : box.min[axis];
     }
-    return { point, positions: new Map([...this.selection].map((m) => [m, m.position.clone()])) };
+    // `size` rides along because it comes off the same box and is wanted at the
+    // same moment: it is what turns a scale factor into metres for
+    // `_snapScaleToGrid`. Measured before the drag, so the step stays the size
+    // the object started at however far the drag goes.
+    return {
+      point,
+      size: box.getSize(new THREE.Vector3()),
+      positions: new Map([...this.selection].map((m) => [m, m.position.clone()])),
+    };
   }
 
   /**
