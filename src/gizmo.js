@@ -27,6 +27,10 @@
 // and are dragged along the object's own axes — which is also what makes the
 // far side hold still in `scene.js`.
 //
+// The X and Z handles — arrows and cubes alike — move to whichever end of their
+// axis faces the camera, so the side you are looking at is the side you can
+// reach; see `_faceHandles`.
+//
 // Everything downstream — snapping, uniform scaling, the scale anchor that
 // holds the far face still — belongs to `scene.js` and is reached through the
 // `objectChange` event raised here, so none of it is duplicated in this file.
@@ -91,12 +95,19 @@ export class ComboGizmo extends THREE.Object3D {
     this.scaleSnap = null;
     this.showAxis = { x: true, y: true, z: true };
     this.showRotate = { x: true, y: true, z: true };
+    // Which end of each object axis the scale handle sits on. X and Z follow
+    // the camera; see `_faceHandles`. Read by scene.js, which has to pin the
+    // opposite face.
+    this.scaleSign = { x: 1, y: 1, z: 1 };
 
     this.visible = false;
     this.renderOrder = 999;
 
     this._pickers = [];
     this._parts = [];
+    // axis -> the pieces that move from one end of the axis to the other
+    this._moveArms = {};
+    this._scaleArms = {};
     this._ray = new THREE.Raycaster();
     this._ray.params.Line.threshold = 0.06;
     this._build();
@@ -141,6 +152,8 @@ export class ComboGizmo extends THREE.Object3D {
       grab.quaternion.setFromUnitVectors(UNIT.y, dir);
       this._registerPicker(grab, axis, 'translate');
 
+      this._moveArms[axis] = { shaft, cone, grab, sign: 1 };
+
       // rotate: a full circle in the plane whose normal is this axis, in the
       // axis's own colour — the whole of how you tell one turn from another.
       const arc = new THREE.Line(this._arcGeometry(), lineMaterial(colour, 3));
@@ -169,6 +182,8 @@ export class ComboGizmo extends THREE.Object3D {
       const cubeGrab = new THREE.Mesh(new THREE.SphereGeometry(0.14, 8, 6), pickerMaterial());
       cubeGrab.position.copy(dir).multiplyScalar(R_SCALE);
       this._registerPicker(cubeGrab, axis, 'scale');
+
+      this._scaleArms[axis] = { stalk, cube, grab: cubeGrab, sign: 1 };
     }
 
     // Centre: slide across the floor. It faces the camera so it is always a
@@ -275,8 +290,84 @@ export class ComboGizmo extends THREE.Object3D {
     this._centre.quaternion.copy(camQuat);
     this._centreGrab.quaternion.copy(camQuat);
 
+    this._faceHandles(pos);
     this._updateVisibility();
     this._fadeBackHalves(pos);
+  }
+
+  /**
+   * Keep the X and Z handles — both the arrow and the scale cube — on the side
+   * of the object you are looking at.
+   *
+   * A handle pinned to the positive end of its axis is only half a control:
+   * walk round to the other side of a wall and the handle you want is behind
+   * it, so working that face means orbiting back or dragging something you
+   * cannot see. Neither drag minds which end it was started from. A scale is a
+   * ratio, and the ratio comes out the same measured from either end; a move is
+   * a difference along the axis line, and the pointer drags the object the way
+   * the pointer went whichever end the arrow was drawn at. So both may as well
+   * sit on the end you can reach, and `scene.js` then pins the face at the far
+   * end of a scale rather than always the minimum.
+   *
+   * Y stays up in both. The other two ends of an object are equals; its bottom
+   * is not, because a map is built on a floor and the scale anchor holds a
+   * piece standing on it. A downward handle would grow a crate through the
+   * ground, and a downward green arrow would be the only part of the gizmo that
+   * disagreed with the inspector about which way is up.
+   *
+   * Arrows are measured against the world axes and cubes against the object's,
+   * because that is the frame each is drawn in — a turned piece has its scale
+   * cubes somewhere else entirely, which is the whole reason `_scaleRoot`
+   * exists.
+   *
+   * Frozen while dragging, so a handle cannot jump ends under the pointer, and
+   * given a dead band either side of edge-on so one seen end-first does not
+   * flicker between the two.
+   */
+  _faceHandles(centre) {
+    if (this.dragging) return;
+    const toCam = this.camera.isOrthographicCamera
+      ? this.camera.getWorldDirection(new THREE.Vector3()).negate()
+      : this.camera.position.clone().sub(centre).normalize();
+    for (const axis of ['x', 'z']) {
+      const world = UNIT[axis];
+      const own = world.clone().applyQuaternion(this._scaleRoot.quaternion);
+      if (this._turnedAway(this._moveArms[axis], world.dot(toCam))) this._flipMoveArm(axis);
+      if (this._turnedAway(this._scaleArms[axis], own.dot(toCam))) this._flipScaleArm(axis);
+    }
+  }
+
+  /** Has the end this arm sits on gone round the back, clear of the dead band? */
+  _turnedAway(arm, facing) {
+    return facing * arm.sign < -0.05;
+  }
+
+  _flipMoveArm(axis) {
+    const arm = this._moveArms[axis];
+    arm.sign = -arm.sign;
+    const dir = UNIT[axis].clone().multiplyScalar(arm.sign);
+    const at = dir.clone().multiplyScalar((R_ARROW + R_CONE) / 2);
+    // The arrowhead turns with the end it moved to: an arrow is a direction,
+    // and one pointing back at the object it belongs to would read as a
+    // different instruction entirely.
+    for (const part of [arm.cone, arm.grab]) {
+      part.position.copy(at);
+      part.quaternion.setFromUnitVectors(UNIT.y, dir);
+    }
+    arm.shaft.scale[axis] = arm.sign;
+  }
+
+  _flipScaleArm(axis) {
+    const arm = this._scaleArms[axis];
+    arm.sign = -arm.sign;
+    this.scaleSign[axis] = arm.sign;
+    const at = UNIT[axis].clone().multiplyScalar(R_SCALE * arm.sign);
+    arm.cube.position.copy(at);
+    arm.grab.position.copy(at);
+    // The stalk is drawn from the centre outwards along the axis, so mirroring
+    // that one component is the whole of moving it to the other end. A line has
+    // no facing to turn inside out, which a mirrored solid would.
+    arm.stalk.scale[axis] = arm.sign;
   }
 
   _updateVisibility() {

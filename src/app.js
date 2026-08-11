@@ -2112,10 +2112,38 @@ function wireDragDrop() {
 function wireViewport() {
   const box = $('marquee');
 
+  // The right button does two jobs: held and dragged it pans the camera, and
+  // clicked it opens the menu below. Telling them apart is not something the
+  // `contextmenu` event can do on its own — Windows fires it on the *release*,
+  // so a pan that ends over a crate arrives looking exactly like a click on
+  // that crate. So the press is remembered and the menu opens only if the
+  // pointer stayed put, which also covers a pan that began on an object.
+  //
+  // Four pixels of slop, the same tolerance the marquee uses: a click with a
+  // steady hand still moves a pixel or two between press and release.
+  const PAN_SLOP = 4;
+  let rightPress = null;
+  $('view').addEventListener('pointerdown', (e) => {
+    if (e.button === 2) rightPress = { x: e.clientX, y: e.clientY, panned: false };
+  });
+  // On the window: OrbitControls captures the pointer, and a pan drags well
+  // outside the viewport in any case.
+  addEventListener('pointermove', (e) => {
+    if (rightPress && Math.hypot(e.clientX - rightPress.x, e.clientY - rightPress.y) > PAN_SLOP) {
+      rightPress.panned = true;
+    }
+  });
+
   // Right-click reaches an object whether or not it is locked, which is what
   // makes locking reversible: nothing else can touch one.
   $('view').addEventListener('contextmenu', (e) => {
     e.preventDefault();
+    // Cleared here rather than on release: platforms differ over whether the
+    // event comes with the press or the release, and either way the next press
+    // starts a fresh one.
+    const panned = rightPress?.panned;
+    rightPress = null;
+    if (panned) return hideContextMenu();
     const r = $('view').getBoundingClientRect();
     const ndc = {
       x: ((e.clientX - r.left) / r.width) * 2 - 1,

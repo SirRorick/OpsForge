@@ -150,6 +150,11 @@ const nameTint = (name) => NAME_TINTS.find(([re]) => re.test(name || ''))?.[1] ?
 
 const normalMapVerdicts = new Map();
 
+// Scratch for the silhouette pass, which runs per selected object per frame and
+// has no business allocating in there.
+const _outlineEye = new THREE.Vector3();
+const _outlineInverse = new THREE.Matrix4();
+
 /**
  * Is this texture a normal map wearing a base colour's clothes?
  *
@@ -161,6 +166,18 @@ const normalMapVerdicts = new Map();
  * almost everywhere. Measured across all thirteen enemy prefabs, the five
  * corrupted bodies score 97-98% blue-dominant with an average of (0.50, 0.50,
  * 0.96) and nothing else comes close, so the test separates them cleanly.
+ *
+ * The average alone does not, though, which is what `flat` is here to fix. Blue
+ * and mid-grey is also what a *blue-grey* piece of art averages to, and Hatchet
+ * Corp's barriers are painted exactly that: HatCoBarriersTextureUpdated_Diffuse
+ * averages (0.37, 0.60, 0.74) over 94% blue-dominant pixels and passed every
+ * test above, so the whole theme lost its artwork and came out flat grey. So
+ * the pixels are asked as well as their mean: a normal map is not merely blue
+ * *on average*, it is (0.5, 0.5, ~1) nearly everywhere, because nearly every
+ * texel of it describes a surface that is flat. Over the 141 textures the
+ * prefabs actually put in a base-colour slot, every real normal map scores 99%
+ * or better and the Hatchet Corp diffuse scores 56% — a gap wide enough that
+ * the threshold could sit almost anywhere between.
  *
  * Sampled at 32x32, which is plenty for an average, and remembered per texture.
  * A cross-origin image would taint the canvas and throw; that answers "no",
@@ -177,16 +194,21 @@ function isNormalMapTexture(texture) {
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     ctx.drawImage(texture.image, 0, 0, N, N);
     const { data } = ctx.getImageData(0, 0, N, N);
-    let n = 0, blueWins = 0, sr = 0, sg = 0, sb = 0;
+    let n = 0, blueWins = 0, flat = 0, sr = 0, sg = 0, sb = 0;
     for (let i = 0; i < data.length; i += 4) {
       if (data[i + 3] < 8) continue;
-      sr += data[i]; sg += data[i + 1]; sb += data[i + 2];
-      if (data[i + 2] >= data[i] && data[i + 2] >= data[i + 1]) blueWins++;
+      const r = data[i] / 255, g = data[i + 1] / 255, b = data[i + 2] / 255;
+      sr += r; sg += g; sb += b;
+      if (b >= r && b >= g) blueWins++;
+      // "Points more or less straight out of the surface", the normal that a
+      // flat texel carries and a painted one has no reason to.
+      if (Math.abs(r - 0.5) < 0.25 && Math.abs(g - 0.5) < 0.25 && b > 0.7) flat++;
       n++;
     }
     if (n) {
-      const r = sr / n / 255, g = sg / n / 255, b = sb / n / 255;
-      verdict = blueWins / n > 0.9 && b > 0.6 && b > r + 0.12 && b > g + 0.12
+      const r = sr / n, g = sg / n, b = sb / n;
+      verdict = blueWins / n > 0.9 && flat / n > 0.75
+        && b > 0.6 && b > r + 0.12 && b > g + 0.12
         && Math.abs(r - 0.5) < 0.2 && Math.abs(g - 0.5) < 0.25;
     }
   } catch {
@@ -1056,19 +1078,53 @@ export class Viewport extends EventTarget {
     return this.objects.filter((o) => o.userData.group === g);
   }
 
+  /**
+   * Ring a selected object with its outline — the silhouette, and only that.
+   *
+   * This used to be `EdgesGeometry`, every crease over 25 degrees, which drew a
+   * crate as a wireframe cage: the twelve edges of the box whether they faced
+   * you or not, and on a real prefab every panel line and bolt head as well. It
+   * said "this object" by covering it rather than by drawing round it.
+   *
+   * The silhouette is recomputed as the camera moves, because that is what a
+   * silhouette is — see `_updateOutline`.
+   *
+   * It is depth-tested, unlike the cage before it. A prefab is a pile of
+   * interpenetrating parts, and every one of them has a silhouette of its own:
+   * a solid wall's four corner posts each turn away from you somewhere in the
+   * middle of the panel they are set into. Those turns are real, and they are
+   * not the edge of anything you can see, so the panel in front is left to hide
+   * them. What survives is the outer boundary — which is the thing being asked
+   * for. The cost is that a selected piece standing behind a wall no longer
+   * shows through it.
+   */
   _setOutline(mesh, on) {
     if (on) {
       if (mesh.userData.outline) return;
+      const edges = this._silhouetteFor(mesh.geometry);
+      const geometry = new THREE.BufferGeometry();
+      // Room for every edge at once. Nothing like all of them are silhouette
+      // edges from any one viewpoint, but the buffer is written in place and
+      // sized once rather than grown, and `setDrawRange` says how much of it
+      // this frame's answer used.
+      geometry.setAttribute('position',
+        new THREE.BufferAttribute(new Float32Array(edges.count * 6), 3).setUsage(THREE.DynamicDrawUsage));
+      geometry.setDrawRange(0, 0);
       const line = new THREE.LineSegments(
-        this._edgesFor(mesh.geometry),
-        new THREE.LineBasicMaterial({ color: ACCENT, depthTest: false, transparent: true })
+        geometry,
+        new THREE.LineBasicMaterial({ color: ACCENT, depthWrite: false, transparent: true })
       );
+      line.frustumCulled = false;   // the draw range, not the bounds, says what is in it
       line.renderOrder = 999;
+      line.userData.edges = edges;
       mesh.add(line);
       mesh.userData.outline = line;
+      this._updateOutline(mesh, true);
     } else if (mesh.userData.outline) {
-      mesh.userData.outline.removeFromParent();
-      mesh.userData.outline.material.dispose();
+      const line = mesh.userData.outline;
+      line.removeFromParent();
+      line.geometry.dispose();
+      line.material.dispose();
       mesh.userData.outline = null;
     }
   }
@@ -1080,11 +1136,162 @@ export class Viewport extends EventTarget {
     }
   }
 
-  _edgesFor(geometry) {
-    if (!this._edgeCache.has(geometry)) {
-      this._edgeCache.set(geometry, new THREE.EdgesGeometry(geometry, 25));
+  /**
+   * Redraw one outline for where the camera is now.
+   *
+   * An edge is on the silhouette when the two faces sharing it disagree about
+   * whether they face the viewer, or when it has only one face and so is a
+   * border of the surface. Both are answered in the object's own space, against
+   * the eye position transformed into it: exact for a perspective camera, where
+   * facing varies across the object and a single view direction would get the
+   * near edges of anything large wrong. Object space also makes it free of the
+   * object's scale — including a mirrored piece's negative one, which turns
+   * every face inside out and leaves the set of *disagreements* untouched.
+   *
+   * Skipped when the eye has barely moved in the object's frame, measured
+   * against the object's own size so a 30 m arena and a 30 cm crate are held to
+   * the same standard. Parking the camera therefore costs nothing, and there is
+   * no separate bookkeeping to keep in step: the test is the state.
+   */
+  _updateOutline(mesh, force = false) {
+    const line = mesh.userData.outline;
+    if (!line) return;
+    const { count, edges, verts, normals, centroids, radius } = line.userData.edges;
+
+    mesh.updateWorldMatrix(true, false);
+    const eye = _outlineEye
+      .setFromMatrixPosition(this.camera.matrixWorld)
+      .applyMatrix4(_outlineInverse.copy(mesh.matrixWorld).invert());
+    const slack = (radius * 2e-3) ** 2;
+    if (!force && line.userData.eye && eye.distanceToSquared(line.userData.eye) < slack) return;
+    line.userData.eye = eye.clone();
+
+    const out = line.geometry.getAttribute('position');
+    const ex = eye.x, ey = eye.y, ez = eye.z;
+    const bias = radius * 5e-3;
+    let n = 0;
+    for (let e = 0; e < count; e++) {
+      const i = e * 4;
+      const f0 = edges[i + 2], f1 = edges[i + 3];
+      const a = f0 * 3;
+      const front = normals[a] * (centroids[a] - ex)
+        + normals[a + 1] * (centroids[a + 1] - ey)
+        + normals[a + 2] * (centroids[a + 2] - ez);
+      if (f1 >= 0) {
+        const b = f1 * 3;
+        const other = normals[b] * (centroids[b] - ex)
+          + normals[b + 1] * (centroids[b + 1] - ey)
+          + normals[b + 2] * (centroids[b + 2] - ez);
+        // Both sides agree, so the surface does not turn over here. A zero —
+        // a face seen exactly edge-on, or a degenerate one with no facing to
+        // give — counts as agreement and draws nothing, which is the quiet
+        // answer of the two.
+        if (front * other >= 0) continue;
+      }
+      for (const v of [edges[i] * 3, edges[i + 1] * 3]) {
+        // Lifted a hair toward the eye. A silhouette edge lies exactly on the
+        // surface it is the edge of, and a line and a triangle at the same
+        // depth is a coin toss the line loses in patches. The lift is a
+        // fraction of the object's own size, so it clears the surface it
+        // belongs to and nothing else — anything genuinely in front is orders
+        // of magnitude further away and still hides it.
+        const dx = ex - verts[v], dy = ey - verts[v + 1], dz = ez - verts[v + 2];
+        const k = bias / (Math.hypot(dx, dy, dz) || 1);
+        out.array[n++] = verts[v] + dx * k;
+        out.array[n++] = verts[v + 1] + dy * k;
+        out.array[n++] = verts[v + 2] + dz * k;
+      }
     }
-    return this._edgeCache.get(geometry);
+    line.geometry.setDrawRange(0, n / 3);
+    if (n) out.addUpdateRange(0, n);
+    out.needsUpdate = true;
+  }
+
+  /**
+   * The edge/face table a silhouette is read off, built once per geometry.
+   *
+   * Vertices are welded by position first. The prefabs arrive non-indexed and
+   * with split normals — every triangle carrying its own three corners — so
+   * nothing shares an edge until coincident corners are recognised as the same
+   * point. Without that, every edge has one face, every edge is a border, and
+   * the "silhouette" is the whole wireframe again.
+   *
+   * An edge shared by more than two faces keeps the first two. That is a hole
+   * in the theory and not in practice: it takes a non-manifold mesh to produce
+   * one, the answer stays a plausible silhouette edge either way, and the
+   * alternative is carrying a list per edge to serve a case the game's art does
+   * not contain.
+   */
+  _silhouetteFor(geometry) {
+    if (this._edgeCache.has(geometry)) return this._edgeCache.get(geometry);
+
+    const position = geometry.getAttribute('position');
+    const index = geometry.index;
+    const triangles = (index ? index.count : position.count) / 3;
+    const corner = (t, k) => (index ? index.getX(t * 3 + k) : t * 3 + k);
+
+    // Weld to a millimetre. The geometry is in metres before the object's own
+    // scale, and no game asset has detail finer than that.
+    const GRID = 1e3;
+    const welded = new Map();
+    const verts = [];
+    const weldOf = (i) => {
+      const x = position.getX(i), y = position.getY(i), z = position.getZ(i);
+      const key = `${Math.round(x * GRID)},${Math.round(y * GRID)},${Math.round(z * GRID)}`;
+      let at = welded.get(key);
+      if (at === undefined) {
+        at = verts.length / 3;
+        welded.set(key, at);
+        verts.push(x, y, z);
+      }
+      return at;
+    };
+
+    const normals = new Float32Array(triangles * 3);
+    const centroids = new Float32Array(triangles * 3);
+    const byEdge = new Map();
+    const edges = [];
+    const ab = new THREE.Vector3(), ac = new THREE.Vector3(), normal = new THREE.Vector3();
+    const p = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+
+    for (let t = 0; t < triangles; t++) {
+      const v = [weldOf(corner(t, 0)), weldOf(corner(t, 1)), weldOf(corner(t, 2))];
+      for (let k = 0; k < 3; k++) p[k].fromArray(verts, v[k] * 3);
+      normal.crossVectors(ab.subVectors(p[1], p[0]), ac.subVectors(p[2], p[0]));
+      // A degenerate triangle — three points on a line, which merged geometry
+      // does contain — has no facing to contribute, and is left with the zero
+      // normal that says so.
+      if (normal.lengthSq() > 1e-20) normal.normalize();
+      normal.toArray(normals, t * 3);
+      centroids[t * 3] = (p[0].x + p[1].x + p[2].x) / 3;
+      centroids[t * 3 + 1] = (p[0].y + p[1].y + p[2].y) / 3;
+      centroids[t * 3 + 2] = (p[0].z + p[1].z + p[2].z) / 3;
+
+      for (let k = 0; k < 3; k++) {
+        const a = v[k], b = v[(k + 1) % 3];
+        if (a === b) continue;                     // collapsed by the weld
+        const key = a < b ? `${a}:${b}` : `${b}:${a}`;
+        const seen = byEdge.get(key);
+        if (seen === undefined) {
+          byEdge.set(key, edges.length / 4);
+          edges.push(a, b, t, -1);
+        } else if (edges[seen * 4 + 3] < 0) {
+          edges[seen * 4 + 3] = t;
+        }
+      }
+    }
+
+    if (!geometry.boundingSphere) geometry.computeBoundingSphere();
+    const data = {
+      count: edges.length / 4,
+      edges: Int32Array.from(edges),
+      verts: Float32Array.from(verts),
+      normals,
+      centroids,
+      radius: Math.max(geometry.boundingSphere?.radius || 1, 1e-3),
+    };
+    this._edgeCache.set(geometry, data);
+    return data;
   }
 
   selectionBounds() {
@@ -1254,12 +1461,13 @@ export class Viewport extends EventTarget {
   /**
    * The point that must not move during this drag, in pivot-local space.
    *
-   * Every scale handle sits on the positive end of its axis and is drawn in the
-   * pivot's own frame, so the side to hold still is always that axis's minimum.
-   * There is nothing to guess: this used to project the axis to the screen and
-   * read which end the cursor was nearer, because the old gizmo labelled both
-   * ends of an axis the same, and the answer stopped meaning anything the
-   * moment the gizmo stopped having two.
+   * The handle grabbed says which end: it is drawn in the pivot's own frame at
+   * one end of its axis, and the face to hold still is the other one. Since the
+   * X and Z cubes moved to whichever end faces the camera, that end is the
+   * gizmo's to report rather than this method's to assume — `scaleSign` says
+   * which one it put there. There is still nothing to guess: this used to
+   * project the axis to the screen and read which end the cursor was nearer,
+   * because the old gizmo labelled both ends of an axis the same.
    *
    * The other two axes hold at the bottom in Y and at the middle in the
    * remaining horizontal, so a piece standing on the floor is still standing on
@@ -1271,7 +1479,9 @@ export class Viewport extends EventTarget {
     const centre = box.getCenter(new THREE.Vector3());
     const point = new THREE.Vector3(centre.x, box.min.y, centre.z);
     const axis = this.gizmo.axis;
-    if (axis && axis !== 'view') point[axis] = box.min[axis];
+    if (axis && axis !== 'view') {
+      point[axis] = this.gizmo.scaleSign[axis] < 0 ? box.max[axis] : box.min[axis];
+    }
     return { point, positions: new Map([...this.selection].map((m) => [m, m.position.clone()])) };
   }
 
@@ -1822,7 +2032,13 @@ export class Viewport extends EventTarget {
     const center = box.isEmpty() ? new THREE.Vector3(0, 0.75, 0) : box.getCenter(new THREE.Vector3());
     const d = box.isEmpty() ? 10 : Math.max(box.getSize(new THREE.Vector3()).length(), 6);
     const offsets = {
-      top: [0.001, d, 0.001],
+      // A millimetre toward the front and none at all to the side. The nudge is
+      // there because straight down is degenerate — the camera's up vector and
+      // its view direction would be the same line — and OrbitControls reads the
+      // heading off that offset as `atan2(x, z)`. Equal nudges on both, which is
+      // what this was, is a heading of 45 degrees: the map came up turned, and
+      // no amount of "top" is a corner view. Zero in x pins it to due north.
+      top: [0, d, 0.001],
       front: [0, d * 0.25, d],
       side: [d, d * 0.25, 0],
       persp: [d * 0.7, d * 0.6, d * 0.9],
@@ -2034,6 +2250,10 @@ export class Viewport extends EventTarget {
     this.gizmo.update();
     this._holdFixedParts();
     this._placeBadges();
+    // A silhouette is a fact about where you are standing, so it is redrawn
+    // here with everything else that depends on the camera. Each one bails out
+    // in a few instructions when the view has not moved.
+    for (const mesh of this.selection) this._updateOutline(mesh);
     this.renderer.render(this.scene, this.camera);
   }
 }

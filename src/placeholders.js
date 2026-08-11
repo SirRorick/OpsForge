@@ -587,7 +587,14 @@ const builders = {
 
   // Tunnel, 0.999 x 1 x 1. The plan is a full square and the front elevation
   // has material only at z -0.50..-0.48 and 0.48..0.50 — two thin walls with
-  // the whole middle open. You walk through it along x.
+  // the whole middle open.
+  //
+  // Turned a quarter so the opening runs the way the game's own tunnel opens.
+  // The real prefabs are all correct as exported and the stand-ins are what
+  // disagreed with them, confirmed in game; which quarter does not matter,
+  // since a tunnel is symmetric end to end. Baked into the geometry rather than
+  // set on the object, because an object's rotation is map data and belongs to
+  // the file, not to the shape standing in for it.
   tunnel: () => {
     const t = 0.05;
     return merge([
@@ -595,7 +602,7 @@ const builders = {
       box(1, 1, t, 0, 0.5, 0.5 - t / 2),
       box(1, t, 1, 0, 1 - t / 2, 0),
       box(1, 0.04, 1.04, 0, 0.98, 0),
-    ]);
+    ]).rotateY(Math.PI / 2);
   },
 
   // -- props ----------------------------------------------------------------
@@ -822,7 +829,12 @@ const builders = {
     ]),
 
   // -- vehicles -------------------------------------------------------------
-  // Front toward +z on all three, so a row of them faces the same way.
+  // Authored with the front toward +z on all three, so a row of them faces the
+  // same way, then each turned about-face by the `rotateY(PI)` it ends with:
+  // the game's own models face the other way, confirmed in game, and the
+  // stand-in has to point where the thing it stands in for points or a map laid
+  // out against the placeholders is wrong the moment the real art loads.
+  //
   // Truck, 2.497 x 3.305 x 6.831 — long, and the cab is the tall end.
   truck: () => {
     const wheel = (x, z) => tube(0.14, 0.1, 'x', x, 0.14, z, 10);
@@ -835,7 +847,7 @@ const builders = {
       box(0.8, 0.06, 0.2, 0, 0.62, 0.44),
       wheel(-0.45, 0.28), wheel(0.45, 0.28),
       wheel(-0.45, -0.3), wheel(0.45, -0.3),
-    ]);
+    ]).rotateY(Math.PI);
   },
 
   // Chopper, 7.42 x 3.149 x 6.588. The rotor disc is what makes the footprint
@@ -853,7 +865,7 @@ const builders = {
       box(0.04, 0.16, 0.04, 0.2, 0.1, 0.12),
       tube(0.025, 0.5, 'z', -0.2, 0.025, 0.1, 8),
       tube(0.025, 0.5, 'z', 0.2, 0.025, 0.1, 8),
-    ]),
+    ]).rotateY(Math.PI),
 
   // Tank, 3.971 x 3.364 x 6.477.
   tank: () => {
@@ -870,7 +882,7 @@ const builders = {
       parts.push(box(0.14, 0.26, 0.96, sx * 0.42, 0.13, 0));
       for (let i = 0; i < 4; i++) parts.push(tube(0.09, 0.16, 'x', sx * 0.42, 0.12, -0.32 + i * 0.21, 8));
     }
-    return merge(parts);
+    return merge(parts).rotateY(Math.PI);
   },
 
   // -- crystals -------------------------------------------------------------
