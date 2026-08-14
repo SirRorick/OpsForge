@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Spatial Ops — Map Editor</title>
+<title>OpsForge — Spatial Ops Map Editor</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
@@ -31,7 +31,7 @@ button,input,select{font:inherit;color:inherit}
 
 /* ---------- shell ---------- */
 #app{display:grid;grid-template-rows:46px 1fr 24px;grid-template-columns:252px 1fr 304px;height:100%}
-#topbar{grid-column:1/-1;display:flex;align-items:center;gap:14px;padding:0 12px;
+#topbar{grid-column:1/-1;position:relative;display:flex;align-items:center;gap:14px;padding:0 12px;
   background:var(--panel);border-bottom:1px solid var(--line)}
 #statusbar{grid-column:1/-1;display:flex;align-items:center;gap:16px;padding:0 12px;
   background:var(--panel);border-top:1px solid var(--line);
@@ -44,11 +44,13 @@ aside{background:var(--panel);overflow:hidden;display:flex;flex-direction:column
 canvas{display:block;width:100%;height:100%;outline:none}
 
 /* ---------- brand ---------- */
-.brand{display:flex;align-items:baseline;gap:8px;padding-right:12px;border-right:1px solid var(--line);height:100%}
-.brand b{font-family:var(--hud);font-weight:700;font-size:17px;letter-spacing:.14em;
-  text-transform:uppercase;line-height:46px}
-.brand span{font-family:var(--hud);font-size:12px;letter-spacing:.22em;color:var(--accent);
-  text-transform:uppercase}
+/* The wordmark fills the bar rather than sitting in it: at 30px the caps of
+   Barlow Condensed run nearly the full 46px of the header, which is what makes
+   it read as the application's name and not as another label. */
+.brand{display:flex;align-items:center;padding-right:14px;border-right:1px solid var(--line);height:100%}
+.brand b{font-family:var(--hud);font-weight:700;font-size:30px;letter-spacing:.05em;
+  text-transform:uppercase;line-height:46px;white-space:nowrap}
+.brand b i{font-style:normal;color:var(--accent)}
 
 /* ---------- controls ---------- */
 .grp{display:flex;align-items:center;gap:4px}
@@ -309,6 +311,29 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
   font-family:var(--hud);font-size:16px;letter-spacing:.2em;text-transform:uppercase;color:var(--accent)}
 #stage.dropping #drophint{display:grid}
 
+/* ---------- preview walkaround ---------- */
+/* The button sits in the middle of the whole bar: it is the one control here
+   that is not about editing, and the middle is the one place that says so.
+   `placePreviewButton` in app.js measures the bar on every resize and takes
+   `centred` off again when the two halves of the bar have grown into the
+   space, leaving it in its flow position beside Tips. */
+#b-preview{border-color:var(--accent);color:var(--accent)}
+#b-preview.centred{position:absolute;left:50%;transform:translateX(-50%)}
+#b-preview.centred:active{transform:translateX(-50%) translateY(1px)}
+#b-preview.on{background:var(--accent);border-color:var(--accent);color:#14181C}
+/* The prompt. Low and quiet: it is a reminder, not a menu, and the whole point
+   of the mode is to look at the map. */
+#preview-hud{position:absolute;inset:0;pointer-events:none;display:grid;
+  align-content:end;justify-items:center;padding-bottom:22px}
+/* `display:grid` above outranks the `hidden` attribute's own `display:none`,
+   so without this the prompt sits along the bottom of the editor as well. */
+#preview-hud[hidden]{display:none}
+#preview-hud .pv{background:rgba(10,15,20,.72);border:1px solid var(--line);
+  border-radius:5px;padding:7px 14px;font-family:var(--mono);font-size:11px;
+  color:var(--dim);letter-spacing:.03em;backdrop-filter:blur(2px)}
+#preview-hud .pv b{color:var(--fg);font-weight:500}
+#stage.previewing #hud{display:none}
+
 /* ---------- checkpoints ---------- */
 .cprow{display:grid;grid-template-columns:1fr auto auto;gap:6px;align-items:center;
   padding:5px 0;border-bottom:1px solid var(--line-soft)}
@@ -363,7 +388,7 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
 <div id="app">
 
   <header id="topbar">
-    <div class="brand"><b>Spatial Ops</b><span>Map Editor</span></div>
+    <div class="brand" title="OpsForge — a map editor for Spatial Ops"><b>Ops<i>Forge</i></b></div>
 
     <div class="grp">
       <button class="btn" id="b-new" title="Start again with an empty arena. Anything unexported is lost, so a checkpoint is taken first.">New</button>
@@ -379,14 +404,21 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
     </div>
 
     <div class="grp">
-      <label class="sw" title="Scale all axes together, so a piece keeps its proportions"><input type="checkbox" id="uniform" checked>Uniform</label>
+      <label class="sw" title="Scale all axes together, so a piece keeps its proportions. Off, a handle stretches its own axis alone, several selected pieces included — unless one of them is turned off-axis, which no single-axis stretch can do without shearing it"><input type="checkbox" id="uniform" checked>Uniform</label>
       <label class="sw" title="Draw the built-in stand-in shapes instead of the game's own models, to check them against each other"><input type="checkbox" id="placeholders">Stand-ins</label>
+      <label class="sw" title="Turn the view about whatever is under the pointer when the drag starts, rather than about the middle of the view. Off, the camera orbits the world."><input type="checkbox" id="orbit-cursor">Orbit at cursor</label>
     </div>
 
     <div class="grp">
       <label class="sw" id="autosave-sw" title="Keep a rolling set of recent snapshots in this browser, so closing the tab does not lose the map. Restore them from the Map tab."><input type="checkbox" id="autosave" checked>Autosave</label>
       <label class="sw" title="Show first-time hints and the reminders before exporting"><input type="checkbox" id="tips" checked>Tips</label>
     </div>
+
+    <!-- Centred in the bar when the bar has the room for it, and left here
+         beside Tips when it has not. `placePreviewButton` decides, on every
+         resize. -->
+    <button class="btn accent" id="b-preview"
+      title="Stand in the map at a player's height and walk about. Arrow keys move, the mouse looks, C crouches, Esc comes back">Preview</button>
 
     <div class="grp" style="margin-left:auto">
       <button class="btn ghost" id="b-undo" title="Undo (Ctrl+Z)">Undo</button>
@@ -403,7 +435,9 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
     <div class="scroll" id="lib-list"></div>
     <div class="sec" style="border-bottom:0;border-top:1px solid var(--line-soft)">
       <div class="pad" style="padding-top:10px">
-        <p class="hint" style="margin:0">Drag an object into the view to place it, or click to drop it at the centre.</p>
+        <p class="hint" style="margin:0">Click an object and it comes out on the cursor; left click drops it,
+          <kbd>Esc</kbd> puts it back. The view still orbits, pans and zooms while it is in hand, so you can
+          look for the spot before you commit to it. Dragging one straight into the view places it there.</p>
       </div>
     </div>
   </aside>
@@ -421,6 +455,11 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
       </div>
     </div>
     <div id="drophint">Release to place</div>
+    <div id="preview-hud" hidden>
+      <div class="pv"><kbd>&larr;</kbd><kbd>&uarr;</kbd><kbd>&darr;</kbd><kbd>&rarr;</kbd> <b>walk</b>
+        &middot; mouse <b>look</b> &middot; <kbd>C</kbd> <b>crouch</b> &middot;
+        <kbd>Esc</kbd> <b>back to the editor</b></div>
+    </div>
   </div>
 
   <!-- ---------------- inspector ---------------- -->
@@ -439,7 +478,7 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
         <div class="pad" id="sel-body"></div>
       </div>
 
-      <div class="sec">
+      <div class="sec" id="sec-mirror">
         <h2>Mirror</h2>
         <div class="pad">
           <div class="mirrorrow">
@@ -454,7 +493,8 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
             title="Copy the selection to the other side of the map">Mirror</button>
           <p class="hint" style="margin-top:7px">Copies the selection across the middle of the arena,
             reflected rather than just moved: a piece that has a left and a right comes out the other
-            way round, so the two halves match. Pick another theme to make the far half a different colour.</p>
+            way round, so the two halves match. Pick another theme to make the far half a different colour.
+            Point at this panel and the view shows where the copies will land.</p>
         </div>
       </div>
 
@@ -474,8 +514,10 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
             <input type="number" id="arr-dz" value="1" step="0.05">
           </div>
           <button class="btn ghost" id="b-array" style="width:100%;margin-top:8px" title="Repeat the selection into a grid of copies">Array</button>
-          <p class="hint" style="margin-top:7px">Spacing starts at the selection's own size, so copies sit flush.
-            Widen it for gaps. Steps follow the object's own axes, so a turned piece arrays along its face.</p>
+          <p class="hint" style="margin-top:7px">Spacing starts at the selection's own size, rounded to
+            the nearest 25&nbsp;cm, so copies sit flush. Widen it for gaps. Steps follow the object's own
+            axes, so a turned piece arrays along its face. Set a count above 1 and the view shows where
+            the copies will land.</p>
         </div>
       </div>
 
@@ -581,9 +623,19 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
             <kbd>Shift</kbd>+<kbd>End</kbd> drop onto what is underneath &middot;
             <kbd>Del</kbd> delete &middot;
             <kbd>Ctrl</kbd>+<kbd>A</kbd> select all<br><br>
+            The <kbd>&larr;</kbd><kbd>&rarr;</kbd><kbd>&uarr;</kbd><kbd>&darr;</kbd> keys nudge the
+            selection the way the view is facing, a grid step at a time;
+            <kbd>Shift</kbd> nudges up and down instead.<br><br>
             Left drag selects, middle drag orbits, right drag pans,
             <kbd>Alt</kbd>+left orbits. <kbd>Shift</kbd> adds to the selection,
             <kbd>Ctrl</kbd> picks a single object out of a group.<br><br>
+            The wheel zooms towards whatever the pointer is over, taking a share
+            of the distance to it each notch: metres at a time across the arena,
+            millimetres up against a crate. Point at something further off to
+            cover ground again.<br><br>
+            <b>Preview</b>, in the middle of the top bar, stands you in the map at six feet.
+            The arrow keys walk, the mouse looks, <kbd>C</kbd> crouches to three feet and
+            <kbd>Esc</kbd> brings you back to the view you left.<br><br>
             One gizmo does all three jobs: arrows move, the three coloured
             circles turn about X, Y and Z, the cubes scale, and the disc in the
             middle slides the selection across the view. Scaling holds the far

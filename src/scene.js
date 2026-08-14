@@ -12,7 +12,7 @@ import { OutlinePass } from 'three/addons/postprocessing/OutlinePass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { geometryFor } from './placeholders.js';
-import { defFor, modelUrl, iconUrl } from './catalog.js';
+import { defFor, modelUrl, iconUrl, sameShapeFamily } from './catalog.js';
 import {
   WEAPON_ICONS, WEAPON_ANY, parseWeapons,
   ENEMY_ICONS, ENEMY_MODELS, ENEMY_TYPES, ENEMY_ANY, parseEnemyTypes,
@@ -22,6 +22,35 @@ import { decodeNavCloud, navIndexToWorld, NAV_SPACING } from './format.js';
 
 const ACCENT = 0xe8c547;
 const CYAN = 0x4ec9e0;
+
+// -- the preview walkaround --------------------------------------------------
+// A map is built from above and played from inside it, and those are not the
+// same map. A doorway that looks generous in plan is a squeeze at eye level; a
+// crate that reads as cover from a bird's seat turns out to hide nothing. So
+// the editor can put you on the floor at a player's height and let you walk
+// about, which is the only way to answer either question.
+//
+// Feet, because the sizes here were given in feet and the arithmetic is easier
+// to check against the intent than 1.8288 would be.
+const FOOT = 0.3048;
+const EYE_STANDING = 6 * FOOT;
+const EYE_CROUCHED = 3 * FOOT;
+const WALK_SPEED = 1.5;          // m/s, an unhurried walk
+const WALK_EASE = 0.13;          // seconds to reach it, and to lose it again
+const CROUCH_EASE = 0.12;        // seconds to drop to a crouch, and to rise
+const BOB_HEIGHT = 0.016;        // metres, peak to middle: a suggestion of gait
+const BOB_STEPS = 1.9;           // paces per second at full speed
+const LOOK_PER_PIXEL = 0.0022;   // radians of turn per pixel of mouse
+const PITCH_LIMIT = THREE.MathUtils.degToRad(85);
+const PREVIEW_FOV = 70;          // wider than the editor's 50: a face, not a lens
+
+// The arrows are what the prompt promises. WASD is here as well because a hand
+// already on the left of the keyboard for C will reach for it, and a walkaround
+// that ignores W is a walkaround that feels broken.
+const PREVIEW_KEYS = {
+  ArrowUp: 'forward', ArrowDown: 'back', ArrowLeft: 'left', ArrowRight: 'right',
+  w: 'forward', s: 'back', a: 'left', d: 'right',
+};
 
 /**
  * The half turn every mesh carries relative to the map's own frame — see
@@ -84,12 +113,180 @@ const lowerLod = (node) => /_LOD[1-9]\d*$/i.test(node.name || '');
  * below the origin, which is what the game's own placements imply, and the
  * couple of millimetres a mesh falls short of that unit stay at the top where
  * they cost nothing.
+ *
+ * `hover` is the exception, and it is a real one rather than a fudge: the
+ * capture flags are authored a clear 0.8 m off the ground, hanging off a bone
+ * the artists called FlagFloat, and there is no base or lower pole anywhere in
+ * the prefab to stand them on. Seating those drops the flag to knee height,
+ * which is neither where the game puts it nor where anyone placing an objective
+ * expects to see it. So the mesh keeps the height it was authored at — and the
+ * box is then pulled back down to the floor by hand, because everything that
+ * measures an object measures this box: floor lock, array spacing, the gizmo.
+ * The object still occupies the full 2.15 m column the game reserves for it;
+ * only the part you can see floats.
  */
 function seatOnFloor(geometry, def) {
   geometry.computeBoundingBox();
-  geometry.translate(0, -geometry.boundingBox.min.y, 0);
+  if (!def.hover) geometry.translate(0, -geometry.boundingBox.min.y, 0);
   if (def.pivot === 'center') geometry.translate(0, -def.size[1] / 2, 0);
   geometry.computeBoundingBox();
+  if (def.hover) geometry.boundingBox.min.y = 0;
+}
+
+/**
+ * Which prefabs tile their texture with the object's scale.
+ *
+ * The three building blocks in the Shapes category, and only those: solid box,
+ * solid wall, solid cylinder, plus their grounded twins and every pack's take on
+ * them — `sameShapeFamily` is what pulls `wallLayered`, `wallPlain` and
+ * `wallPlank` in with `wall`.
+ *
+ * These are the pieces you build *out of*, sized to the job: a wall is dragged
+ * to whatever length the cover needs, and its texture is a material that should
+ * read the same at any length. Everything else in the catalog is a thing rather
+ * than a material — a crate, a barrier, a coffee machine — and its texture is
+ * painted for that object at that size. Scaling one of those is deforming a
+ * prop, and its art should deform with it, so those stretch as they always did.
+ */
+const TILED_SHAPES = ['box', 'cylinder', 'wall'];
+const tilesWithScale = (def) =>
+  !!def?.shape && TILED_SHAPES.some((shape) => sameShapeFamily(def.shape, shape));
+
+/**
+ * Tile a shape's texture with the object's scale instead of stretching it.
+ *
+ * A map object stores a scale, and the editor applies it to the mesh, so a
+ * solid cube dragged out to five metres is a one-metre cube's geometry
+ * multiplied by five — texture and all. Five metres of brick becomes five
+ * metres of *one* brick, which is the smeared look this fixes.
+ *
+ * The scale is read straight out of `modelMatrix`, which is the trick that
+ * makes this cheap. Materials are shared between every object that uses a
+ * prefab, so a per-object uniform would mean a material per object; but the
+ * model matrix is already a per-object uniform three uploads for every draw,
+ * and its column lengths are the object's scale. One patched material serves
+ * the whole map, and dragging a scale handle changes nothing but a matrix.
+ *
+ * How much each of the two texture axes stretches is the geometry's to say, not
+ * something to infer from the normal. Guessing that U runs along the wider of
+ * the two world axes a face spans is right for every box in the catalog and
+ * wrong for every cylinder, whose barrel is unwrapped with U running *up* it —
+ * the guess tiles those round the circumference and smears them lengthways,
+ * which is the bug it was meant to fix wearing a different hat.
+ *
+ * So `tileU` and `tileV` carry the answer per vertex: the object-space
+ * direction a step along U, and along V, actually moves in. Scaling that
+ * direction and taking its length is exactly how much that axis stretched, for
+ * any unwrap, rotated or skewed. See `addTileAxes`.
+ *
+ * At scale 1 every factor is 1 and the shader is a no-op, so props placed as
+ * the game placed them look exactly as they did before.
+ */
+const TILE_WITH_SCALE = /* glsl */`
+	vec3 soScale = vec3(
+		length( modelMatrix[ 0 ].xyz ),
+		length( modelMatrix[ 1 ].xyz ),
+		length( modelMatrix[ 2 ].xyz ) );
+	// A zero axis is addTileAxes reporting no usable unwrap for this triangle;
+	// leaving those at 1 stretches them, which is what they did before.
+	float soU = length( soScale * tileU );
+	float soV = length( soScale * tileV );
+	vec2 soTile = vec2( soU > 0.0 ? soU : 1.0, soV > 0.0 ? soV : 1.0 );
+	#ifdef USE_MAP
+		vMapUv *= soTile;
+	#endif
+	#ifdef USE_NORMALMAP
+		vNormalMapUv *= soTile;
+	#endif
+`;
+
+/**
+ * Which way the texture axes run through the mesh, per vertex.
+ *
+ * The classic tangent/bitangent calculation, for a different purpose than
+ * usual: for each triangle, solve the two edge vectors against the two UV
+ * deltas to get dP/du and dP/dv — the object-space directions a step along U
+ * and along V move in. Normalised, because only the direction matters; the
+ * shader multiplies them by the object's scale and reads off the length.
+ *
+ * Per triangle rather than averaged per vertex, deliberately. Averaging is what
+ * you want for lighting, where a smooth field across a curved surface is the
+ * point, and it is wrong here: at the seam of a box two faces meeting at a
+ * right angle would average into a direction belonging to neither, and tile by
+ * something in between. Every geometry reaching this has been through
+ * `toNonIndexed`, so its vertices are already one triangle's each and there is
+ * nothing to average anyway.
+ *
+ * A triangle whose UVs are degenerate — the parts that arrived without an
+ * unwrap at all, which `mergeForDisplay` gives a zeroed UV attribute — gets
+ * zeroes, and the shader reads that as "leave this one alone".
+ */
+function addTileAxes(geometry) {
+  const position = geometry.getAttribute('position');
+  const uv = geometry.getAttribute('uv');
+  const count = position.count;
+  const tileU = new Float32Array(count * 3);
+  const tileV = new Float32Array(count * 3);
+  if (uv) {
+    for (let i = 0; i + 2 < count; i += 3) {
+      const e1x = position.getX(i + 1) - position.getX(i);
+      const e1y = position.getY(i + 1) - position.getY(i);
+      const e1z = position.getZ(i + 1) - position.getZ(i);
+      const e2x = position.getX(i + 2) - position.getX(i);
+      const e2y = position.getY(i + 2) - position.getY(i);
+      const e2z = position.getZ(i + 2) - position.getZ(i);
+      const d1u = uv.getX(i + 1) - uv.getX(i);
+      const d1v = uv.getY(i + 1) - uv.getY(i);
+      const d2u = uv.getX(i + 2) - uv.getX(i);
+      const d2v = uv.getY(i + 2) - uv.getY(i);
+      const det = d1u * d2v - d2u * d1v;
+      if (!det) continue;                 // no unwrap here; leave the zeroes
+      const r = 1 / det;
+      const ux = (d2v * e1x - d1v * e2x) * r;
+      const uy = (d2v * e1y - d1v * e2y) * r;
+      const uz = (d2v * e1z - d1v * e2z) * r;
+      const vx = (d1u * e2x - d2u * e1x) * r;
+      const vy = (d1u * e2y - d2u * e1y) * r;
+      const vz = (d1u * e2z - d2u * e1z) * r;
+      const ul = Math.hypot(ux, uy, uz) || 1;
+      const vl = Math.hypot(vx, vy, vz) || 1;
+      for (let k = 0; k < 3; k++) {
+        const o = (i + k) * 3;
+        tileU[o] = ux / ul; tileU[o + 1] = uy / ul; tileU[o + 2] = uz / ul;
+        tileV[o] = vx / vl; tileV[o + 1] = vy / vl; tileV[o + 2] = vz / vl;
+      }
+    }
+  }
+  geometry.setAttribute('tileU', new THREE.BufferAttribute(tileU, 3));
+  geometry.setAttribute('tileV', new THREE.BufferAttribute(tileV, 3));
+  return geometry;
+}
+
+/**
+ * Point a material's textures at the shader above, and let them repeat.
+ *
+ * Without `RepeatWrapping` a UV past 1 clamps to the edge pixel and the tiling
+ * shows as a smear of the last row rather than a second tile. The prefab maps
+ * are all 512 square so there is no non-power-of-two caveat to worry about.
+ */
+function tileWithScale(material) {
+  let textured = false;
+  for (const slot of ['map', 'normalMap']) {
+    const texture = material[slot];
+    if (!texture) continue;
+    if (texture.wrapS !== THREE.RepeatWrapping || texture.wrapT !== THREE.RepeatWrapping) {
+      texture.wrapS = THREE.RepeatWrapping;
+      texture.wrapT = THREE.RepeatWrapping;
+      texture.needsUpdate = true;
+    }
+    textured = true;
+  }
+  if (!textured) return material;
+  material.onBeforeCompile = (shader) => {
+    shader.vertexShader = `attribute vec3 tileU;\nattribute vec3 tileV;\n${shader.vertexShader}`
+      .replace('#include <uv_vertex>', `#include <uv_vertex>\n${TILE_WITH_SCALE}`);
+  };
+  return material;
 }
 
 /**
@@ -217,12 +414,13 @@ function isNormalMapTexture(texture) {
   return verdict;
 }
 
-function displayMaterial(material, tint, opacity = 1, force = false, cut = false, litByVertex = true) {
+function displayMaterial(material, tint, opacity = 1, force = false, cut = false, litByVertex = true,
+  tile = false) {
   if (Array.isArray(material)) {
-    return material.map((m) => displayMaterial(m, tint, opacity, force, cut, litByVertex));
+    return material.map((m) => displayMaterial(m, tint, opacity, force, cut, litByVertex, tile));
   }
   if (!material) return material;
-  const key = `${material.uuid}|${tint ?? ''}|${opacity}|${force}|${cut}|${litByVertex}`;
+  const key = `${material.uuid}|${tint ?? ''}|${opacity}|${force}|${cut}|${litByVertex}|${tile}`;
   if (displayMaterials.has(key)) return displayMaterials.get(key);
   const out = material.clone();
   if (out.metalness !== undefined && !out.envMap) {
@@ -255,6 +453,10 @@ function displayMaterial(material, tint, opacity = 1, force = false, cut = false
   if (tint && (force || (!out.map && out.color?.getHex() === 0xffffff))) out.color.set(tint);
   Object.assign(out, translucency(opacity));
   if (cut) Object.assign(out, cutout());
+  // Last, so it sees the map slots as they finally are: the normal-map
+  // correction above can move a texture from `map` to `normalMap` and leave the
+  // first empty, and it is the one that ends up sampled that has to repeat.
+  if (tile) tileWithScale(out);
   displayMaterials.set(key, out);
   return out;
 }
@@ -321,8 +523,13 @@ function usableColour(geometry) {
  * `opacity` is the object's, and a part may override it with its own — one draw
  * group per part means a prefab can hold a translucent volume and a solid
  * machine at once, which is exactly what a player spawn zone is.
+ *
+ * `tile` says the object's scale should repeat its texture rather than stretch
+ * it — see `tilesWithScale`. It gates the geometry as well as the material: the
+ * tile axes are two vec3s per vertex, and a prefab that will never tile has no
+ * use for them.
  */
-function mergeForDisplay(parts, tint, opacity, force, cut) {
+function mergeForDisplay(parts, tint, opacity, force, cut, tile = false) {
   const opacityOf = (p) => p.opacity ?? opacity;
   // Some prefabs carry vertex colours on the visible mesh and not on the rest —
   // the solid primitives do, the props do not. GLTFLoader turns that into
@@ -364,8 +571,9 @@ function mergeForDisplay(parts, tint, opacity, force, cut) {
     const merged = mergeGeometries(trimmed, true);
     if (merged) {
       return {
-        geometry: merged,
-        materials: parts.map((p) => displayMaterial(p.material, tint, opacityOf(p), force, cut, lit)),
+        geometry: tile ? addTileAxes(merged) : merged,
+        materials: parts.map(
+          (p) => displayMaterial(p.material, tint, opacityOf(p), force, cut, lit, tile)),
       };
     }
   } catch { /* fall through to the largest part */ }
@@ -374,8 +582,9 @@ function mergeForDisplay(parts, tint, opacity, force, cut) {
     if (g.getAttribute('position').count > trimmed[best].getAttribute('position').count) best = i;
   });
   return {
-    geometry: trimmed[best],
-    materials: displayMaterial(parts[best].material, tint, opacityOf(parts[best]), force, cut, lit),
+    geometry: tile ? addTileAxes(trimmed[best]) : trimmed[best],
+    materials: displayMaterial(
+      parts[best].material, tint, opacityOf(parts[best]), force, cut, lit, tile),
   };
 }
 
@@ -568,11 +777,21 @@ export class Viewport extends EventTarget {
     this.outline = new OutlinePass(
       this.renderer.getSize(new THREE.Vector2()), this.scene, this.camera);
     this.outline.visibleEdgeColor.setHex(ACCENT);
-    // Black is the off switch. The overlay blends additively, so an edge drawn
-    // in black adds nothing — which is how "only what the camera can see" is
-    // said here. The far side of a selected object, and a selected object
-    // standing behind a wall, contribute no stroke at all.
-    this.outline.hiddenEdgeColor.setHex(0x000000);
+    // The same yellow for the parts of the contour that something is standing
+    // in front of, so the stroke shows through walls, floors and other pieces
+    // and closes into one unbroken loop wherever the selection happens to be.
+    //
+    // These two colours are the pass's whole answer to occlusion: it splits the
+    // contour into the stretches the camera can see and the stretches it
+    // cannot, and paints each in its own colour. They used to differ — hidden
+    // in black, which the additive overlay draws as nothing — and that made the
+    // stroke a report on what was in front of the selection rather than a mark
+    // on the selection itself. Looking down at a stack, the piece you had just
+    // picked was the one piece with no outline; a crate behind a wall, or a pad
+    // lying flat in the floor, had none either. The mark has one job, which is
+    // to say *this is the thing you are about to move*, and it cannot do that
+    // job only while nothing is in the way.
+    this.outline.hiddenEdgeColor.setHex(ACCENT);
     this.outline.edgeGlow = 0;        // a stroke, not a halo
     this.outline.edgeStrength = 6;
     this.outline.edgeThickness = 2;
@@ -656,6 +875,22 @@ export class Viewport extends EventTarget {
     this.navGroup = new THREE.Group();
     this.scene.add(this.navGroup);
 
+    // Where the array and mirror tools draw what they are about to make. Not
+    // part of `objects`, so nothing can select one, pick one, frame one or
+    // export one — a ghost is a picture of an intention, not an object.
+    this.ghostGroup = new THREE.Group();
+    this.scene.add(this.ghostGroup);
+    this.ghostMaterial = new THREE.MeshStandardMaterial({
+      color: ACCENT, roughness: 0.65, metalness: 0,
+      // Solid enough to read as the model it stands for, thin enough to be
+      // obviously a proposal rather than an object. Depth writing stays *on*:
+      // without it every ghost in a row shows through every other one and a
+      // wall of them comes out as one flat slab of gold, which answers neither
+      // "how many" nor "how far apart". Front faces only, as everything here
+      // is, so a ghost cannot hide behind its own back wall.
+      transparent: true, opacity: 0.62, depthWrite: true,
+    });
+
     this.pivot = new THREE.Group();
     this.scene.add(this.pivot);
   }
@@ -666,13 +901,13 @@ export class Viewport extends EventTarget {
     this.orbit.dampingFactor = 0.08;
     this.orbit.maxPolarAngle = Math.PI * 0.499;
     this.orbit.target.set(0, 0.75, 0);
-    // Left is reserved for selection. Middle orbits, right pans, Alt+Left orbits.
-    this.orbit.mouseButtons = {
-      LEFT: null,
-      MIDDLE: THREE.MOUSE.ROTATE,
-      RIGHT: THREE.MOUSE.PAN,
-    };
     this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    // Left is reserved for selection. Middle orbits, right pans, Alt+Left orbits.
+    this._altDown = false;
+    this.orbitAtCursor = false;
+    this._applyOrbitButtons();
+    this._initCursorOrbit();
+    this._initCursorZoom();
 
     // One gizmo, doing move, rotate and scale at once. There used to be a mode
     // switch and three single-purpose gizmos behind it; the combined one covers
@@ -691,11 +926,248 @@ export class Viewport extends EventTarget {
     });
 
     addEventListener('keydown', (e) => {
-      if (e.key === 'Alt') this.orbit.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
+      if (e.key === 'Alt') { this._altDown = true; this._applyOrbitButtons(); }
     });
     addEventListener('keyup', (e) => {
-      if (e.key === 'Alt') this.orbit.mouseButtons.LEFT = null;
+      if (e.key === 'Alt') { this._altDown = false; this._applyOrbitButtons(); }
     });
+    // Alt+tabbing away leaves the keyup on the other window, and the left
+    // button would still be orbiting when you came back.
+    addEventListener('blur', () => { this._altDown = false; this._applyOrbitButtons(); });
+  }
+
+  /**
+   * Which button does what, given whether Alt is held and who is orbiting.
+   *
+   * With "orbit at cursor" on, the rotate buttons are handed to
+   * `_initCursorOrbit` instead: OrbitControls can only ever turn about its own
+   * target, so taking the button away from it is what makes another pivot
+   * possible at all.
+   */
+  _applyOrbitButtons() {
+    const rotate = this.orbitAtCursor ? null : THREE.MOUSE.ROTATE;
+    this.orbit.mouseButtons = {
+      LEFT: this._altDown ? rotate : null,
+      MIDDLE: rotate,
+      RIGHT: THREE.MOUSE.PAN,
+    };
+  }
+
+  /** Orbit the world, or orbit whatever the pointer was on. */
+  setOrbitAtCursor(on) {
+    this.orbitAtCursor = !!on;
+    this._applyOrbitButtons();
+    this.emit('mode');
+  }
+
+  /** A client point as the -1..1 pair a raycaster wants. */
+  _ndcAt(clientX, clientY) {
+    const r = this.canvas.getBoundingClientRect();
+    return new THREE.Vector2(
+      ((clientX - r.left) / r.width) * 2 - 1,
+      -((clientY - r.top) / r.height) * 2 + 1,
+    );
+  }
+
+  /**
+   * Turning the view about the point under the pointer rather than about the
+   * middle of the view.
+   *
+   * The distinction only matters once you are working close in. OrbitControls
+   * turns about its target, which sits wherever the last frame or pan left it —
+   * so leaning in on a doorway at the far end of the arena and then orbiting
+   * swings the whole map past you and the doorway leaves the screen. Picking the
+   * pivot off the pointer means the thing you are looking at is the thing that
+   * stays still.
+   *
+   * The camera *and* the target turn about the picked point together, as one
+   * rigid body. That is what keeps the view from jumping the moment the button
+   * goes down: nothing moves until the pointer does. Setting OrbitControls'
+   * target to the picked point would have been a line of code and would have
+   * snapped the camera round to look at it first.
+   *
+   * The angles are OrbitControls' own — a drag of the viewport's height is a
+   * full turn, both ways — so the two modes feel the same under the hand. The
+   * pitch is clamped against the *target*, not the pivot, because that is what
+   * OrbitControls will re-assert on the next update; clamping the wrong one
+   * lets the camera past the limit and gets it shoved back a frame later.
+   */
+  _initCursorOrbit() {
+    const UP = new THREE.Vector3(0, 1, 0);
+    const ray = new THREE.Raycaster();
+    const spherical = new THREE.Spherical();
+    const yaw = new THREE.Quaternion();
+    const pitch = new THREE.Quaternion();
+    const turn = new THREE.Quaternion();
+    const axis = new THREE.Vector3();
+    let drag = null;
+
+    /** What the pointer is on, or nothing, in which case the view target does. */
+    const pivotUnder = (e) => {
+      this.camera.updateMatrixWorld();
+      ray.setFromCamera(this._ndcAt(e.clientX, e.clientY), this.camera);
+      // A piece being carried rides on the cursor, so it is always under the
+      // pointer and always at the same place on the screen. Turning about it
+      // would be turning about something that moves with the camera, which
+      // moves nothing at all.
+      const targets = this.placing
+        ? this.objects.filter((m) => !this.placing.meshes.includes(m))
+        : this.objects;
+      const hit = ray.intersectObjects(targets, true).find((h) => h.object.isMesh);
+      return hit ? hit.point.clone() : this.orbit.target.clone();
+    };
+
+    this.canvas.addEventListener('pointerdown', (e) => {
+      // Placing an object is exactly when you most want to look around — to see
+      // where the piece has to go before you drop it. This used to bail out
+      // while `placing` was set, which with "orbit at cursor" on left nothing at
+      // all on the middle button, since `_applyOrbitButtons` has already taken
+      // it off OrbitControls by then.
+      if (!this.orbitAtCursor || this.preview) return;
+      const wants = e.button === 1 || (e.button === 0 && e.altKey);
+      // A handle under the pointer belongs to the gizmo, Alt or no Alt.
+      if (!wants || this.gizmo.dragging || this.gizmo.hovered) return;
+      e.preventDefault();
+      const pivot = pivotUnder(e);
+      drag = {
+        x: e.clientX,
+        y: e.clientY,
+        pivot,
+        camera: this.camera.position.clone().sub(pivot),
+        target: this.orbit.target.clone().sub(pivot),
+      };
+      this.canvas.setPointerCapture?.(e.pointerId);
+    });
+
+    addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      const height = this.canvas.getBoundingClientRect().height || 1;
+      const dTheta = (-2 * Math.PI * (e.clientX - drag.x)) / height;
+      const dPhi = (-2 * Math.PI * (e.clientY - drag.y)) / height;
+      drag.x = e.clientX;
+      drag.y = e.clientY;
+
+      // Where the camera stands relative to what it is looking at: the heading
+      // gives the axis to pitch about, and the elevation is the one with a
+      // limit on it.
+      spherical.setFromVector3(this.camera.position.clone().sub(this.orbit.target));
+      const phi = THREE.MathUtils.clamp(
+        spherical.phi + dPhi, 1e-6, this.orbit.maxPolarAngle) - spherical.phi;
+      // The screen's own right, in world terms — perpendicular to up and to the
+      // vertical plane the camera sits in.
+      axis.set(Math.cos(spherical.theta), 0, -Math.sin(spherical.theta));
+      yaw.setFromAxisAngle(UP, dTheta);
+      pitch.setFromAxisAngle(axis, phi);
+      turn.copy(yaw).multiply(pitch);
+
+      this.camera.position.copy(drag.pivot).add(drag.camera.applyQuaternion(turn));
+      this.orbit.target.copy(drag.pivot).add(drag.target.applyQuaternion(turn));
+    });
+
+    const end = (e) => {
+      if (!drag) return;
+      drag = null;
+      // Asking to release a pointer that was never captured throws.
+      if (this.canvas.hasPointerCapture?.(e.pointerId)) this.canvas.releasePointerCapture(e.pointerId);
+    };
+    addEventListener('pointerup', end);
+    addEventListener('pointercancel', end);
+  }
+
+  /**
+   * The wheel, as a step towards whatever the pointer is over.
+   *
+   * OrbitControls measures its dolly against the orbit target, and both of that
+   * rule's halves go wrong here. The step is a share of the distance to the
+   * *target*, so once the target is close the wheel does almost nothing however
+   * far away the thing you are actually looking at is; and the camera converges
+   * on the target and stops, which is the "scroll limit" — not a setting, but
+   * the target sitting in the way. Panning is what makes it bite. Pan moves the
+   * camera and the target together, so a target left ten centimetres away by an
+   * earlier close-up stays ten centimetres away for the rest of the session,
+   * and the wheel is then permanently stuck at millimetre steps.
+   *
+   * So the wheel is measured against the surface under the pointer instead. The
+   * step is a fixed *proportion* of that distance, which is what makes it
+   * adaptive in both directions at once: thirty metres out over the far end of
+   * the arena, a notch is metres; a hand's breadth from a crate, the same notch
+   * is millimetres. Nothing needs a limit, because a proportion of the gap can
+   * never close the gap — the surface is approached by halves and never
+   * reached. Moving the pointer to something further off is all it takes to
+   * start covering ground again.
+   *
+   * The camera travels along the ray through the pointer rather than along its
+   * own axis, so whatever is under the pointer stays under the pointer: the
+   * point is on that ray and the camera does not turn, so it cannot leave. The
+   * target is then dropped back onto the view axis at the new distance, which
+   * is what keeps it from going stale — every scroll leaves the orbit pivot on
+   * the thing being looked at, so orbiting and the next scroll both stay honest.
+   */
+  _initCursorZoom() {
+    // The dolly this replaces. Left on, both would answer the same wheel.
+    this.orbit.enableZoom = false;
+
+    // How much of the distance one pixel of wheel is worth. A notch of a mouse
+    // wheel is 100 of them in most browsers, so about a sixth of the gap.
+    const RATE = 0.0015;
+    const LINE = 16, PAGE = 400;   // a notch reported in lines or pages, in pixels
+    // Close enough to read the grain on a crate, and still twice the near
+    // plane, so the surface being approached does not clip away as you arrive.
+    const NEAR_GAP = 0.12;
+    // Far enough that the arena is a speck, and well inside the far plane. Not
+    // a limit anybody meets by scrolling; a floor under "lost in the void".
+    const FAR_GAP = 400;
+
+    const ray = new THREE.Raycaster();
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const point = new THREE.Vector3();
+    const forward = new THREE.Vector3();
+    const step = new THREE.Vector3();
+
+    this.canvas.addEventListener('wheel', (e) => {
+      // Mid-drag the gizmo is holding the object against a plane pinned to this
+      // camera; moving it under the drag would throw the piece across the map.
+      // In the walkaround the camera belongs to a pair of feet, not to a wheel.
+      if (this.gizmo.dragging || this.preview) return;
+      e.preventDefault();
+
+      // A trackpad can deliver a dozen of these between two frames, and the
+      // camera's world matrix is only rebuilt when a frame renders. Cast off a
+      // matrix that is two moves out of date and the ray leaves from where the
+      // camera used to be, which sends the next step somewhere unrelated —
+      // upwards, usually, and then the ground is no longer under the pointer
+      // and the one after that is wilder still.
+      this.camera.updateMatrixWorld();
+      ray.setFromCamera(this._ndcAt(e.clientX, e.clientY), this.camera);
+      // The piece being carried during a placement is under the pointer by
+      // definition, and zooming towards it would be zooming towards nothing.
+      const targets = this.placing
+        ? this.objects.filter((m) => !this.placing.meshes.includes(m))
+        : this.objects;
+      const hit = ray.intersectObjects(targets, true).find((h) => h.object.isMesh);
+      // Failing an object, the floor; failing that — the pointer is on the sky —
+      // whatever the view is already turned towards, which at least keeps the
+      // step the size it was a moment ago.
+      if (hit) point.copy(hit.point);
+      else if (!ray.ray.intersectPlane(plane, point)) {
+        ray.ray.at(this.camera.position.distanceTo(this.orbit.target), point);
+      }
+
+      const gap = this.camera.position.distanceTo(point);
+      const px = e.deltaMode === 1 ? e.deltaY * LINE
+        : e.deltaMode === 2 ? e.deltaY * PAGE
+        : e.deltaY;
+      // Exponential, so the wheel is symmetrical: what one notch in takes off,
+      // one notch out puts back. Clamped because a trackpad flick can arrive as
+      // a single event of several thousand pixels.
+      const scale = Math.exp(THREE.MathUtils.clamp(px * RATE, -1, 1));
+      const next = THREE.MathUtils.clamp(gap * scale, NEAR_GAP, FAR_GAP);
+
+      step.copy(point).sub(this.camera.position).normalize();
+      this.camera.position.addScaledVector(step, gap - next);
+      this.camera.getWorldDirection(forward);
+      this.orbit.target.copy(this.camera.position).addScaledVector(forward, next);
+    }, { passive: false });
   }
 
   emit(name, detail) {
@@ -810,8 +1282,10 @@ export class Viewport extends EventTarget {
   _attachFixedPart(mesh, def, fixed, dropY) {
     this._dropFixedPart(mesh);
     if (!fixed.length) return;
+    // Never tiled: this is the part that keeps its own size, so there is no
+    // scale for a texture to repeat with.
     const model = mergeForDisplay(fixed, def.color, def.opacity ?? 1, def.tintModel === true,
-      def.cutout === true);
+      def.cutout === true, false);
     model.geometry.translate(0, dropY, 0);
     const child = new THREE.Mesh(model.geometry, model.materials);
     child.userData.fixedScale = true;
@@ -957,7 +1431,8 @@ export class Viewport extends EventTarget {
       // Two entries can share a prefab and not a pivot, and the normalisation
       // below depends on both.
       const cacheKey = `${def.model}|${def.pivot}|${def.size[1]}|${def.color}|${def.opacity ?? 1}` +
-        `|${def.tintModel}|${def.fixedParts ?? ''}|${def.cutout}|${JSON.stringify(def.area ?? null)}`;
+        `|${def.tintModel}|${def.fixedParts ?? ''}|${def.cutout}|${def.hover}` +
+        `|${JSON.stringify(def.area ?? null)}|${tilesWithScale(def)}`;
       let model = this._modelCache.get(cacheKey);
       if (!model) {
         const found = await this._prefabParts(url);
@@ -965,7 +1440,7 @@ export class Viewport extends EventTarget {
 
         const { scaled, fixed } = this._splitFixedPart(mesh, def, found);
         const whole = mergeForDisplay(flattenArea(def.area, scaled), def.color, def.opacity ?? 1,
-          def.tintModel === true, def.cutout === true);
+          def.tintModel === true, def.cutout === true, tilesWithScale(def));
         // Seat on the floor using the whole object's extent, then move the
         // fixed part by the same amount so it does not drift off the area.
         const before = new THREE.Box3().setFromBufferAttribute(
@@ -1011,6 +1486,7 @@ export class Viewport extends EventTarget {
 
   clearObjects() {
     if (this.placing) this._endPlacement(false);
+    this.clearGhosts();
     this.setSelection([]);
     for (const m of this.objects) {
       this._dropBadge(m);
@@ -1248,15 +1724,17 @@ export class Viewport extends EventTarget {
       ? [...this.selection][0].getWorldScale(new THREE.Vector3())
       : new THREE.Vector3(1, 1, 1);
     this._scaleAnchor = this._activeMode() === 'scale' ? this._captureScaleAnchor() : null;
+    // Asked once, here, rather than on every frame of the drag: nothing rotates
+    // while a scale handle is being pulled, so the answer cannot change, and a
+    // selection of two hundred pieces would otherwise be walked sixty times a
+    // second to be told the same thing.
+    this._perAxisExact = this._perAxisScaleIsExact();
     this.emit('commit-begin');
   }
 
   _constrainDuringDrag() {
     if (this._activeMode() === 'scale') {
-      // A rotated child under a non-uniformly scaled parent shears, which no
-      // position/rotation/scale triple can represent. Forcing uniform scale on
-      // multi-selects keeps the export honest.
-      const force = this.uniformScale || this.selection.size > 1;
+      const force = this.uniformScale || !this._perAxisExact;
       if (force && this._dragStartScale) {
         const s0 = this._dragStartScale;
         const s = this.pivot.scale;
@@ -1268,6 +1746,43 @@ export class Viewport extends EventTarget {
       this._snapScaleToGrid(force);
       this._applyScaleAnchor();
     }
+  }
+
+  /**
+   * Whether a per-axis scale of the pivot can be handed back to the objects
+   * under it without lying about the result.
+   *
+   * Stretching one axis of the pivot stretches that direction of *world* space,
+   * and a child sitting at an angle to it comes out sheared — a cylinder turned
+   * thirty degrees becomes an ellipse leaning over, which no position, rotation
+   * and scale can describe and therefore nothing the map file can carry. The
+   * decompose on the way out would quietly write a shape that is not the one on
+   * screen. A child square to the pivot has no such problem: the stretch lands
+   * on one of its own axes, whichever of them is pointing that way, and its own
+   * scale absorbs it exactly.
+   *
+   * So the test is whether every selected piece is square to the pivot — its
+   * rotation a quarter turn or a multiple of one, which is the case for almost
+   * everything anybody builds with. Only a genuinely skew piece in the
+   * selection forces the whole drag uniform.
+   *
+   * This used to be `selection.size > 1`: any multi-select, skew or not, was
+   * scaled uniformly. The common case it broke is the obvious one — pick up
+   * half a dozen upright cylinders, pull the green handle to make them all
+   * taller, and they came out fatter to match.
+   */
+  _perAxisScaleIsExact() {
+    const e = new THREE.Matrix4();
+    for (const m of this.selection) {
+      e.makeRotationFromQuaternion(m.quaternion);
+      // An orthonormal basis is a signed permutation of the axes exactly when
+      // every one of its terms is 0 or ±1.
+      for (const v of e.elements) {
+        const a = Math.abs(v);
+        if (a > 1e-6 && a < 1 - 1e-6) return false;
+      }
+    }
+    return true;
   }
 
   /**
@@ -1427,9 +1942,17 @@ export class Viewport extends EventTarget {
    * `floor` impossible to lift — and maps want that: a walkway over a gap, a
    * barrier used as a ceiling.
    *
-   * Each object falls on its own rather than the selection moving as one, which
-   * is what makes dropping a scattered handful of props onto uneven ground do
-   * the useful thing.
+   * Loose objects fall on their own rather than the selection moving as one,
+   * which is what makes dropping a scattered handful of props onto uneven
+   * ground do the useful thing.
+   *
+   * A group is the exception, and falls as one rigid body. Everywhere else in
+   * the editor a group is a single thing — one click takes all of it, one drag
+   * moves all of it — and a drop cannot be the one gesture that takes it apart.
+   * Dropping the members separately flattens exactly the arrangement that was
+   * worth grouping: a crate stacked on a crate is two objects at two heights,
+   * and letting each find the floor for itself leaves them side by side on it,
+   * one inside the other.
    */
   dropSelection(onto = 'floor') {
     const targets = [...this.selection];
@@ -1438,20 +1961,36 @@ export class Viewport extends EventTarget {
     // dropped as a group would rest on itself and never move.
     const others = onto === 'surface' ? this.objects.filter((m) => !this.selection.has(m)) : [];
 
-    let moved = 0;
+    // What falls together: one entry per group, and one per loose object.
+    const bodies = new Map();
     for (const m of targets) {
-      m.updateWorldMatrix(true, false);
-      const box = new THREE.Box3().setFromObject(m);
+      const key = m.userData.group ? `g:${m.userData.group}` : `m:${m.id}`;
+      if (!bodies.has(key)) bodies.set(key, []);
+      bodies.get(key).push(m);
+    }
+
+    let moved = 0;
+    for (const body of bodies.values()) {
+      const box = new THREE.Box3();
+      for (const m of body) {
+        m.updateWorldMatrix(true, false);
+        box.expandByObject(m);
+      }
       if (box.isEmpty()) continue;
+      // The whole body's footprint decides what it lands on, and its lowest
+      // point decides how far it goes — so the piece at the bottom of a stack
+      // is the one that touches down and the rest keep their heights above it.
       const rest = others.length ? this._surfaceUnder(box, others) : 0;
       const drop = box.min.y - rest;
       if (Math.abs(drop) < 1e-5) continue;
-      const world = new THREE.Vector3();
-      m.getWorldPosition(world);
-      world.y -= drop;
-      m.position.copy(m.parent === this.pivot ? this.pivot.worldToLocal(world.clone()) : world);
-      this.markDirty(m);
-      moved++;
+      for (const m of body) {
+        const world = new THREE.Vector3();
+        m.getWorldPosition(world);
+        world.y -= drop;
+        m.position.copy(m.parent === this.pivot ? this.pivot.worldToLocal(world.clone()) : world);
+        this.markDirty(m);
+        moved++;
+      }
     }
     // The gizmo hangs off the pivot, and the pivot does not follow a child that
     // moves underneath it — so without this the gizmo stayed in the air above
@@ -1465,6 +2004,100 @@ export class Viewport extends EventTarget {
   /** Kept for the old name; the floor is the common case. */
   dropToFloor() {
     return this.dropSelection('floor');
+  }
+
+  // -- nudging ---------------------------------------------------------------
+
+  /**
+   * The two horizontal directions the screen calls "right" and "away", each
+   * snapped to whichever world axis it is nearest.
+   *
+   * Snapped, and that is the whole point of them. Arrow keys that moved along
+   * the camera's own vectors would step a quarter of a metre north-east while
+   * the camera sat at 40 degrees, which is a position no grid contains and no
+   * second nudge recovers from. What the keys mean is "that way, as the map
+   * reckons it" — so the camera only chooses which of the four axes each arrow
+   * points at, and the step itself stays on X or Z.
+   */
+  viewGroundAxes() {
+    const forward = new THREE.Vector3();
+    this.camera.getWorldDirection(forward);
+    forward.y = 0;
+    // Straight down, where the view direction has no horizontal part at all:
+    // "away" is then whichever way the top of the screen points.
+    if (forward.lengthSq() < 1e-8) {
+      forward.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
+      forward.y = 0;
+      if (forward.lengthSq() < 1e-8) forward.set(0, 0, -1);
+    }
+    const away = Math.abs(forward.x) >= Math.abs(forward.z)
+      ? new THREE.Vector3(Math.sign(forward.x) || 1, 0, 0)
+      : new THREE.Vector3(0, 0, Math.sign(forward.z) || 1);
+    return { away, right: new THREE.Vector3().crossVectors(away, new THREE.Vector3(0, 1, 0)) };
+  }
+
+  /**
+   * Step the selection one grid square, in the direction the view calls
+   * `right` / `away` / `up`. Each is -1, 0 or 1.
+   *
+   * The step is the grid when there is one, and five centimetres when there is
+   * not — small enough to be an adjustment rather than a move. Like a gizmo
+   * drag, it is the moving component of the *position* that lands on the grid
+   * rather than the step being added blind, so a piece that arrived at 0.37
+   * comes back onto the grid on the first press instead of carrying the odd
+   * two centimetres around with it for ever.
+   *
+   * No 'commit-end' here, unlike every other move: an arrow key held down
+   * repeats, and an undo step per repeat would empty the history in about two
+   * seconds. The caller decides when a run of nudges has finished being one.
+   */
+  nudgeSelection(right, away, up = 0) {
+    if (!this.selection.size) return false;
+    const step = this.snap.translate || 0.05;
+    const axes = this.viewGroundAxes();
+    const delta = new THREE.Vector3()
+      .addScaledVector(axes.right, right * step)
+      .addScaledVector(axes.away, away * step);
+    delta.y += up * step;
+    if (delta.lengthSq() < 1e-12) return false;
+
+    this.pivot.position.add(delta);
+    if (this.snap.translate) {
+      const g = this.snap.translate;
+      for (const axis of ['x', 'y', 'z']) {
+        if (Math.abs(delta[axis]) > 1e-9) {
+          this.pivot.position[axis] = Math.round(this.pivot.position[axis] / g) * g;
+        }
+      }
+    }
+    for (const m of this.selection) this.markDirty(m);
+    this.rebuildPivot();
+    this.emit('transform');
+    return true;
+  }
+
+  // -- ghosts ----------------------------------------------------------------
+
+  /**
+   * Draw translucent stand-ins where a tool is about to put real objects.
+   *
+   * `entries` is a list of `{ source, matrix }` — the object whose shape to
+   * borrow, and the world matrix to draw it at. The geometry is shared with the
+   * original rather than copied, so a hundred ghosts cost a hundred draw calls
+   * and nothing else; they are rebuilt outright on each change because that is
+   * cheaper than working out which ones moved.
+   */
+  setGhosts(entries) {
+    this.ghostGroup.clear();
+    for (const { source, matrix } of entries) {
+      const ghost = new THREE.Mesh(source.geometry, this.ghostMaterial);
+      matrix.decompose(ghost.position, ghost.quaternion, ghost.scale);
+      this.ghostGroup.add(ghost);
+    }
+  }
+
+  clearGhosts() {
+    this.ghostGroup.clear();
   }
 
   /**
@@ -1530,10 +2163,21 @@ export class Viewport extends EventTarget {
     let down = null;
 
     this.canvas.addEventListener('pointerdown', (e) => {
+      // In the walkaround a click is how you take the pointer lock back, and
+      // nothing in the view is a target.
+      if (this.preview) return;
       // Recorded before the early returns below: `beginPlacement` puts what it
       // is carrying under the cursor straight away, and a press with no move
       // before it would otherwise leave this stale.
       this._pointer = { clientX: e.clientX, clientY: e.clientY };
+      // A press in the view is a press away from whichever panel field had the
+      // caret. The canvas takes no focus of its own, so without this the field
+      // keeps it and every keyboard shortcut goes there instead of to the map —
+      // and the arrow keys worst of all, since a number box answers those by
+      // counting up.
+      if (/^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement?.tagName || '')) {
+        document.activeElement.blur();
+      }
       // While a brush is up, the left button paints the bot grid and does not
       // select. Checked before the gizmo, because the gizmo is hidden anyway
       // and a stray hover must not swallow the stroke.
@@ -1608,12 +2252,19 @@ export class Viewport extends EventTarget {
       if (!mods.shift && !mods.ctrl) this.setSelection([]);
       return;
     }
-    // A locked object is not a target. `setSelection` would drop it anyway, so
-    // the click would have come out as "select nothing" and taken the rest of
-    // the selection with it — a lock that clears your work is not much of a
-    // lock. Clicking one now does nothing at all, and the right-click menu
-    // still reaches it, which is what makes locking reversible.
-    if (hit.userData.locked) return;
+    // A locked object is not a target, so a click on one selects nothing —
+    // exactly as a click on the floor does, and for the same reason: you have
+    // pointed at something that cannot be picked up. What it must not do is
+    // *keep* the old selection, which is what "do nothing at all" amounted to:
+    // the gizmo stayed on a piece across the map while you were plainly looking
+    // at another one, and the next drag moved the wrong thing. Shift and Ctrl
+    // still hold, so a locked piece cannot break up a selection being built.
+    // The right-click menu reaches it either way, which is what keeps locking
+    // reversible.
+    if (hit.userData.locked) {
+      if (!mods.shift && !mods.ctrl) this.setSelection([]);
+      return;
+    }
     const picked = this.expandGroup(hit, mods.ctrl);
     if (mods.shift) {
       const next = new Set(this.selection);
@@ -1715,14 +2366,28 @@ export class Viewport extends EventTarget {
       }
       this.emit('transform');
     };
-    const drop = (e) => { if (e.button === 0) this._endPlacement(true); };
+    // Where the left button went down, so a release can tell a click from the
+    // end of a drag. Alt+left orbits, and orbiting to see where the piece
+    // should go must not be the gesture that puts it there — the release would
+    // otherwise drop it wherever the camera drag happened to leave the cursor.
+    // Four pixels is the same slack the marquee allows a click.
+    let press = null;
+    const arm = (e) => { if (e.button === 0) press = { x: e.clientX, y: e.clientY }; };
+    const drop = (e) => {
+      if (e.button !== 0) return;
+      const travelled = press ? Math.hypot(e.clientX - press.x, e.clientY - press.y) : 0;
+      press = null;
+      if (travelled <= 4) this._endPlacement(true);
+    };
 
+    this.canvas.addEventListener('pointerdown', arm);
     this.canvas.addEventListener('pointermove', move);
     this.canvas.addEventListener('pointerup', drop);
     this.canvas.style.cursor = 'copy';
     this.placing = {
       meshes,
       dispose: () => {
+        this.canvas.removeEventListener('pointerdown', arm);
         this.canvas.removeEventListener('pointermove', move);
         this.canvas.removeEventListener('pointerup', drop);
       },
@@ -1750,12 +2415,7 @@ export class Viewport extends EventTarget {
 
   /** Where a screen point meets the ground plane, for drag-and-drop placement. */
   groundPoint(clientX, clientY) {
-    const r = this.canvas.getBoundingClientRect();
-    const ndcPoint = new THREE.Vector2(
-      ((clientX - r.left) / r.width) * 2 - 1,
-      -((clientY - r.top) / r.height) * 2 + 1
-    );
-    this.ray.setFromCamera(ndcPoint, this.camera);
+    this.ray.setFromCamera(this._ndcAt(clientX, clientY), this.camera);
     const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
     const out = new THREE.Vector3();
     return this.ray.ray.intersectPlane(plane, out) ? out : new THREE.Vector3(0, 0, 0);
@@ -1765,6 +2425,7 @@ export class Viewport extends EventTarget {
 
   setBounds(size) {
     this.boundsGroup.clear();
+    this.boundsSize = { ...size };
     const { x, y, z } = size;
     const geo = new THREE.BoxGeometry(x, y, z);
     geo.translate(0, y / 2, 0);
@@ -1926,7 +2587,7 @@ export class Viewport extends EventTarget {
   // -- camera ---------------------------------------------------------------
 
   frameSelection() {
-    const box = this.selection.size ? this.selectionBounds() : this._allBounds();
+    const box = this.selection.size ? this.selectionBounds() : this._viewBox();
     if (box.isEmpty()) return;
     const center = box.getCenter(new THREE.Vector3());
     const radius = Math.max(box.getSize(new THREE.Vector3()).length() / 2, 0.8);
@@ -1941,8 +2602,27 @@ export class Viewport extends EventTarget {
     return box;
   }
 
-  setView(name) {
+  /**
+   * What a view command should aim at: the objects if there are any, and the
+   * arena itself if there are not.
+   *
+   * An empty map used to fall back to a fixed ten metre cube, which is a size
+   * the format never mentions — a new map's arena is seven metres, and Top on
+   * one framed a third more floor than exists. The arena is the thing being
+   * built in, so it is what "everything" means when nothing has been built yet.
+   */
+  _viewBox() {
     const box = this._allBounds();
+    if (!box.isEmpty() || !this.boundsSize) return box;
+    const { x, y, z } = this.boundsSize;
+    return new THREE.Box3(
+      new THREE.Vector3(-x / 2, 0, -z / 2),
+      new THREE.Vector3(x / 2, y, z / 2),
+    );
+  }
+
+  setView(name) {
+    const box = this._viewBox();
     const center = box.isEmpty() ? new THREE.Vector3(0, 0.75, 0) : box.getCenter(new THREE.Vector3());
     const d = box.isEmpty() ? 10 : Math.max(box.getSize(new THREE.Vector3()).length(), 6);
     const offsets = {
@@ -1971,6 +2651,228 @@ export class Viewport extends EventTarget {
     // In CSS pixels: the composer multiplies by the renderer's pixel ratio
     // itself, and hands every pass the size in device pixels.
     this.composer.setSize(r.width, r.height);
+  }
+
+  // -- preview walkaround ----------------------------------------------------
+
+  get previewing() {
+    return !!this.preview;
+  }
+
+  togglePreview() {
+    if (this.preview) this.exitPreview();
+    else this.enterPreview();
+  }
+
+  /**
+   * Stand up in the map at a player's eye height and walk about.
+   *
+   * The camera is taken off OrbitControls entirely for the duration rather than
+   * being driven through it: OrbitControls exists to look *at* a point from
+   * outside, and every part of it — the target, the polar clamp, the damping —
+   * is the wrong shape for standing inside something and turning your head. It
+   * is switched off, the camera is driven directly, and the whole of its state
+   * is put back on the way out, so leaving the preview returns you to the exact
+   * view you left rather than to an approximation of it.
+   *
+   * You start where the editor was looking, facing the way it faced. Dropping
+   * the player at the origin instead would mean walking back to the part of the
+   * map you were working on every single time.
+   *
+   * The editor's own furniture goes: the grid, the arena box, the walkable
+   * overlay, the gizmo, the selection stroke, the spawner labels. None of it
+   * exists for the player, and a preview that shows it is answering a question
+   * nobody asked.
+   */
+  enterPreview() {
+    if (this.preview) return;
+    if (this.placing) this._endPlacement(false);
+    this.setNavPaint?.(null);
+
+    const camera = this.camera;
+    const restore = {
+      position: camera.position.clone(),
+      quaternion: camera.quaternion.clone(),
+      rotationOrder: camera.rotation.order,
+      fov: camera.fov,
+      target: this.orbit.target.clone(),
+      centre: this.centreLines.visible,
+      bounds: this.boundsGroup.visible,
+      nav: this.navGroup.visible,
+      ghosts: this.ghostGroup.visible,
+    };
+
+    // Where the editor was looking, on the floor. The heading is the camera's
+    // own, flattened — a view pitched down at the map becomes a level gaze
+    // across it, which is what standing up in the same spot would give you.
+    const heading = new THREE.Vector3();
+    camera.getWorldDirection(heading);
+    const yaw = Math.atan2(-heading.x, -heading.z);
+    const feet = this.orbit.target.clone();
+
+    // The grid stays. Everything else here is a drawing of the map rather than
+    // a part of it, but a floor with nothing on it gives the eye nothing to
+    // measure a step against — you walk and cannot tell you are walking. The
+    // grid is the ground, and worth the small lie for that alone.
+    this.centreLines.visible = false;
+    this.boundsGroup.visible = false;
+    this.navGroup.visible = false;
+    this.ghostGroup.visible = false;
+    this.gizmo.detach();
+    this.outline.selectedObjects = [];
+    for (const badge of this._badges.values()) badge.sprite.visible = false;
+
+    this.orbit.enabled = false;
+    camera.rotation.order = 'YXZ';
+    camera.fov = PREVIEW_FOV;
+    camera.updateProjectionMatrix();
+
+    this.preview = {
+      restore,
+      yaw,
+      pitch: 0,
+      held: new Set(),
+      crouched: false,
+      eye: EYE_STANDING,
+      // Where the feet are. Height is kept apart from it because the eye rides
+      // above on two springs of its own — the crouch and the bob — and mixing
+      // the three into one number makes each of them impossible to reason about.
+      at: new THREE.Vector3(feet.x, 0, feet.z),
+      velocity: new THREE.Vector3(),
+      bob: 0,
+      listeners: [],
+    };
+
+    const on = (target, type, fn, opts) => {
+      target.addEventListener(type, fn, opts);
+      this.preview.listeners.push(() => target.removeEventListener(type, fn, opts));
+    };
+    on(window, 'keydown', (e) => this._previewKey(e, true));
+    on(window, 'keyup', (e) => this._previewKey(e, false));
+    on(window, 'blur', () => this.preview?.held.clear());
+    // `movementX` is filled in whether or not the pointer is locked, so looking
+    // still works if the lock is refused — the pointer simply leaves the canvas
+    // eventually, which is exactly the nuisance the lock is there to remove.
+    on(this.canvas, 'mousemove', (e) => this._previewLook(e.movementX || 0, e.movementY || 0));
+    // Clicking back into the view re-takes a lock the browser dropped, which it
+    // does on its own after Escape and on tabbing away.
+    on(this.canvas, 'mousedown', () => {
+      if (document.pointerLockElement !== this.canvas) this.canvas.requestPointerLock?.();
+    });
+    // Escape releases the lock before any key handler sees it, so the release
+    // is what ends the preview. Only once it has actually been held, or the
+    // lock being refused outright would close the preview on the spot.
+    on(document, 'pointerlockchange', () => {
+      if (document.pointerLockElement === this.canvas) this.preview.wasLocked = true;
+      else if (this.preview?.wasLocked) this.exitPreview();
+    });
+
+    this.canvas.style.cursor = 'none';
+    this.canvas.requestPointerLock?.();
+    this._lastFrame = 0;
+    this._stepPreview(0);
+    this.emit('preview', { on: true });
+  }
+
+  exitPreview() {
+    const p = this.preview;
+    if (!p) return;
+    this.preview = null;
+    for (const off of p.listeners) off();
+    if (document.pointerLockElement === this.canvas) document.exitPointerLock?.();
+
+    this.camera.position.copy(p.restore.position);
+    this.camera.quaternion.copy(p.restore.quaternion);
+    this.camera.rotation.order = p.restore.rotationOrder;
+    this.camera.fov = p.restore.fov;
+    this.camera.updateProjectionMatrix();
+    this.orbit.target.copy(p.restore.target);
+    this.orbit.enabled = true;
+
+    this.centreLines.visible = p.restore.centre;
+    this.boundsGroup.visible = p.restore.bounds;
+    this.navGroup.visible = p.restore.nav;
+    this.ghostGroup.visible = p.restore.ghosts;
+    for (const badge of this._badges.values()) badge.sprite.visible = true;
+    this._syncOutline();
+    this.rebuildPivot();
+
+    this.canvas.style.cursor = '';
+    this.emit('preview', { on: false });
+  }
+
+  /** The keys the walkaround answers to. Everything else is left alone. */
+  _previewKey(e, down) {
+    const p = this.preview;
+    if (!p) return;
+    const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if (key === 'Escape') {
+      if (down) this.exitPreview();
+      return;
+    }
+    if (key === 'c') {
+      // On the press, not the release, and a toggle rather than a hold: you
+      // crouch to look at something, and holding a key while you look at it is
+      // a third hand nobody has.
+      if (down && !e.repeat) p.crouched = !p.crouched;
+      e.preventDefault();
+      return;
+    }
+    const move = PREVIEW_KEYS[key];
+    if (!move) return;
+    e.preventDefault();
+    if (down) p.held.add(move);
+    else p.held.delete(move);
+  }
+
+  _previewLook(dx, dy) {
+    const p = this.preview;
+    if (!p) return;
+    p.yaw -= dx * LOOK_PER_PIXEL;
+    // Stopped just short of straight up and straight down. At the poles the
+    // heading is undefined and the view rolls as it passes through, which reads
+    // as the map turning over.
+    p.pitch = THREE.MathUtils.clamp(p.pitch - dy * LOOK_PER_PIXEL, -PITCH_LIMIT, PITCH_LIMIT);
+  }
+
+  /**
+   * One frame of walking.
+   *
+   * The keys ask for a speed rather than setting one, and the actual speed
+   * chases it — the same exponential approach the whole file uses, so it is
+   * frame-rate independent and has no overshoot. It is what stops a walk from
+   * starting and stopping like a lift door: a tenth of a second of run-up, and
+   * the same again of coasting when the key comes up.
+   *
+   * The bob rides on how fast you are actually going, which is what ties it to
+   * the ease: it fades up as you get under way and fades out as you coast to a
+   * stop, without either being written down anywhere. Its phase only advances
+   * while you are moving, so a stop leaves the head wherever the last step put
+   * it rather than snapping it level.
+   */
+  _stepPreview(dt) {
+    const p = this.preview;
+    const forward = (p.held.has('back') ? 1 : 0) - (p.held.has('forward') ? 1 : 0);
+    const strafe = (p.held.has('right') ? 1 : 0) - (p.held.has('left') ? 1 : 0);
+
+    const wish = new THREE.Vector3(strafe, 0, forward);
+    if (wish.lengthSq() > 0) wish.normalize().applyAxisAngle(new THREE.Vector3(0, 1, 0), p.yaw);
+    wish.multiplyScalar(WALK_SPEED);
+
+    const chase = (ease) => (dt > 0 ? 1 - Math.exp(-dt / ease) : 1);
+    p.velocity.lerp(wish, chase(WALK_EASE));
+    if (p.velocity.lengthSq() < 1e-8) p.velocity.set(0, 0, 0);
+    p.at.addScaledVector(p.velocity, dt);
+
+    const wanted = p.crouched ? EYE_CROUCHED : EYE_STANDING;
+    p.eye += (wanted - p.eye) * chase(CROUCH_EASE);
+
+    const pace = p.velocity.length() / WALK_SPEED;
+    p.bob += dt * BOB_STEPS * 2 * Math.PI * pace;
+    const bob = Math.sin(p.bob) * BOB_HEIGHT * pace;
+
+    this.camera.position.set(p.at.x, p.eye + bob, p.at.z);
+    this.camera.rotation.set(p.pitch, p.yaw, 0);
   }
 
   // -- spawner badge ---------------------------------------------------------
@@ -2163,10 +3065,21 @@ export class Viewport extends EventTarget {
   }
 
   _frame() {
-    this.orbit.update();
-    this.gizmo.update();
+    const now = performance.now() / 1000;
+    // Clamped, because a tab left in the background hands back a delta measured
+    // in minutes on the first frame after it wakes, and a walk of that length
+    // would put the player outside the map.
+    const dt = Math.min(0.1, this._lastFrame ? now - this._lastFrame : 0);
+    this._lastFrame = now;
+
+    if (this.preview) {
+      this._stepPreview(dt);
+    } else {
+      this.orbit.update();
+      this.gizmo.update();
+      this._placeBadges();
+    }
     this._holdFixedParts();
-    this._placeBadges();
     this.composer.render();
   }
 }

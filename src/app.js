@@ -58,6 +58,8 @@ let placingLabel = null;    // set while a library pick-up is following the curs
   wireInspectorTabs();
   wireMirrorTool();
   wireArrayTool();
+  wirePreviews();
+  wirePreviewButton();
   wireInspector();
   wireKeyboard();
   wireDragDrop();
@@ -74,6 +76,63 @@ let placingLabel = null;    // set while a library pick-up is following the curs
 
 function resize() {
   vp.resize();
+  placePreviewButton();
+}
+
+// ---------------------------------------------------------------------------
+// Preview walkaround
+// ---------------------------------------------------------------------------
+
+/**
+ * Put the Preview button in the middle of the top bar, or beside Tips when the
+ * middle is taken.
+ *
+ * The middle of the *bar*, which is the middle of the window — not the middle
+ * of whatever the controls happen to leave over, which drifts every time a
+ * label changes. So it is positioned absolutely and measured against its
+ * neighbours: the controls to its left end somewhere, Undo and Redo begin
+ * somewhere, and a centred button either clears both or it does not. When it
+ * does not it goes back into the flow, where it lands next to Tips.
+ *
+ * Measured with the button in the flow, always, because that is the only state
+ * in which its own width is known — an absolutely positioned element has been
+ * taken out of the row it would otherwise stretch.
+ */
+function placePreviewButton() {
+  const btn = $('b-preview');
+  const bar = $('topbar');
+  if (!btn || !bar) return;
+  btn.classList.remove('centred');
+  const barBox = bar.getBoundingClientRect();
+  const own = btn.getBoundingClientRect().width;
+  const left = btn.previousElementSibling?.getBoundingClientRect().right ?? barBox.left;
+  const right = btn.nextElementSibling?.getBoundingClientRect().left ?? barBox.right;
+  // Its neighbours do not move when it leaves the flow: what is left of it
+  // stays put, and Undo/Redo is pinned to the right-hand end by `margin-left:
+  // auto` whatever else is in the row.
+  const middle = (barBox.left + barBox.right) / 2;
+  const GAP = 14;
+  if (middle - own / 2 > left + GAP && middle + own / 2 < right - GAP) btn.classList.add('centred');
+}
+
+function wirePreviewButton() {
+  $('b-preview').onclick = () => vp.togglePreview();
+  vp.addEventListener('preview', (e) => {
+    const on = e.detail.on;
+    $('b-preview').classList.toggle('on', on);
+    $('b-preview').textContent = on ? 'Previewing' : 'Preview';
+    $('preview-hud').hidden = !on;
+    $('stage').classList.toggle('previewing', on);
+    // The button changes width with its label, so where it belongs may have
+    // changed with it.
+    placePreviewButton();
+    refreshStatus();
+    if (on) {
+      tip('preview',
+        'You are standing in the map at six feet. The arrow keys walk, the mouse looks, C crouches to '
+        + 'three feet, and Escape puts you back where you were in the editor.');
+    }
+  });
 }
 
 /**
@@ -141,6 +200,10 @@ function restore(snap) {
 }
 
 function commit() {
+  // A run of nudges is waiting to be recorded as one edit; whatever is being
+  // committed now closes it, and this *is* that record.
+  clearTimeout(nudgeCommit);
+  nudgeCommit = null;
   if (current) undoStack.push(current);
   if (undoStack.length > 120) undoStack.shift();
   redoStack.length = 0;
@@ -534,6 +597,42 @@ function selectionExtent() {
 }
 
 /**
+ * Where each copy of an array goes, relative to the original.
+ *
+ * Shared by the tool and by the ghosts that preview it, so what you are shown
+ * and what you get cannot drift apart. The steps are taken along the pivot's
+ * axes rather than the world's, so a rotated piece arrays along its own length
+ * instead of skewing off it; up stays up whatever the piece is doing. The
+ * original occupies cell 0,0,0 and is not in the list.
+ */
+function arraySteps({ nx, ny, nz, dx, dy, dz }) {
+  vp.pivot.updateMatrixWorld(true);
+  const basis = {
+    x: new THREE.Vector3(1, 0, 0).applyQuaternion(vp.pivot.quaternion),
+    y: new THREE.Vector3(0, 1, 0),
+    z: new THREE.Vector3(0, 0, 1).applyQuaternion(vp.pivot.quaternion),
+  };
+  const out = [];
+  for (let ix = 0; ix < nx; ix++) {
+    for (let iy = 0; iy < ny; iy++) {
+      for (let iz = 0; iz < nz; iz++) {
+        if (!ix && !iy && !iz) continue;
+        out.push({
+          // Each cell of the array gets its own group id, so the copies can be
+          // moved apart later without dragging the whole wall.
+          cell: `${ix},${iy},${iz}`,
+          step: new THREE.Vector3()
+            .addScaledVector(basis.x, ix * dx)
+            .addScaledVector(basis.y, iy * dy)
+            .addScaledVector(basis.z, iz * dz),
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * Duplicate the selection into a grid of copies — five across and six high
  * builds a wall in one go, and widening the spacing turns the same wall into a
  * row of barricades.
@@ -549,56 +648,68 @@ function arraySelection({ nx, ny, nz, dx, dy, dz }) {
   if (total > 500) return toast(`That is ${total} copies. Keep it under 500.`);
 
   const source = [...vp.selection];
-  vp.pivot.updateMatrixWorld(true);
-  const basis = {
-    x: new THREE.Vector3(1, 0, 0).applyQuaternion(vp.pivot.quaternion),
-    y: new THREE.Vector3(0, 1, 0),      // up is up, whatever the piece is doing
-    z: new THREE.Vector3(0, 0, 1).applyQuaternion(vp.pivot.quaternion),
-  };
-
   const made = [];
   const groups = new Map();
-  for (let ix = 0; ix < nx; ix++) {
-    for (let iy = 0; iy < ny; iy++) {
-      for (let iz = 0; iz < nz; iz++) {
-        if (!ix && !iy && !iz) continue;      // that one is the original
-        const step = new THREE.Vector3()
-          .addScaledVector(basis.x, ix * dx)
-          .addScaledVector(basis.y, iy * dy)
-          .addScaledVector(basis.z, iz * dz);
-        // Each cell of the array gets its own group id, so the copies can be
-        // moved apart later without dragging the whole wall.
-        const cell = `${ix},${iy},${iz}`;
-        for (const m of source) {
-          m.updateWorldMatrix(true, false);
-          const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
-          m.matrixWorld.decompose(p, q, s);
-          const copy = vp.addObject({
-            type: m.userData.def.type,
-            $type: m.userData.objectType,
-            props: { ...m.userData.props },
-            position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 },
-            dirty: true,
-          });
-          copy.position.copy(p).add(step);
-          copy.quaternion.copy(q);
-          copy.scale.copy(s);
-          if (m.userData.group) {
-            const key = `${cell}|${m.userData.group}`;
-            if (!groups.has(key)) groups.set(key, `g${groupSeq++}`);
-            copy.userData.group = groups.get(key);
-          }
-          made.push(copy);
-        }
+  for (const { cell, step } of arraySteps({ nx, ny, nz, dx, dy, dz })) {
+    for (const m of source) {
+      m.updateWorldMatrix(true, false);
+      const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+      m.matrixWorld.decompose(p, q, s);
+      const copy = vp.addObject({
+        type: m.userData.def.type,
+        $type: m.userData.objectType,
+        props: { ...m.userData.props },
+        position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 },
+        dirty: true,
+      });
+      copy.position.copy(p).add(step);
+      copy.quaternion.copy(q);
+      copy.scale.copy(s);
+      if (m.userData.group) {
+        const key = `${cell}|${m.userData.group}`;
+        if (!groups.has(key)) groups.set(key, `g${groupSeq++}`);
+        copy.userData.group = groups.get(key);
       }
+      made.push(copy);
     }
   }
+  // The array has been made, so the ghosts of it have nothing left to say.
+  arrayJustApplied = true;
   vp.setSelection([...source, ...made]);
+  // ...and the settings that made it are spent. Selecting the result refreshes
+  // the spacings to the block's own size; the counts are put back here. Without
+  // it the boxes still read 5 x 1 x 1 over a selection that is now the whole
+  // wall, so a second press — to array the wall itself, which is the obvious
+  // next move — silently makes five walls instead of the one that was meant.
+  resetArrayCounts();
   commit();
   toast(`Arrayed ${made.length} cop${made.length === 1 ? 'y' : 'ies'} — ${nx} x ${ny} x ${nz}.`);
   tip('array',
     'Each copy is its own group, so you can pull one out of the wall afterwards without dragging '
     + 'the rest with it.');
+}
+
+/**
+ * Where the mirror across `axis` puts one object, and whether it had to be
+ * turned inside out to get there.
+ *
+ * Shared by the tool and by its ghosts. Chirality is asked of the *source*
+ * piece: the copy's model may still be loading, and a themed swap is the same
+ * shape anyway.
+ */
+function mirroredPlacement(mesh, axis) {
+  mesh.updateWorldMatrix(true, false);
+  const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+  mesh.matrixWorld.decompose(p, q, s);
+  const turn = axis === 'x' ? [1, -1, -1] : [-1, -1, 1];   // quaternion x,y,z signs
+  const flipped = vp.needsMirrorFlip(mesh, axis);
+  if (flipped) s[axis] = -s[axis];
+  return {
+    position: new THREE.Vector3(axis === 'x' ? -p.x : p.x, p.y, axis === 'z' ? -p.z : p.z),
+    quaternion: new THREE.Quaternion(q.x * turn[0], q.y * turn[1], q.z * turn[2], q.w),
+    scale: s,
+    flipped,
+  };
 }
 
 /**
@@ -626,15 +737,12 @@ function arraySelection({ nx, ny, nz, dx, dy, dz }) {
  */
 function mirrorSelection(axis, packId = null) {
   if (!vp.selection.size) return toast('Select something to mirror.');
-  const turn = axis === 'x' ? [1, -1, -1] : [-1, -1, 1];   // quaternion x,y,z signs
   const made = [];
   const remap = new Map();
   let swapped = 0, kept = 0, flipped = 0;
 
   for (const m of [...vp.selection]) {
-    m.updateWorldMatrix(true, false);
-    const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
-    m.matrixWorld.decompose(p, q, s);
+    const placement = mirroredPlacement(m, axis);
 
     const target = packId ? equivalentIn(m.userData.def, packId) : null;
     const def = target || m.userData.def;
@@ -649,15 +757,10 @@ function mirrorSelection(axis, packId = null) {
       position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 },
       dirty: true,
     });
-    copy.position.set(axis === 'x' ? -p.x : p.x, p.y, axis === 'z' ? -p.z : p.z);
-    copy.quaternion.set(q.x * turn[0], q.y * turn[1], q.z * turn[2], q.w);
-    copy.scale.copy(s);
-    // Chirality is the source piece's, so it is asked of the source: the copy's
-    // model may still be loading, and a themed swap is the same shape anyway.
-    if (vp.needsMirrorFlip(m, axis)) {
-      copy.scale[axis] = -copy.scale[axis];
-      flipped++;
-    }
+    copy.position.copy(placement.position);
+    copy.quaternion.copy(placement.quaternion);
+    copy.scale.copy(placement.scale);
+    if (placement.flipped) flipped++;
     if (m.userData.group) {
       if (!remap.has(m.userData.group)) remap.set(m.userData.group, `g${groupSeq++}`);
       copy.userData.group = remap.get(m.userData.group);
@@ -665,6 +768,10 @@ function mirrorSelection(axis, packId = null) {
     made.push(copy);
   }
 
+  // The pointer is still on the Mirror panel — it is on the button that was
+  // just pressed — but the copies are real now, so the ghosts step aside until
+  // the pointer leaves and comes back.
+  mirrorHover = false;
   vp.setSelection(made);
   commit();
   const where = packId ? ` as ${getPack(packId)?.name ?? packId}` : '';
@@ -729,6 +836,11 @@ function wireToolbar() {
     activeRuleSet = 0;
     buildRules();
     undoStack = []; redoStack = []; current = snapshot();
+    // Back to where the editor opens. A new map is an empty arena, and leaving
+    // the camera wherever the last map's far corner left it means starting the
+    // new one looking at nothing — with no object on screen to say which way is
+    // which, or how far away you are.
+    vp.setView('persp');
     refreshAll();
     toast('New map started. It has no bot grid and no rule sets yet — both are yours to add.');
   };
@@ -755,6 +867,13 @@ function wireToolbar() {
   };
   ['snap-t', 'snap-t-v', 'snap-r', 'snap-r-v'].forEach((id) => ($(id).onchange = syncSnap));
   $('uniform').onchange = (e) => vp.setUniformScale(e.target.checked);
+
+  $('orbit-cursor').onchange = (e) => {
+    vp.setOrbitAtCursor(e.target.checked);
+    toast(e.target.checked
+      ? 'Orbiting about whatever is under the pointer. Middle-drag on a piece and it stays put.'
+      : 'Orbiting about the middle of the view.');
+  };
 
   // Nothing about the map changes here, so no commit and no edited stamp — it
   // is a way of looking at the scene, not a way of changing it.
@@ -874,28 +993,65 @@ function wireMirrorTool() {
   $('b-mirror').onclick = () => mirrorSelection($('mirror-axis').value, packSelect.value || null);
 }
 
-/**
- * The array tool. Counts and spacings are read at the moment you press Array,
- * so changing the selection first and the numbers after works either way round.
- */
-function wireArrayTool() {
+/** Whatever the array boxes currently say, as the tool takes them. */
+function arraySettings() {
   const num = (id, fallback) => {
     const v = parseFloat($(id).value);
     return Number.isFinite(v) ? v : fallback;
   };
-  $('b-array').onclick = () => arraySelection({
+  return {
     nx: Math.max(1, Math.round(num('arr-nx', 1))),
     ny: Math.max(1, Math.round(num('arr-ny', 1))),
     nz: Math.max(1, Math.round(num('arr-nz', 1))),
     dx: num('arr-dx', 1), dy: num('arr-dy', 1), dz: num('arr-dz', 1),
-  });
+  };
 }
+
+/**
+ * The array tool. Counts and spacings are read at the moment you press Array,
+ * so changing the selection first and the numbers after works either way round
+ * — and the ghosts in the view are read from the same six boxes as you type,
+ * so there is nothing left to picture.
+ */
+function wireArrayTool() {
+  $('b-array').onclick = () => arraySelection(arraySettings());
+  for (const id of ['arr-nx', 'arr-ny', 'arr-nz', 'arr-dx', 'arr-dy', 'arr-dz']) {
+    // `input` rather than `change`: the point of the preview is to answer the
+    // question while the number is still being typed.
+    $(id).oninput = () => { arrayPreviewOn = true; refreshPreview(); };
+  }
+}
+
+/**
+ * Put the counts back to 1 after an array has been made.
+ *
+ * Counts only. The spacings are the selection's own size and `refreshArrayDefaults`
+ * has already reset them against the new selection by the time this runs; setting
+ * `.value` from script fires no `input` event, so neither the ghosts nor
+ * `arrayPreviewOn` are disturbed.
+ */
+function resetArrayCounts() {
+  for (const id of ['arr-nx', 'arr-ny', 'arr-nz']) $(id).value = 1;
+}
+
+/** The grid the array's automatic spacing lands on. */
+const ARRAY_SPACING_STEP = 0.25;
 
 /**
  * Reset the spacings to the selection's own size whenever the selection
  * changes, so the common case — copies sitting flush — needs no arithmetic.
- * Counts are left alone: repeating the same 5 x 1 wall with a different piece
- * is a normal thing to want.
+ * Counts are left alone here: repeating the same 5 x 1 wall with a different
+ * piece is a normal thing to want, and merely picking a different object is no
+ * reason to retype the numbers. Applying the array is — see `resetArrayCounts`.
+ *
+ * The measured size is rounded to the nearest 25 cm on the way in. An object's
+ * mesh is whatever the artist built — a barrier is 1.04 m wide, a crate 0.98 —
+ * and arraying by that leaves a row sitting at 1.04, 2.08, 3.12, which lines up
+ * with nothing else on the map and cannot be typed back in later. A quarter
+ * metre is the grid the editor snaps to and the one the game's own placements
+ * fall on, so a row spaced by it stays on the grid however long it gets. The
+ * centimetre or two of overlap or gap that rounding introduces is the whole
+ * reason the number is still an editable box.
  */
 function refreshArrayDefaults() {
   const n = vp.selection.size;
@@ -903,9 +1059,86 @@ function refreshArrayDefaults() {
   $('b-array').disabled = !n;
   if (!n) return;
   const e = selectionExtent();
-  $('arr-dx').value = e.x;
-  $('arr-dy').value = e.y;
-  $('arr-dz').value = e.z;
+  const tidy = (v) => Math.max(ARRAY_SPACING_STEP,
+    Math.round(v / ARRAY_SPACING_STEP) * ARRAY_SPACING_STEP);
+  $('arr-dx').value = tidy(e.x);
+  $('arr-dy').value = tidy(e.y);
+  $('arr-dz').value = tidy(e.z);
+}
+
+// ---------------------------------------------------------------------------
+// Tool previews
+// ---------------------------------------------------------------------------
+// Array and Mirror both take a selection and a handful of settings and produce
+// a lot of objects, and until you press the button the only place the result
+// exists is in your head. So it is drawn: translucent copies, exactly where the
+// current settings would put real ones, updating as the settings change.
+//
+// Two rules keep them from becoming clutter. Array shows its ghosts whenever a
+// count is above 1, because that reading is unambiguous — a count of 1 means
+// nothing to preview. Mirror has no such tell, so it shows its ghosts while the
+// pointer is on its panel, and stops when the pointer leaves.
+
+const GHOST_LIMIT = 500;      // the array tool's own ceiling on copies
+
+let arrayPreviewOn = false;   // armed by the array boxes and by a new selection
+let arrayJustApplied = false; // the copies are real now; do not ghost them again
+let mirrorHover = false;      // the pointer, or the focus, is on the Mirror panel
+
+function wirePreviews() {
+  const panel = $('sec-mirror');
+  const enter = () => { mirrorHover = true; refreshPreview(); };
+  const leave = () => { mirrorHover = false; refreshPreview(); };
+  panel.addEventListener('pointerenter', enter);
+  panel.addEventListener('pointerleave', leave);
+  // Focus counts as well, so tabbing to the axis picker shows the same thing
+  // pointing at it does.
+  panel.addEventListener('focusin', enter);
+  panel.addEventListener('focusout', (e) => { if (!panel.contains(e.relatedTarget)) leave(); });
+  $('mirror-axis').addEventListener('change', refreshPreview);
+
+  // Nothing worth previewing mid-drag: the settings are about to be measured
+  // against a selection that is still moving.
+  vp.addEventListener('commit-begin', () => vp.clearGhosts());
+}
+
+/** Draw whichever tool has something to say, or nothing. */
+function refreshPreview() {
+  if (!vp.selection.size || vp.placing) return vp.clearGhosts();
+  vp.setGhosts(mirrorHover ? mirrorGhosts() : arrayGhosts());
+}
+
+function arrayGhosts() {
+  if (!arrayPreviewOn) return [];
+  const spec = arraySettings();
+  if (spec.nx * spec.ny * spec.nz <= 1) return [];
+  const source = [...vp.selection];
+  const out = [];
+  for (const { step } of arraySteps(spec)) {
+    for (const m of source) {
+      if (out.length >= GHOST_LIMIT) return out;
+      m.updateWorldMatrix(true, false);
+      const matrix = m.matrixWorld.clone();
+      const e = m.matrixWorld.elements;
+      matrix.setPosition(e[12] + step.x, e[13] + step.y, e[14] + step.z);
+      out.push({ source: m, matrix });
+    }
+  }
+  return out;
+}
+
+/**
+ * The mirrored copies, drawn in the source's own shape. A themed mirror swaps
+ * each piece for its equivalent in another pack, and the ghost does not follow
+ * it there: what the preview is for is where the copies land and which way
+ * round they face, and a themed equivalent is the same shape in another colour.
+ */
+function mirrorGhosts() {
+  const axis = $('mirror-axis').value;
+  return [...vp.selection].map((m) => {
+    const { position, quaternion, scale } = mirroredPlacement(m, axis);
+    return { source: m, matrix: new THREE.Matrix4().compose(position, quaternion, scale) };
+  });
 }
 
 /**
@@ -1015,14 +1248,12 @@ function buildSelectionPanel() {
     ${vecRow('Rotation', 'r', multi ? 'disabled' : '')}
     ${vecRow('Scale', 's', multi ? 'disabled' : '')}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:9px">
-      <button class="btn ghost" id="s-dup" title="Copy in place (Ctrl+D)">Duplicate</button>
       <button class="btn ghost" id="s-drop"
-        title="Let it fall until it rests on whatever is underneath — the top of another object, or the ground (Shift+End)">Drop</button>
+        title="Let it fall until it rests on whatever is underneath — the top of another object, or the ground. Loose objects each find their own landing; a group falls as one and keeps its stacking (Shift+End)">Drop</button>
       <button class="btn ghost" id="s-floor"
-        title="Put it on the ground, whatever is in the way (End)">To floor</button>
+        title="Put it on the ground, whatever is in the way. A group goes down as one, so a stack lands stacked (End)">To floor</button>
       <button class="btn ghost" id="s-group" title="Move these together from now on (G)">Group</button>
       <button class="btn ghost" id="s-ungroup" title="Break the group up (Shift+G)">Ungroup</button>
-      <span></span>
     </div>
     <button class="btn ghost" id="s-del" style="width:100%;margin-top:5px;color:var(--danger)">Delete</button>
   `;
@@ -1038,7 +1269,6 @@ function buildSelectionPanel() {
       input.onchange = () => applyNumericEdit();
     }
   }
-  $('s-dup').onclick = duplicate;
   $('s-drop').onclick = dropOntoSurface;
   $('s-floor').onclick = () => vp.dropSelection('floor');
   $('s-group').onclick = groupSelection;
@@ -2155,10 +2385,48 @@ function lockToggle(meshes, locked) {
 // Keyboard
 // ---------------------------------------------------------------------------
 
+/**
+ * What each arrow key means, as the *view* reads it: how far right across the
+ * screen, and how far away from the camera. Which world axis that turns out to
+ * be is the viewport's to work out — see `viewGroundAxes`.
+ */
+const NUDGE = {
+  ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1],
+};
+
+let nudgeCommit = null;
+
+/**
+ * Step the selection one grid square. A run of them is one undo step: an arrow
+ * key held down repeats about thirty times a second, and an edit apiece would
+ * push everything else out of the history before the piece had crossed the
+ * arena. The run ends when the keys stop, and only then is it recorded.
+ */
+function nudge(key, vertical) {
+  if (!vp.selection.size) return void toast('Select something to nudge.');
+  const [right, away] = NUDGE[key];
+  // Up and down is the one direction the ground plane has nothing to say
+  // about, so Shift lends it the two keys that already mean near and far.
+  const moved = vertical && away
+    ? vp.nudgeSelection(0, 0, away)
+    : vp.nudgeSelection(right, away);
+  if (!moved) return;
+  refreshPreview();
+  clearTimeout(nudgeCommit);
+  nudgeCommit = setTimeout(() => { nudgeCommit = null; commit(); }, 350);
+  tip('nudge',
+    'The arrow keys move the selection the way the view is facing, snapped to the nearest map axis '
+    + 'so it stays on the grid. Shift with up and down lifts it instead.');
+}
+
 function wireKeyboard() {
   addEventListener('keydown', (e) => {
     const typing = /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement?.tagName || '');
     if (typing) return;
+    // In the walkaround the keyboard belongs to the player. The arrows would
+    // otherwise nudge the selection about while you walked over it, and Escape
+    // would clear it on the way out.
+    if (vp.previewing) return;
     const mod = e.ctrlKey || e.metaKey;
 
     // The replace panel is waiting for a drag, so Escape belongs to it before
@@ -2179,6 +2447,8 @@ function wireKeyboard() {
     if (mod && e.key.toLowerCase() === 'v') { e.preventDefault(); paste(); return; }
     if (mod && e.key.toLowerCase() === 'a') { e.preventDefault(); vp.selectAll(); return; }
     if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); exportMap(); return; }
+
+    if (!mod && NUDGE[e.key]) { e.preventDefault(); nudge(e.key, e.shiftKey); return; }
 
     switch (e.key) {
       case 'f': case 'F': vp.frameSelection(); break;
@@ -2292,7 +2562,17 @@ function wireViewport() {
     box.style.height = `${r.y2 - r.y1}px`;
   });
   vp.addEventListener('marquee-end', () => { box.style.display = 'none'; });
-  vp.addEventListener('selection', () => { buildSelectionPanel(); buildOutliner(); refreshArrayDefaults(); refreshStatus(); });
+  vp.addEventListener('selection', () => {
+    buildSelectionPanel();
+    buildOutliner();
+    refreshArrayDefaults();
+    // A new selection is a new question for the array tool to answer — except
+    // the one the tool makes for itself, which is the answer.
+    arrayPreviewOn = !arrayJustApplied;
+    arrayJustApplied = false;
+    refreshPreview();
+    refreshStatus();
+  });
   vp.addEventListener('transform', () => { refreshSelectionValues(); refreshStatus(); });
   vp.addEventListener('commit-end', () => commit());
   vp.addEventListener('placement-end', (e) => {
@@ -2785,6 +3065,7 @@ function refreshAll() {
   buildSelectionPanel();
   refreshModeAvailability();
   refreshMeta();
+  refreshPreview();
   refreshStatus();
   $('b-undo').disabled = !undoStack.length;
   $('b-redo').disabled = !redoStack.length;
@@ -2794,6 +3075,7 @@ function refreshStatus() {
   const n = vp.selection.size;
   $('sel-count').textContent = n ? `${n} selected` : 'none';
   $('st-mode').textContent =
+    (vp.previewing ? 'walkaround · ' : '') +
     `${vp.uniformScale ? 'uniform' : 'per-axis'} · ` +
     `grid ${vp.snap.translate ? vp.snap.translate + 'm' : 'off'} · ` +
     `angle ${vp.snap.rotate ? vp.snap.rotate + '°' : 'off'}` +
