@@ -96,8 +96,9 @@ is local.
 
 Delete anything from \`assets/Prefabs/\` and those objects fall back to the
 editor's own stand-in shapes; the **Stand-ins** switch in the toolbar shows
-them at any time. \`assets/\` is Spatial Ops' artwork, included with the
-developers' permission and not covered by this project's MIT licence.
+them at any time. \`assets/\` is Spatial Ops' artwork, owned by its makers and
+included with their permission to redistribute it with this editor. Everything
+here is under the OpsForge Project & Asset License — see \`LICENSE.md\`.
 
 Exported maps have **no file extension**. That is correct — copy the file
 straight into the game's maps folder.
@@ -128,7 +129,8 @@ export function packageRelease({ out, zip = true } = {}) {
   const packs = join(ROOT, 'packs');
   if (existsSync(packs)) cpSync(packs, join(dest, 'packs'), { recursive: true });
 
-  for (const f of ['README.md', 'LICENSE', 'LICENCE']) {
+  // LICENSE.md travels with every copy — section 3.2 requires it.
+  for (const f of ['README.md', 'LICENSE.md']) {
     if (existsSync(join(ROOT, f))) cpSync(join(ROOT, f), join(dest, f));
   }
   writeFileSync(join(dest, 'HOW-TO-RUN.md'), howToRun(), 'utf8');

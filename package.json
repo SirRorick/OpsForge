@@ -1,9 +1,9 @@
 {
   "name": "spatial-ops-map-editor",
   "version": "0.1.0",
-  "description": "Visual 3D map editor for the VR game Spatial Ops",
+  "description": "OpsForge — a self-hosted 3D map editor for the VR game Spatial Ops",
   "type": "module",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE.md",
   "private": false,
   "scripts": {
     "test": "node --test test/*.test.mjs",

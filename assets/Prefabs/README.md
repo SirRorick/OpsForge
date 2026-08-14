@@ -6,8 +6,10 @@ out of an AssetRipper extraction of the game and are written here by
 a few hundred pixels tall in a viewport, and the dump's 2048 px originals are
 four hundred megabytes of detail nobody sees.
 
-Like `../Icons`, these are the game's artwork, included with the developers'
-permission and not covered by this project's MIT licence.
+Like `../Icons`, these are the game's artwork, owned by its makers and included
+with their permission to redistribute them with this editor. That permission
+covers this project; it is not a grant to reuse the models anywhere else. See
+[LICENSE.md](../../LICENSE.md), section 5.
 
 Delete any of them and that object falls back to its stand-in shape from
 `src/placeholders.js` — a partial folder is fine, and an empty one still runs.
