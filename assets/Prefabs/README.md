@@ -1,16 +1,17 @@
-# Real game models go here
+# The game's models
 
-This folder is empty in the repository and ignored by git. Without it the editor
-draws the stand-in shapes in `src/placeholders.js`, which is the normal way to
-run it and needs nothing from you.
+Spatial Ops' own meshes, which is what the editor draws by default. They come
+out of an AssetRipper extraction of the game and are written here by
+`npm run stage-assets`, which caps their textures at 512 px — objects are drawn
+a few hundred pixels tall in a viewport, and the dump's 2048 px originals are
+four hundred megabytes of detail nobody sees.
 
-To see the game's own models instead, extract Spatial Ops with AssetRipper and
-copy the files below into this folder as `.glb`. Anything missing simply keeps
-its stand-in, so a partial set is fine — drop in the barriers alone if that is
-all you care about.
+Like `../Icons`, these are the game's artwork, included with the developers'
+permission and not covered by this project's MIT licence.
 
-The **Stand-ins** switch in the toolbar flips between the two at any time, which
-is the quickest way to tell whether a file landed.
+Delete any of them and that object falls back to its stand-in shape from
+`src/placeholders.js` — a partial folder is fine, and an empty one still runs.
+The **Stand-ins** switch in the toolbar flips between the two at any time.
 
 180 files:
 

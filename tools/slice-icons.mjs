@@ -141,18 +141,42 @@ function chunk(type, data) {
   return out;
 }
 
-/** Encode RGBA. Paeth-filtered throughout, which is what these icons like. */
+/**
+ * Encode RGBA. Paeth-filtered throughout, which is what these icons like.
+ *
+ * The alpha channel is dropped when every pixel is opaque. That is lossless by
+ * definition and it is not a micro-optimisation: it takes a quarter off the
+ * bytes the filter and deflate then have to chew through, and the prefab
+ * textures — where this matters, hundreds of megabytes of them — are mostly
+ * diffuse maps with no transparency at all. Icons are sprites on a transparent
+ * background, so they keep their alpha and nothing about them changes.
+ */
 export function encodePng({ width, height, data }) {
-  const stride = width * 4;
+  let opaque = true;
+  for (let i = 3; i < data.length; i += 4) {
+    if (data[i] !== 255) { opaque = false; break; }
+  }
+  const channels = opaque ? 3 : 4;
+  const stride = width * channels;
   const raw = Buffer.alloc((stride + 1) * height);
   let prev = Buffer.alloc(stride);
   for (let y = 0; y < height; y++) {
-    const line = data.subarray(y * stride, (y + 1) * stride);
+    // Repack to RGB on the way in when there is no alpha to carry.
+    let line;
+    if (opaque) {
+      line = Buffer.alloc(stride);
+      for (let x = 0; x < width; x++) {
+        const s = (y * width + x) * 4;
+        line[x * 3] = data[s]; line[x * 3 + 1] = data[s + 1]; line[x * 3 + 2] = data[s + 2];
+      }
+    } else {
+      line = data.subarray(y * stride, (y + 1) * stride);
+    }
     const o = y * (stride + 1);
     raw[o] = 4;
     for (let i = 0; i < stride; i++) {
-      const a = i >= 4 ? line[i - 4] : 0;
-      const c = i >= 4 ? prev[i - 4] : 0;
+      const a = i >= channels ? line[i - channels] : 0;
+      const c = i >= channels ? prev[i - channels] : 0;
       raw[o + 1 + i] = (line[i] - paeth(a, prev[i], c)) & 0xff;
     }
     prev = line;
@@ -160,7 +184,7 @@ export function encodePng({ width, height, data }) {
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(width, 0);
   ihdr.writeUInt32BE(height, 4);
-  ihdr[8] = 8; ihdr[9] = 6;
+  ihdr[8] = 8; ihdr[9] = opaque ? 2 : 6;
   return Buffer.concat([
     PNG_MAGIC,
     chunk('IHDR', ihdr),

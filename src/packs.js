@@ -737,9 +737,13 @@ export const BUILTIN_PACKS = [
       size: [0.522, 0.671, 0.522], pivot: "base", rotationAxes: "y", floor: true,
       defaultScale: [1, 1, 1], model: "StreetStyleBarrel",
       texture: "StreetStyleBarrelCrate_Diffuse.png", icon: "icon_Grafitti_Barrel" },
+    // Measured, not estimated, since `npm run graft-fbx` put the bird's own
+    // mesh back into the prefab. The old 0.34 depth came off the only mesh the
+    // prefab had, which was the hologram shell — and that is the pigeon scaled
+    // by 1.1, so every guess taken from it was a tenth too big.
     { type: "GraffitiPigeon", label: "Pigeon", category: "Objects", shape: "pigeon",
-      size: [0.18, 0.26, 0.34], pivot: "base", anchor: [0.507, 0.33], rotationAxes: "y",
-      floor: true, defaultScale: [1, 1, 1], uncertain: true, model: "StreetStylePigeon",
+      size: [0.183, 0.263, 0.297], pivot: "base", anchor: [0.5, 0.348], rotationAxes: "y",
+      floor: true, defaultScale: [1, 1, 1], model: "StreetStylePigeon",
       icon: "icon_Grafitti_Pidgeon" },
     { type: "GraffitiBoxSolid", label: "Solid Box", category: "Shapes", shape: "box",
       size: [1, 1, 1], pivot: "center", rotationAxes: "xyz", floor: false,
@@ -1086,24 +1090,29 @@ export const BUILTIN_PACKS = [
       floor: true, color: "#5AD6A0", defaultScale: [1, 1, 1], model: "DominationZoneC",
       texture: "Circle Outline 1024px - Stroke 10px.png", tintModel: true, cutout: true,
       badge: "C", icon: "Icon_FlagC" },
-    // The two flag prefabs carry no meshes — the flag is built at runtime — so
-    // the placeholder is what the editor draws whether or not the asset dump is
-    // present. Its size is off the prefab's colliders, outline box and bone
-    // chain rather than off a mesh: a 2.15 m pole 0.2 m across, with the cloth
-    // hanging at y = 1.793 and reaching 0.537 m from it. `anchor` puts the pole
-    // on the object's origin, where the game has it, instead of in the middle
-    // of a footprint the cloth stretches to one side.
+    // Both flag prefabs exported with their bones, colliders and outline but no
+    // mesh — Unity keeps a SkinnedMeshRenderer's mesh in a separate asset, and
+    // that asset was published on its own. `npm run graft-fbx` puts it back, so
+    // these draw the game's own cloth now; the stand-in stays as the fallback.
+    //
+    // The size is still off the prefab's colliders and outline box rather than
+    // off the mesh, because they disagree and the box is the honest one: a
+    // 2.15 m column 0.2 m across, of which the art fills 0.8 m to 1.9 m and the
+    // rest is the empty air the flag hangs in. Hence `hover` — see seatOnFloor.
+    // The cloth reaches 0.537 m to one side, and `anchor` puts the pole on the
+    // object's origin, where the game has it, instead of in the middle of a
+    // footprint the cloth stretches to one side.
     //
     // Team 1 is blue and team 2 orange throughout the catalog — the spawn zone
     // icons and the damage box styles both say so — and these two had each
     // other's icons.
     { type: "CaptureFlagSpawnTeam1", label: "Capture Flag Blue Team",
       category: "Capture The Flag", shape: "flagSpawn", size: [0.637, 2.15, 0.2], pivot: "base",
-      anchor: [0.157, 0.5], rotationAxes: "y", floor: true, color: "#4A90D9",
+      anchor: [0.157, 0.5], rotationAxes: "y", floor: true, color: "#4A90D9", hover: true,
       defaultScale: [1, 1, 1], model: "CaptureFlagSpawnPointTeam1", icon: "Icon_PurpleTeamFlag" },
     { type: "CaptureFlagSpawnTeam2", label: "Capture Flag Orange Team",
       category: "Capture The Flag", shape: "flagSpawn", size: [0.637, 2.15, 0.2], pivot: "base",
-      anchor: [0.157, 0.5], rotationAxes: "y", floor: true, color: "#E08A3C",
+      anchor: [0.157, 0.5], rotationAxes: "y", floor: true, color: "#E08A3C", hover: true,
       defaultScale: [1, 1, 1], model: "CaptureFlagSpawnPointTeam2", icon: "Icon_OrangeTeamFlag" },
     ],
   },

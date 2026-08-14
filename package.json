@@ -14,9 +14,9 @@
     "measure-prefabs": "node tools/measure-prefabs.mjs",
     "match-assets": "node tools/match-assets.mjs",
     "trace-prefabs": "node tools/trace-prefabs.mjs",
+    "graft-fbx": "node tools/graft-fbx.mjs",
     "stage-assets": "node tools/stage-assets.mjs",
-    "package": "node tools/package-selfhosted.mjs",
-    "package:public": "node tools/package-selfhosted.mjs --public"
+    "package": "node tools/package.mjs"
   },
   "engines": {
     "node": ">=18"

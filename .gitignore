@@ -13,17 +13,16 @@ reference/GameAssets/
 # published.
 reference/
 
-# assets/Icons is committed — the library thumbnails. assets/Prefabs is not:
-# those are the game's meshes, staged locally by `npm run stage-assets`. A fresh
-# clone therefore has thumbnails and the stand-in shapes, which is the intended
-# open-source experience.
-assets/Prefabs/*
-!assets/Prefabs/README.md
+# assets/ is committed in full — thumbnails and meshes both. They are the
+# game's artwork, included with the developers' permission, staged out of the
+# dump by `npm run stage-assets`. A fresh clone is the whole editor.
 
-# The release folder assembled by `npm run package:public`. dist/ itself is
-# committed — that single bundled file is the build — but this is a copy of it
-# plus the icons, zipped up for a GitHub release and rebuilt on demand.
-dist/spatial-ops-map-editor/
+# dist/ is a build output and nothing else: `npm run build` writes the bundle
+# there and `npm run package` assembles the release folder and its zip beside
+# it. All of it is reproducible from src/ and assets/, and the zip alone is
+# bigger than the rest of the repository, so none of it is committed. Releases
+# carry the artefact; git carries what it was built from.
+dist/
 
 # Local working directories, kept on the machine.
 test/

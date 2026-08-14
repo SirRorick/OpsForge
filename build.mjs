@@ -11,6 +11,7 @@
 import { readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { Script } from 'node:vm';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 export const ORDER = [
@@ -39,6 +40,7 @@ export function build() {
       return '';
     });
     src = src.replace(EXPORT_KW, '');
+    checkParses(name, src);
 
     bodies.push(`// ==== src/${name} ${'='.repeat(Math.max(0, 60 - name.length))}\n${src.trim()}\n`);
   }
@@ -55,6 +57,30 @@ export function build() {
   const out = join(ROOT, 'dist', 'spatial-ops-map-editor.html');
   writeFileSync(out, html.replace(SCRIPT_TAG, `<script type="module">\n${bundle}\n</script>`), 'utf8');
   return out;
+}
+
+/**
+ * Does this module still parse?
+ *
+ * `scene.js` and `app.js` reach for three.js and a canvas, so nothing outside a
+ * browser ever loads them — `npm test` cannot, and does not try. That leaves a
+ * plain syntax error with nothing between it and a release: the bundler here is
+ * string manipulation and will happily paste a broken file into `dist/`, where
+ * the first sign of trouble is a blank page. A stray backtick inside a template
+ * literal did exactly that.
+ *
+ * Parsing is all that happens. `new vm.Script` compiles and does not run, so a
+ * module that expects a browser is no obstacle — and by this point the imports
+ * and exports have been stripped, which is what makes the source legal as a
+ * classic script. The async wrapper is only so top-level `await` stays as legal
+ * here as it is in the module this really ends up inside.
+ */
+export function checkParses(name, source) {
+  try {
+    new Script(`(async () => {\n${source}\n})`, { filename: `src/${name}` });
+  } catch (err) {
+    throw new Error(`src/${name} does not parse: ${err.message}`);
+  }
 }
 
 /**

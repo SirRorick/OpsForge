@@ -2,30 +2,32 @@
 // stage-assets.mjs — fill assets/ from the raw dump
 // ---------------------------------------------------------------------------
 // Usage:
-//   npm run stage-assets              icons and prefabs
-//   npm run stage-assets -- --icons   just the icons
-//   npm run stage-assets -- --prefabs just the prefabs
-//   npm run stage-assets -- --size 256
+//   npm run stage-assets                     icons and prefabs
+//   npm run stage-assets -- --icons          just the icons
+//   npm run stage-assets -- --prefabs        just the prefabs
+//   npm run stage-assets -- --size 256       icon size (default 128)
+//   npm run stage-assets -- --texture-size 0 leave prefab textures alone
 //
-// There is one editor, not two. `assets/` is where it looks for art, and the
-// difference between the public build and the private one is only ever what is
-// sitting in that folder:
+// `assets/` is where the editor looks for art, and this is what fills it:
 //
-//   assets/Icons/     library thumbnails. Committed, downscaled to 128 px.
-//   assets/Prefabs/   the game's meshes. **Gitignored.** Present on your
-//                     machine, absent in the repo, where the editor falls back
-//                     to the stand-in shapes in src/placeholders.js.
+//   assets/Icons/     library thumbnails, downscaled to 128 px.
+//   assets/Prefabs/   the game's meshes, textures capped at 512 px.
+//
+// Both are committed. They are the game's artwork, redistributed with the
+// developers' permission; `assets/Icons/NOTICE.md` records where they came
+// from. Anything missing from `assets/Prefabs/` falls back to the stand-in
+// shapes in src/placeholders.js, so a partial folder still runs.
 //
 // So this tool is the bridge from `reference/GameAssets/` — the raw AssetRipper
 // dump, a gigabyte of it, gitignored — to the few hundred files the editor
 // actually asks for. Run it after changing the catalog, and again if the dump
 // is re-extracted.
 //
-// **The icons are the game's own art.** Downscaling them is not a legal
-// argument, it is a size one: they are drawn at about 100 px and shipping five
-// times that in a repository's permanent history is waste. Whether they belong
-// in a public repository at all is a decision for whoever publishes it, and
-// `assets/Icons/NOTICE.md` records where they came from.
+// **Both sizes are size decisions, not quality ones.** Icons are drawn at about
+// 100 px and prefabs a few hundred tall in a viewport; the dump ships 1024 px
+// icons and 2048 px textures. Shipping several times what anyone will see, in a
+// repository's permanent history where it can never be taken back out, is the
+// waste worth avoiding. Pass `--texture-size 0` for the dump's own resolution.
 //
 // Textures are deliberately not staged. The prefab GLBs embed their own images
 // and nothing fetches `Textures/` at runtime, so the 471 MB of them stay in the
@@ -36,6 +38,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, readdirSy
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { decodePng, encodePng } from './slice-icons.mjs';
+import { parseGlb, serialiseGlb, repack, viewBytes } from './glb.mjs';
 import { BUILTIN_PACKS, WEAPON_ICONS, ENEMY_ICONS, ENEMY_MODELS } from '../src/packs.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -114,6 +117,57 @@ export function downscale({ width, height, data }, target) {
 
 const mb = (n) => `${(n / 1048576).toFixed(1)} MB`;
 
+/**
+ * Cap the textures a prefab carries, and share the ones it repeats.
+ *
+ * The dump's prefabs are 88% embedded PNG by weight, at up to 2048 square, and
+ * that is the wrong trade for this editor twice over. Objects are drawn a few
+ * hundred pixels tall in a viewport — the same argument that puts the icons at
+ * 128 px — and the folder has to be small enough to live in a repository's
+ * permanent history. A 2048 map on a crate is detail nobody will ever see at a
+ * cost everybody pays on every clone.
+ *
+ * Sharing comes free alongside it and is worth more than the resizing: the five
+ * street-style barriers each embed their own copy of the same 5 MB sheet, and
+ * across the set that duplication is over half the bytes. `repack` folds
+ * identical views into one.
+ *
+ * Anything that is not a plain 8-bit PNG is passed through untouched rather
+ * than guessed at. The decoder is deliberately narrow and a prefab that trips
+ * it should arrive intact and oversized, not mangled.
+ */
+export function shrinkTextures(bytes, cap) {
+  const { json, bin } = parseGlb(bytes);
+  const images = new Map();   // buffer view index -> replacement bytes
+  let before = 0, after = 0, resized = 0;
+
+  for (const image of json.images ?? []) {
+    if (image.bufferView === undefined || images.has(image.bufferView)) continue;
+    const src = viewBytes(json, bin, image.bufferView);
+    before += src.length;
+    let out = src;
+    try {
+      const px = decodePng(src);
+      if (Math.max(px.width, px.height) > cap) resized++;
+      // Re-encoded even at its existing size: the dump's PNGs are written for
+      // speed, and a Paeth filter at deflate level 9 takes a third off them
+      // without touching a pixel.
+      out = encodePng(downscale(px, cap));
+      if (out.length >= src.length) out = src;
+    } catch {
+      // Not a PNG this decoder handles — a JPEG, 16-bit, or interlaced.
+    }
+    after += out.length;
+    images.set(image.bufferView, out);
+  }
+
+  const packed = repack(json, bin, (i) => images.get(i) ?? null);
+  return {
+    bytes: serialiseGlb(packed.json, packed.bin),
+    before, after, resized, shared: packed.shared,
+  };
+}
+
 function stageIcons(icons, size) {
   const dir = join(OUT, 'Icons');
   mkdirSync(dir, { recursive: true });
@@ -136,47 +190,63 @@ function stageIcons(icons, size) {
   return { count: icons.length - missing.length, bytes, missing };
 }
 
-function stagePrefabs(models) {
+function stagePrefabs(models, cap, onProgress) {
   const dir = join(OUT, 'Prefabs');
   mkdirSync(dir, { recursive: true });
-  let bytes = 0;
+  // Clear stale models, the way the icons are cleared: a renamed catalog entry
+  // should not leave ten megabytes behind in the repository for ever.
+  const keep = new Set(models.map((m) => `${m}.glb`));
+  keep.add('README.md');
+  for (const f of readdirSync(dir)) if (!keep.has(f)) rmSync(join(dir, f));
+
+  let bytes = 0, raw = 0, resized = 0, shared = 0;
   const missing = [];
-  for (const name of models) {
+  for (const [i, name] of models.entries()) {
     const src = join(DUMP, 'Prefabs', `${name}.glb`);
     if (!existsSync(src)) { missing.push(name); continue; }
-    writeFileSync(join(dir, `${name}.glb`), readFileSync(src));
-    bytes += statSync(src).size;
+    onProgress?.(i + 1, models.length, name);
+    raw += statSync(src).size;
+    let out = readFileSync(src);
+    if (cap) {
+      const r = shrinkTextures(out, cap);
+      out = r.bytes;
+      resized += r.resized;
+      shared += r.shared;
+    }
+    writeFileSync(join(dir, `${name}.glb`), out);
+    bytes += out.length;
   }
   writeFileSync(join(dir, 'README.md'), prefabReadme(models));
-  return { count: models.length - missing.length, bytes, missing };
+  return { count: models.length - missing.length, bytes, raw, resized, shared, missing };
 }
 
 const ICON_NOTICE = `# Where these came from
 
 These thumbnails are sliced out of Spatial Ops' own sprite atlases by
-\`npm run slice-icons\`, and downscaled by \`npm run stage-assets\`. They are the
-game's artwork, reproduced here so the object library is recognisable.
+\`npm run slice-icons\`, and downscaled to 128 px by \`npm run stage-assets\`.
 
-They are not covered by this project's licence. If you are redistributing this
-editor and would rather not carry them, delete this folder — the library falls
-back to rendering each object's stand-in shape as its thumbnail, and nothing
-else changes.
+They are the game's artwork, included here with the developers' permission, and
+they are not covered by this project's MIT licence — that covers the code. If
+you fork this and would rather not carry them, delete the folder: the library
+falls back to drawing each object's stand-in shape as its thumbnail, and
+nothing else changes.
 `;
 
 function prefabReadme(models) {
-  return `# Real game models go here
+  return `# The game's models
 
-This folder is empty in the repository and ignored by git. Without it the editor
-draws the stand-in shapes in \`src/placeholders.js\`, which is the normal way to
-run it and needs nothing from you.
+Spatial Ops' own meshes, which is what the editor draws by default. They come
+out of an AssetRipper extraction of the game and are written here by
+\`npm run stage-assets\`, which caps their textures at 512 px — objects are drawn
+a few hundred pixels tall in a viewport, and the dump's 2048 px originals are
+four hundred megabytes of detail nobody sees.
 
-To see the game's own models instead, extract Spatial Ops with AssetRipper and
-copy the files below into this folder as \`.glb\`. Anything missing simply keeps
-its stand-in, so a partial set is fine — drop in the barriers alone if that is
-all you care about.
+Like \`../Icons\`, these are the game's artwork, included with the developers'
+permission and not covered by this project's MIT licence.
 
-The **Stand-ins** switch in the toolbar flips between the two at any time, which
-is the quickest way to tell whether a file landed.
+Delete any of them and that object falls back to its stand-in shape from
+\`src/placeholders.js\` — a partial folder is fine, and an empty one still runs.
+The **Stand-ins** switch in the toolbar flips between the two at any time.
 
 ${models.length} files:
 
@@ -188,12 +258,18 @@ function main() {
   const args = process.argv.slice(2);
   const only = { icons: args.includes('--icons'), prefabs: args.includes('--prefabs') };
   const both = !only.icons && !only.prefabs;
-  const sizeArg = args.indexOf('--size');
-  const size = sizeArg >= 0 ? Number(args[sizeArg + 1]) : 128;
-  if (!Number.isFinite(size) || size < 16) {
-    console.error('--size wants a number of pixels, 16 or more.');
-    process.exit(1);
-  }
+  const number = (flag, fallback, floor) => {
+    const i = args.indexOf(flag);
+    if (i < 0) return fallback;
+    const n = Number(args[i + 1]);
+    if (!Number.isFinite(n) || (n !== 0 && n < floor)) {
+      console.error(`${flag} wants a number of pixels, ${floor} or more (or 0 to leave them alone).`);
+      process.exit(1);
+    }
+    return n;
+  };
+  const size = number('--size', 128, 16);
+  const cap = number('--texture-size', 512, 64);
 
   const { icons, models } = requiredAssets();
   console.log(`Catalog asks for ${icons.length} icons and ${models.length} models.`);
@@ -211,8 +287,20 @@ function main() {
     if (r.missing.length) console.log(`         ${r.missing.length} not in the dump: ${r.missing.slice(0, 4).join(', ')}${r.missing.length > 4 ? ' ...' : ''}`);
   }
   if (both || only.prefabs) {
-    const r = stagePrefabs(models);
-    console.log(`Prefabs  ${String(r.count).padStart(4)}            ${mb(r.bytes).padStart(9)}  -> assets/Prefabs  (gitignored)`);
+    // Re-encoding 180 prefabs takes a minute and a half, so say where it is up
+    // to — but only to a terminal. Piped to a file, 180 lines of progress are
+    // just noise around the one line that matters.
+    const tick = (n, of, name) => {
+      process.stdout.write(`\rPrefabs  ${String(n).padStart(4)}/${of}  ${name.slice(0, 34).padEnd(34)}`);
+    };
+    const r = stagePrefabs(models, cap, cap && process.stdout.isTTY ? tick : null);
+    if (process.stdout.isTTY) process.stdout.write(`\r${' '.repeat(56)}\r`);
+    const at = cap ? ` at ${cap}px` : '';
+    console.log(`Prefabs  ${String(r.count).padStart(4)}${at.padEnd(12)}${mb(r.bytes).padStart(9)}  -> assets/Prefabs`);
+    if (cap) {
+      console.log(`         ${r.resized} textures resized, ${r.shared} duplicate views shared, ` +
+        `down from ${mb(r.raw)} (${(100 - (r.bytes / r.raw) * 100).toFixed(0)}% off)`);
+    }
     if (r.missing.length) console.log(`         ${r.missing.length} not in the dump: ${r.missing.slice(0, 4).join(', ')}${r.missing.length > 4 ? ' ...' : ''}`);
   }
 }
