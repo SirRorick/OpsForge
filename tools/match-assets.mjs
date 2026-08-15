@@ -260,7 +260,7 @@ const WEAPON_ICONS = {
 /**
  * Pairings that are reasoned rather than read. Reported so they never pass as
  * confirmed. The crystals are the notable ones: the art numbers them 01..03 and
- * the type strings describe them, with nothing in the dump linking the two.
+ * the type strings describe them, with nothing in the assets linking the two.
  * Small is settled by footprint — Crystal03 is much the smallest — and Circle
  * against HalfCircle by roundness, Crystal02 being 1.61 x 1.36 where Crystal01
  * is the flatter arc at 1.83 x 1.15.

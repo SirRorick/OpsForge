@@ -52,7 +52,7 @@
 //   text          { prop, inset } — paint the object's `prop` across its front
 //                 face as text, `inset` metres in from each edge. Same idea as
 //                 `screen` and the same cause: the prefab is a Unity canvas and
-//                 the extraction brought out no mesh at all
+//                 the prefab carries no mesh at all
 //   area          { parts, height, opacity } — regex naming the prefab nodes
 //                 that draw the *volume* an objective covers rather than any
 //                 solid part of it, flattened to `height` metres on the floor
@@ -61,8 +61,8 @@
 //                 "enemy" reads the ENEMIES table above
 //   screen        { image, inset } — paint `image` across the front face,
 //                 `inset` metres in from every edge, for a prefab whose display
-//                 the game draws as a UI canvas and the extraction therefore
-//                 left empty. `image` is staged by tools/stage-assets.mjs
+//                 the game draws as a UI canvas and the prefab therefore
+//                 leaves empty. `image` is staged by tools/stage-assets.mjs
 //   cutout        the prefab's texture is mostly transparent and the export
 //                 forgot to say so — a ground ring drawn on one flat quad
 //   badge         short text floated above the object in the viewport
@@ -74,7 +74,8 @@
 //   hidden        loads and exports normally but is not offered in the library
 //
 // `model`, `texture` and `icon` are resolved by tools/match-assets.mjs and are
-// pointers into the gitignored asset dump, so the editor still runs without it:
+// pointers into the gitignored game assets, so the editor still runs
+// without them:
 // nothing loads them yet and the procedural placeholder stands in. They are not
 // derivable from the type string — the catalog is keyed by what the game writes
 // and the art by whatever the artists called it, and the two agree about half
@@ -148,7 +149,7 @@ export const WEAPONS = [
 ];
 
 /**
- * Sliced sprite per weapon. Not derivable: the dump spells the grenade
+ * Sliced sprite per weapon. Not derivable: the assets spell the grenade
  * "granade" and calls the riot shield a shield.
  */
 export const WEAPON_ICONS = {
@@ -249,7 +250,7 @@ export function formatWeapons(list) {
 // with an `id` and nothing else still loads, exports and edits correctly — it
 // just draws as a plain chip and leaves the pad bare.
 //
-// The models are confirmed: every id below has a prefab in the dump holding a
+// The models are confirmed: every id below has a prefab holding a
 // textured figure of exactly that enemy. The icons are matched by name and are
 // the weakest part — the `filled_Icon_*_silhouette` family is the only one that
 // covers drones and the Corrupted variants, which is what makes it the enemy
@@ -1142,7 +1143,7 @@ export const BUILTIN_PACKS = [
       texture: "ExplosiveBarrel_Diffuse.png", icon: "Icon_ExplosiveBarrel" },
     // The prefab is a frame around a hole: what fills it in game is a Unity
     // canvas drawn at runtime — scores, team crests, a clock — and a canvas is
-    // not a mesh, so the extraction brought out the surround and nothing else.
+    // not a mesh, so the prefab is the surround and nothing else.
     // `screen` paints the game's own picture of that display back into the
     // opening. See `_refreshScreen` in scene.js and DERIVED_ICONS in
     // tools/stage-assets.mjs.

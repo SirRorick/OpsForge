@@ -87,7 +87,8 @@ export function viewBytes(json, bin, index) {
  * their `byteOffset` is rewritten to say so.
  *
  * Two views that end up with identical bytes are emitted once and shared. That
- * is the single biggest saving available here — the dump embeds the same 5 MB
+ * is the single biggest saving available here — the prefabs embed the same
+ * 5 MB
  * texture in each of the five street-style barriers — and it is free, because
  * a buffer view is a read-only window and nothing can tell two apart.
  *

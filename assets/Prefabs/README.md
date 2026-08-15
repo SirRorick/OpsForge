@@ -1,10 +1,9 @@
 # The game's models
 
-Spatial Ops' own meshes, which is what the editor draws by default. They come
-out of an AssetRipper extraction of the game and are written here by
-`npm run stage-assets`, which caps their textures at 512 px — objects are drawn
-a few hundred pixels tall in a viewport, and the dump's 2048 px originals are
-four hundred megabytes of detail nobody sees.
+Spatial Ops' own meshes, which is what the editor draws by default. They are
+written here by `npm run stage-assets`, which caps their textures at 512 px —
+objects are drawn a few hundred pixels tall in a viewport, and the 2048 px
+originals are four hundred megabytes of detail nobody sees.
 
 Like `../Icons`, these are the game's artwork, owned by its makers and included
 with their permission to redistribute them with this editor. That permission

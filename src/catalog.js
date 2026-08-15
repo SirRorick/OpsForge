@@ -18,7 +18,7 @@ import { BUILTIN_PACKS } from './packs.js';
  * Where the editor's art lives, relative to the page.
  *
  * `model` and `icon` in a pack are bare asset names, not paths, because that is
- * what the dump calls them and tools/match-assets.mjs reports. Resolving them
+ * what the assets call them and tools/match-assets.mjs reports. Resolving them
  * here keeps the packs portable, and keeps the whole thing optional: both
  * loaders below fall back rather than fail.
  *

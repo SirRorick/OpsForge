@@ -254,7 +254,7 @@ A flat pane with a line of the author's text on it. `showInGame` false keeps it
 in the map and out of the game — a note to whoever is building it.
 
 The prefab carries **no mesh at all**: its whole visual is a Unity canvas built
-at runtime, so the extraction brought out the furniture and nothing else. What
+at runtime, so the files carry the furniture and nothing else. What
 did survive settles the geometry anyway. The `Outline` box is 1 × 1 × 0.1, the
 `Collider` is 1 × 1 × 0.01, and the `Manipulator` has handles at ±0.5 in X and
 Y and **none in Z** — so the unit is a one metre square, the pane is a
@@ -301,8 +301,8 @@ and the plain block is that same run with HandgunShield, Drone and Helicopter
 inserted before RPG. Immediately before `RPG` would fit equally well; only a set
 holding `Handgun` *and* several others would tell them apart.
 
-The dump also holds a figure of each of them, `<Enemy>BotSpawner.glb`, which is
-what the editor stands on a spawner pad. `EnemySpawnPoint.glb`'s own
+The assets also hold a figure of each of them, `<Enemy>BotSpawner.glb`, which
+is what the editor stands on a spawner pad. `EnemySpawnPoint.glb`'s own
 `BotPreview` node is empty — the game instantiates that figure at runtime — and
 its `HandgunBotSpawnerHologram` is a shell of the *pad*, not a bot: 1.08 × 0.30
 × 1.08 against the pad's 1.06 × 0.29 × 1.06.
@@ -354,7 +354,7 @@ The game's own assets support that reading, without quite closing it:
   the plain variants are drawn floating with no grid.
 
 What the suffix means to the game is still **unconfirmed**, because the
-`TransformerSettings` assets are empty stubs (see *The game asset dump* below)
+`TransformerSettings` assets are empty stubs (see *The game assets* below)
 and the values inside them cannot be read.
 
 The web editor offers only the plain solids: the VR editor needs the grounded
@@ -454,7 +454,7 @@ under `src/` contains mesh data.
 
 Two things it cannot help with. `CaptureFlagSpawnPointTeam1` and `Team2` hold
 **no meshes at all** — a node hierarchy and UI, with the flag built at runtime —
-and no other prefab in the dump has flag geometry either. And
+and no other prefab has flag geometry either. And
 `StreetStylePigeon`'s body is a skinned mesh the export dropped, leaving only
 its hologram shell, which is a couple of centimetres proud of the bird.
 
@@ -467,7 +467,7 @@ opening — and the U barrier's notch is open at the top rather than being a hol
 Four of those 71 are not traced from anything. The three boundaries are
 deliberately plain — the game's own invisible meshes are a bare cube, cylinder
 and slab, with none of the bevels and end caps the solid versions carry — and
-`CustomMessage` has no mesh in the dump to trace.
+`CustomMessage` has no mesh anywhere to trace.
 
 ### Base mesh dimensions
 
@@ -484,7 +484,7 @@ these, **the Unity scale is literally the size in metres** — a solid cylinder
 at `(0.5, 2, 0.5)` is 0.5 m across and 2 m tall.
 
 **The Default pack is now measured rather than estimated.** The prefab meshes
-ship in the asset dump as `Prefabs/*.glb`, named after the map type string, and
+ship as `Prefabs/*.glb`, named after the map type string, and
 `npm run measure-prefabs` reads the bounding box out of the POSITION accessors.
 The barriers turn out to be 2 m tall rather than the 1.4 m estimated, and the
 crates 0.5 m rather than 0.6 m. Two traps are worth recording.
@@ -578,13 +578,14 @@ players and has not yet been reproduced from a file.
   the wrong scale. `buildNavMask` and `regenerateNav` also assume the grid is
   square, using `divisions.x` for both axes.
 
-## The game asset dump
+## The game assets
 
-`reference/GameAssets/` is an AssetRipper export of the shipped game. It is
-gitignored and is not needed to build or run the editor; it is evidence, and
-the tools that read it live in `tools/`. Nothing in this section changes the
-file format — it is here because it is where several of the answers above came
-from, and because one of its limits is worth knowing before trusting it.
+`reference/GameAssets/` holds the game's own art and definitions, provided by
+the developers with permission to ship them with this editor. It is gitignored
+and is not needed to build or run the editor; it is evidence, and the tools that
+read it live in `tools/`. Nothing in this section changes the file format — it
+is here because it is where several of the answers above came from, and because
+one of its limits is worth knowing before trusting it.
 
 ### The definitions carry no fields
 
@@ -596,9 +597,9 @@ the game's own scripts.
 
 So display names, categories, prefab references, icon references, the rule set
 defaults and the insides of the `TransformerSettings` assets are **not
-recoverable from this dump**. `npm run read-definitions` reports what is there
-and re-checks the stub claim on every run, so a better export would announce
-itself rather than being silently ignored.
+recoverable from these files**. `npm run read-definitions` reports what is there
+and re-checks the stub claim on every run, so a fuller set would announce itself
+rather than being silently ignored.
 
 What does survive is still useful:
 
@@ -643,7 +644,7 @@ The art-side names are their own vocabulary and do not match the type strings:
 sheets, and `SpriteAtlas/*.json` says which sheets belong to which atlas.
 `npm run slice-icons` cuts 763 of the 772 sprites out into
 `reference/GameAssets/Icons/`; the nine it skips are UI chrome whose source
-texture is not in the dump. Three details govern whether the result is correct:
+texture is not among them. Three details govern whether the result is correct:
 
 - **The Y axis is flipped.** Unity rects are measured from the sheet's
   bottom-left, PNG rows run top-down. Getting this wrong yields a
@@ -682,7 +683,8 @@ because the names actively mislead: MYKEA's `IndoorBarrierUVisualCouch` is a
 the ottoman is a 0.5 m cube called `IndoorCover1x1`. Ten entries remain
 **reasoned rather than read** and are listed as `inferred` by the tool — chiefly
 the crystals, where the art numbers them `01..03` and the type strings describe
-them, with nothing in the dump linking the two. `Small` is settled by footprint;
+them, with nothing in the assets linking the two. `Small` is settled by
+footprint;
 `Circle` against `HalfCircle` only by which is rounder.
 
 The icon names are their own vocabulary too, and cannot be derived from the

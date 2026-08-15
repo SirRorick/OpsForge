@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 // What the editor draws when the game's own art is not there — which is the
 // normal case, since `reference/GameAssets/` is gitignored and the open-source
-// build ships without it. When the dump *is* present `scene.js` loads the real
+// build ships without it. When they *are* present `scene.js` loads the real
 // prefab and none of this is used.
 //
 // **These are measured, not guessed, and they are not the game's meshes.**

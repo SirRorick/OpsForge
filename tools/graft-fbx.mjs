@@ -11,7 +11,7 @@
 //
 // Why this exists
 // ---------------
-// A handful of prefabs in the AssetRipper dump arrive with their hierarchy
+// A handful of the prefabs arrive with their hierarchy
 // intact and their mesh missing. Unity's SkinnedMeshRenderer keeps its mesh in
 // a separate asset, and where that asset did not come out with the prefab the
 // exported .glb has the bones, the colliders and the outline but nothing to
@@ -155,7 +155,7 @@ function sliceAttributes(THREE, geometry, start, count) {
     }
   }
   if (!src.normal) {
-    // Nothing in this dump has arrived without normals, but a flat-shaded
+    // Nothing has arrived without normals so far, but a flat-shaded
     // fallback beats a mesh that renders black.
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(position, 3));
@@ -196,7 +196,7 @@ export function graft({ json, bin }, primitives, blobBytes, { nodeName, doubleSi
   if (json.nodes[nodeIndex].mesh !== undefined && !force) {
     throw new Error(
       `"${nodeName}" already carries a mesh, so this prefab has been grafted ` +
-      `already. Re-stage it from the dump, or pass --force to add another.`);
+      `already. Re-stage it, or pass --force to add another.`);
   }
   json.buffers ??= [];
   json.bufferViews ??= [];

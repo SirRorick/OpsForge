@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// stage-assets.mjs — fill assets/ from the raw dump
+// stage-assets.mjs — fill assets/ from the game's own art
 // ---------------------------------------------------------------------------
 // Usage:
 //   npm run stage-assets                     icons and prefabs
@@ -18,20 +18,22 @@
 // from. Anything missing from `assets/Prefabs/` falls back to the stand-in
 // shapes in src/placeholders.js, so a partial folder still runs.
 //
-// So this tool is the bridge from `reference/GameAssets/` — the raw AssetRipper
-// dump, a gigabyte of it, gitignored — to the few hundred files the editor
-// actually asks for. Run it after changing the catalog, and again if the dump
-// is re-extracted.
+// So this tool is the bridge from `reference/GameAssets/` — the game's own
+// art and definitions as the developers supplied them, a gigabyte of it and
+// gitignored — to the few hundred files the editor actually asks for. Run it
+// after changing the catalog, and again whenever a newer set arrives.
 //
 // **Both sizes are size decisions, not quality ones.** Icons are drawn at about
-// 100 px and prefabs a few hundred tall in a viewport; the dump ships 1024 px
-// icons and 2048 px textures. Shipping several times what anyone will see, in a
-// repository's permanent history where it can never be taken back out, is the
-// waste worth avoiding. Pass `--texture-size 0` for the dump's own resolution.
+// 100 px and prefabs a few hundred tall in a viewport; the originals are
+// 1024 px icons and 2048 px textures. Shipping several times what anyone
+// will see, in a repository's permanent history where it can never be taken
+// back out, is the waste worth avoiding. Pass `--texture-size 0` for the
+// original resolution.
 //
 // Textures are deliberately not staged. The prefab GLBs embed their own images
-// and nothing fetches `Textures/` at runtime, so the 471 MB of them stay in the
-// dump where they are useful to `tools/match-assets.mjs` and nowhere else.
+// and nothing fetches `Textures/` at runtime, so the 471 MB of them stay in
+// `reference/` where they are useful to `tools/match-assets.mjs` and nowhere
+// else.
 // ---------------------------------------------------------------------------
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, readdirSync, rmSync } from 'node:fs';
@@ -42,20 +44,20 @@ import { parseGlb, serialiseGlb, repack, viewBytes } from './glb.mjs';
 import { BUILTIN_PACKS, WEAPON_ICONS, ENEMY_ICONS, ENEMY_MODELS } from '../src/packs.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const DUMP = join(ROOT, 'reference/GameAssets');
+const SOURCE = join(ROOT, 'reference/GameAssets');
 const OUT = join(ROOT, 'assets');
 
 /**
- * Art the editor asks for that the dump does not hold under that name, and how
+ * Art the editor asks for that the assets do not hold under that name, and how
  * to cut it out of something that does.
  *
- * There is one, and it exists because of a hole in the extraction rather than a
- * hole in the game. The jumbotron's display is a Unity canvas assembled from UI
- * sprites at runtime, so the ripped prefab is a frame around nothing; the only
- * picture of the assembled screen anywhere in the dump is the library icon,
- * which is a photograph of one. `crop` is that icon's frame trimmed off, in its
- * own pixels, leaving the display alone — see `screen` on the Jumbotron entry
- * in src/packs.js.
+ * There is one, and it exists because of the way the game builds that display
+ * rather than because anything is missing. The jumbotron's screen is a Unity
+ * canvas assembled from UI sprites at runtime, so the prefab is a frame around
+ * nothing; the only picture of the assembled screen anywhere is the library
+ * icon, which is a photograph of one. `crop` is that icon's frame trimmed off,
+ * in its own pixels, leaving the display alone — see `screen` on the Jumbotron
+ * entry in src/packs.js.
  *
  * Kept bigger than a thumbnail because it is not one: an icon is drawn at about
  * a hundred pixels in a list, and this is a surface a metre across that you can
@@ -159,7 +161,7 @@ const mb = (n) => `${(n / 1048576).toFixed(1)} MB`;
 /**
  * Cap the textures a prefab carries, and share the ones it repeats.
  *
- * The dump's prefabs are 88% embedded PNG by weight, at up to 2048 square, and
+ * The prefabs are 88% embedded PNG by weight, at up to 2048 square, and
  * that is the wrong trade for this editor twice over. Objects are drawn a few
  * hundred pixels tall in a viewport — the same argument that puts the icons at
  * 128 px — and the folder has to be small enough to live in a repository's
@@ -188,7 +190,7 @@ export function shrinkTextures(bytes, cap) {
     try {
       const px = decodePng(src);
       if (Math.max(px.width, px.height) > cap) resized++;
-      // Re-encoded even at its existing size: the dump's PNGs are written for
+      // Re-encoded even at its existing size: the originals are written for
       // speed, and a Paeth filter at deflate level 9 takes a third off them
       // without touching a pixel.
       out = encodePng(downscale(px, cap));
@@ -223,14 +225,14 @@ function stageIcons(icons, derived, size) {
     bytes += png.length;
   };
   for (const name of icons) {
-    const src = join(DUMP, 'Icons', `${name}.png`);
+    const src = join(SOURCE, 'Icons', `${name}.png`);
     if (!existsSync(src)) { missing.push(name); continue; }
     write(name, encodePng(downscale(decodePng(readFileSync(src)), size)));
   }
   for (const name of derived) {
     const spec = DERIVED_ICONS[name];
     if (!spec) { missing.push(name); continue; }
-    const src = join(DUMP, 'Icons', `${spec.from}.png`);
+    const src = join(SOURCE, 'Icons', `${spec.from}.png`);
     if (!existsSync(src)) { missing.push(name); continue; }
     write(name, encodePng(downscale(crop(decodePng(readFileSync(src)), spec.crop), spec.size)));
   }
@@ -250,7 +252,7 @@ function stagePrefabs(models, cap, onProgress) {
   let bytes = 0, raw = 0, resized = 0, shared = 0;
   const missing = [];
   for (const [i, name] of models.entries()) {
-    const src = join(DUMP, 'Prefabs', `${name}.glb`);
+    const src = join(SOURCE, 'Prefabs', `${name}.glb`);
     if (!existsSync(src)) { missing.push(name); continue; }
     onProgress?.(i + 1, models.length, name);
     raw += statSync(src).size;
@@ -276,8 +278,8 @@ These thumbnails are sliced out of Spatial Ops' own sprite atlases by
 \`Image_*\` files are not thumbnails. They are the same artwork cropped and kept
 larger because the editor draws them as surfaces in the scene rather than as
 icons in a list — \`Image_JumbotronScreen\` is the jumbotron's display, which the
-extraction could not bring out of the prefab because the game assembles it from
-UI sprites at runtime.
+prefab itself does not carry, because the game assembles it from UI sprites at
+runtime.
 
 They are the game's artwork, owned by its makers and included here with their
 permission to redistribute them with this editor. That permission covers this
@@ -292,11 +294,10 @@ and nothing else changes.
 function prefabReadme(models) {
   return `# The game's models
 
-Spatial Ops' own meshes, which is what the editor draws by default. They come
-out of an AssetRipper extraction of the game and are written here by
-\`npm run stage-assets\`, which caps their textures at 512 px — objects are drawn
-a few hundred pixels tall in a viewport, and the dump's 2048 px originals are
-four hundred megabytes of detail nobody sees.
+Spatial Ops' own meshes, which is what the editor draws by default. They are
+written here by \`npm run stage-assets\`, which caps their textures at 512 px —
+objects are drawn a few hundred pixels tall in a viewport, and the 2048 px
+originals are four hundred megabytes of detail nobody sees.
 
 Like \`../Icons\`, these are the game's artwork, owned by its makers and included
 with their permission to redistribute them with this editor. That permission
@@ -333,17 +334,17 @@ function main() {
   const { icons, models, derived } = requiredAssets();
   console.log(`Catalog asks for ${icons.length + derived.length} icons and ${models.length} models.`);
 
-  if (!existsSync(DUMP)) {
-    console.error(`\nNo dump at ${DUMP}.`);
-    console.error('That folder is the gitignored AssetRipper extraction. Without it there is');
-    console.error('nothing to stage — the editor runs on its stand-in shapes regardless.');
+  if (!existsSync(SOURCE)) {
+    console.error(`\nNo game assets at ${SOURCE}.`);
+    console.error('That folder is the gitignored game assets. Without them');
+    console.error('there is nothing to stage — the editor runs on its stand-ins.');
     process.exit(1);
   }
 
   if (both || only.icons) {
     const r = stageIcons(icons, derived, size);
     console.log(`Icons    ${String(r.count).padStart(4)} at ${size}px  ${mb(r.bytes).padStart(9)}  -> assets/Icons`);
-    if (r.missing.length) console.log(`         ${r.missing.length} not in the dump: ${r.missing.slice(0, 4).join(', ')}${r.missing.length > 4 ? ' ...' : ''}`);
+    if (r.missing.length) console.log(`         ${r.missing.length} not among the assets: ${r.missing.slice(0, 4).join(', ')}${r.missing.length > 4 ? ' ...' : ''}`);
   }
   if (both || only.prefabs) {
     // Re-encoding 180 prefabs takes a minute and a half, so say where it is up
@@ -360,7 +361,7 @@ function main() {
       console.log(`         ${r.resized} textures resized, ${r.shared} duplicate views shared, ` +
         `down from ${mb(r.raw)} (${(100 - (r.bytes / r.raw) * 100).toFixed(0)}% off)`);
     }
-    if (r.missing.length) console.log(`         ${r.missing.length} not in the dump: ${r.missing.slice(0, 4).join(', ')}${r.missing.length > 4 ? ' ...' : ''}`);
+    if (r.missing.length) console.log(`         ${r.missing.length} not among the assets: ${r.missing.slice(0, 4).join(', ')}${r.missing.length > 4 ? ' ...' : ''}`);
   }
 }
 

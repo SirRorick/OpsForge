@@ -28,7 +28,7 @@
 // catalog's `size` field depends on it, and it should keep working even if this
 // one is thrown away.
 //
-// Like every tool in here it reads the gitignored asset dump and is not
+// Like every tool in here it reads the gitignored game assets and is not
 // imported by src/. The editor does not need it to run or to build.
 // ---------------------------------------------------------------------------
 

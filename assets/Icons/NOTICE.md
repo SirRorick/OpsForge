@@ -6,8 +6,8 @@ These thumbnails are sliced out of Spatial Ops' own sprite atlases by
 `Image_*` files are not thumbnails. They are the same artwork cropped and kept
 larger because the editor draws them as surfaces in the scene rather than as
 icons in a list — `Image_JumbotronScreen` is the jumbotron's display, which the
-extraction could not bring out of the prefab because the game assembles it from
-UI sprites at runtime.
+prefab itself does not carry, because the game assembles it from UI sprites at
+runtime.
 
 They are the game's artwork, owned by its makers and included here with their
 permission to redistribute them with this editor. That permission covers this

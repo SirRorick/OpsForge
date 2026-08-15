@@ -6,12 +6,12 @@
 //   --all    list every definition class found, not just the Default set
 //   --json   emit machine-readable JSON instead of the summary table
 //
-// Reads reference/GameAssets/Definitions/*.asset, which are AssetRipper's
-// export of the game's ScriptableObjects.
+// Reads reference/GameAssets/Definitions/*.asset, the game's own
+// ScriptableObjects.
 //
 // IMPORTANT — what this export actually contains
 //
-// Every one of these .asset files is a 14-line MonoBehaviour stub. AssetRipper
+// Every one of these .asset files is a 14-line MonoBehaviour stub. They carry
 // recovered `m_Name` and the `m_Script` GUID and nothing else: the serialised
 // fields are absent, because the IL2CPP build carries no type tree for the
 // game's own scripts. So the display name, the category, the prefab reference
@@ -127,7 +127,7 @@ const spriteNames = () =>
 /**
  * Icons are not named after their type, and the mismatches are not derivable —
  * `Icon_BarrierNormal` is BarrierFull, `Icon_BarrierUWall` is BarrierU, and the
- * dump carries both the `Cilinder` misspelling and `Cylinder`. Anything not
+ * assets carry both the `Cilinder` misspelling and `Cylinder`. Anything not
  * listed here falls back to an exact `Icon_<type>` match, and an entry that
  * resolves to no existing sprite is reported rather than assumed.
  *
@@ -217,7 +217,7 @@ function table(rows, headers) {
 function main() {
   const args = process.argv.slice(2);
   if (!existsSync(DEFS)) {
-    console.error(`No definitions at ${DEFS}. This tool needs the (gitignored) game asset dump.`);
+    console.error(`No definitions at ${DEFS}. This tool needs the (gitignored) assets.`);
     process.exit(1);
   }
 
@@ -253,7 +253,7 @@ function main() {
   console.log('  %d of %d assets carry any serialised field beyond the MonoBehaviour header.',
     fields.withFields, fields.total);
   if (!fields.withFields) {
-    console.log('  AssetRipper exported name + script GUID only (no IL2CPP type tree), so');
+    console.log('  Name + script GUID only (no IL2CPP type tree), so');
     console.log('  display name, category, prefab and icon fields are NOT in this export.');
   } else {
     fields.sample.forEach((s) => console.log('    ' + s));

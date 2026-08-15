@@ -389,7 +389,7 @@ function thumbnail(def) {
     c.getContext('2d').drawImage(thumbCache.get(def.key), 0, 0);
     return c;
   }
-  // The game's own library icon, when the asset dump is present. It is
+  // The game's own library icon, when the game assets are present. It is
   // gitignored and optional, so the render below stays as the fallback and
   // draws immediately; the sprite replaces it once it decodes.
   const sprite = iconUrl(def);

@@ -76,7 +76,7 @@ const warnedModels = new Set();
 // SpawnBoxVFX holds a single-sided LightQuad two metres by four, which reads as
 // a pane hanging in the air that vanishes when you orbit past it.
 // `*Hologram` is included on the evidence of the meshes themselves: every one
-// in the dump is a shell of the object it sits on, a centimetre proud of the
+// is a shell of the object it sits on, a centimetre proud of the
 // surface and wearing MATTerminalSpawn, which carries neither a texture nor a
 // colour. HandgunBotSpawnerHologram inside EnemySpawnPoint looked from its name
 // like the exception — a preview of the bot that spawns there — and was kept
@@ -1486,7 +1486,7 @@ export class Viewport extends EventTarget {
 
   // -- spawned figure --------------------------------------------------------
   // An enemy spawner is a bare metal pad. What tells one apart from another is
-  // what walks off it, and the dump ships a textured figure of every enemy —
+  // what walks off it, and the assets carry a textured figure of every enemy —
   // `<Enemy>BotSpawner.glb`, a 1.7 m humanoid for the gun bots, a hovering
   // drone or a chopper for the other two. Standing one on the pad is the whole
   // difference between "a spawner" and "a sniper spawner".
@@ -1614,15 +1614,15 @@ export class Viewport extends EventTarget {
   }
 
   // -- screens ---------------------------------------------------------------
-  // The jumbotron is a frame around a hole, and it is a hole in the dump rather
-  // than in the game: what fills it there is a Unity canvas — team crests, two
-  // scores, a clock — assembled from UI sprites at runtime. A canvas is not a
-  // mesh, so AssetRipper brought out the surround and nothing else, and the
-  // prefab is the only one in the catalog that carries no texture at all.
+  // The jumbotron is a frame around a hole, and it is a hole in the prefab
+  // rather than in the game: what fills it there is a Unity canvas — team
+  // crests, two scores, a clock — assembled from UI sprites at runtime. A
+  // canvas is not a mesh, so the prefab is the surround and nothing else, and
+  // it is the only one in the catalog that carries no texture at all.
   //
   // So the screen is put back as a picture on a plane across the opening: the
   // game's own art, cropped out of the display the library icon is a photograph
-  // of, which is the closest thing to the real screen the dump contains. It is
+  // of, which is the closest thing to the real screen the assets hold. It is
   // a still, and it is meant to be — nothing here is going to run a match clock.
   //
   // A child of the object rather than geometry merged into it, so it can be a
@@ -1675,7 +1675,7 @@ export class Viewport extends EventTarget {
   // The same hole as the jumbotron's, one step worse. That prefab is at least a
   // frame around its missing canvas; `CustomMessage.glb` carries no mesh at all
   // — its whole visual is a Unity canvas assembled at runtime — so there is
-  // nothing in the dump to paint and the text is drawn here, onto a 2D canvas
+  // no artwork to paint and the text is drawn here, onto a 2D canvas
   // that becomes the texture on a plane across the pane.
   //
   // A message with `showInGame` off is one the author left for themselves, and
@@ -1771,7 +1771,7 @@ export class Viewport extends EventTarget {
   }
 
   /**
-   * Replace the placeholder with the real prefab mesh, if the asset dump is
+   * Replace the placeholder with the real prefab mesh, if the game assets are
    * present. It is gitignored and optional, so a miss keeps the placeholder and
    * says so once rather than failing.
    */
@@ -3313,7 +3313,8 @@ export class Viewport extends EventTarget {
     }
     if (props.enemyTypes !== undefined) {
       // Behaviour is the other half of what a spawner is set to, and unlike the
-      // enemy list it has no icon anywhere in the dump, so it goes in as text.
+      // enemy list it has no icon anywhere in the assets, so it goes in as
+      // text.
       return {
         value: `e:${props.enemyTypes}|${props.behaviour ?? ''}`,
         items: parseEnemyTypes(props.enemyTypes),

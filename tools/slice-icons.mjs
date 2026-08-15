@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 // Usage:  npm run slice-icons -- [--filter <substr>] [--out <dir>] [--dry-run]
 //
-// Reads the AssetRipper sprite dump and writes one cropped PNG per sprite to
+// Reads the game's sprite sheets and writes one cropped PNG per sprite to
 // reference/GameAssets/Icons/.
 //
 //   reference/GameAssets/Sprite/*.json      one per sprite: its packed rect and
@@ -12,7 +12,8 @@
 //                                           the texture PathIDs of its pages
 //   reference/GameAssets/Textures/sactx-*   the packed sheets themselves
 //
-// Zero dependencies. The dump is 8-bit non-interlaced PNG throughout (checked
+// Zero dependencies. The sheets are 8-bit non-interlaced PNG throughout
+// (checked
 // across all 693 files: 682 RGBA, 11 RGB), so node:zlib plus ~80 lines of
 // filtering is a complete codec for it. A general-purpose PNG library would
 // carry 16-bit, palette and Adam7 paths this data never exercises.
@@ -27,7 +28,8 @@
 // open the file: it must be a crate.
 //
 // **PathID -> page is positional.** A sprite names its texture by PathID, and
-// nothing in the dump maps a PathID to a filename. The atlas JSON lists the
+// nothing in the sprite metadata maps a PathID to a filename. The atlas JSON
+// lists the
 // PathIDs of its own pages, and the pages are on disk as `sactx-<n>-...`, so
 // the nth-lowest PathID is page n. That is an inference, and `--dry-run`
 // re-checks it the way it was established: every sprite rect must fit inside
@@ -73,7 +75,7 @@ function paeth(a, b, c) {
   return pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
 }
 
-/** Decode to a tightly packed RGBA buffer. Throws on anything this dump isn't. */
+/** Decode to a tightly packed RGBA buffer. Throws on anything these are not. */
 export function decodePng(buf) {
   if (!buf.subarray(0, 8).equals(PNG_MAGIC)) throw new Error('not a PNG');
   let pos = 8, width = 0, height = 0, depth = 0, colorType = 0, interlace = 0;
@@ -208,7 +210,7 @@ function cropFlipped(page, rect) {
   return { width: w, height: h, data: out };
 }
 
-// --- the dump ----------------------------------------------------------------
+// --- the sprite sheets -------------------------------------------------------
 
 /** Atlas pages on disk, grouped by atlas name and ordered by their page index. */
 function loadPages() {
@@ -272,7 +274,7 @@ const safeName = (n) => n.replace(/[<>:"/\\|?*]/g, '_').trim();
  * Output filename per sprite. `m_Name` is not unique — five distinct sprites
  * are all called `Icon_BoxSolid`, one per theme, and naming the files after
  * m_Name alone silently overwrites four of them. Where a name is shared, fall
- * back to the asset filename (`Icon_BoxSolid_2`), which the dump guarantees is
+ * back to the asset filename (`Icon_BoxSolid_2`), which the assets guarantee is
  * unique; the ~90% of sprites with a unique name keep it unchanged.
  *
  * Uniqueness is judged case-insensitively because the tool has to work on
@@ -309,21 +311,21 @@ function main() {
   const outDir = opt('--out') ?? OUT;
 
   if (!existsSync(SPRITES)) {
-    console.error(`No sprite dump at ${SPRITES}. This tool needs the (gitignored) game assets.`);
+    console.error(`No sprites at ${SPRITES}. This tool needs the (gitignored) assets.`);
     process.exit(1);
   }
 
   const pages = loadPages();
   const byId = mapTextureIds(pages);
   let sprites = loadSprites();
-  // Uniqueness is decided over the whole dump, so a --filter run names its
+  // Uniqueness is decided over the whole set, so a --filter run names its
   // files exactly as a full run would.
   const names = outputNames(sprites);
   const shared = sprites.filter((s) => names.get(s) !== safeName(s.name)).length;
   if (filter) sprites = sprites.filter((s) => s.name.toLowerCase().includes(filter.toLowerCase()));
 
   // Standalone (unpacked) sprites are their own texture rather than a sheet;
-  // the dump names those files after the sprite.
+  // the assets name those files after the sprite.
   const textureFiles = new Set(readdirSync(TEXTURES));
   const jobs = new Map();   // page file -> sprites to cut from it
   const skipped = [];
