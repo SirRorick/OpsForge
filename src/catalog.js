@@ -166,10 +166,28 @@ export function defOrUnknown(type) {
  * `barrierFull`, `barrierFullSlab` are all full-height barriers. The remainder
  * has to start with a capital, which is what keeps `barrierD` from swallowing
  * `barrierDoor`.
+ *
+ * Note this deliberately relates a family to its variants and **not** two
+ * variants to each other: `barrierFull` and `barrierLow` are both barriers and
+ * are not interchangeable, so a pack with no low barrier has none rather than
+ * being given a full one.
+ *
+ * `Boundary` is the one variant that breaks that rule, because it is the only
+ * one that is not a different *shape*. An invisible wall is the family's own
+ * piece with the art taken off — the game's `Wall` and `WallSolid` are the same
+ * geometry — so it is stripped before the comparison and `wallBoundary` reaches
+ * `wallLayered`. Without that, swapping an arena to Camo, Mykea or Wild West
+ * left every boundary wall behind, because those three themes' walls are
+ * variants rather than the plain `wall`.
  */
+const BOUNDARY_VARIANT = /Boundary$/;
+
 export function sameShapeFamily(a, b) {
   if (a === b) return true;
-  const [shortest, longest] = a.length < b.length ? [a, b] : [b, a];
+  const x = a.replace(BOUNDARY_VARIANT, '');
+  const y = b.replace(BOUNDARY_VARIANT, '');
+  if (x === y) return true;
+  const [shortest, longest] = x.length < y.length ? [x, y] : [y, x];
   return longest.startsWith(shortest) && /^[A-Z]/.test(longest.slice(shortest.length));
 }
 

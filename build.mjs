@@ -55,8 +55,25 @@ export function build() {
 
   mkdirSync(join(ROOT, 'dist'), { recursive: true });
   const out = join(ROOT, 'dist', 'spatial-ops-map-editor.html');
-  writeFileSync(out, html.replace(SCRIPT_TAG, `<script type="module">\n${bundle}\n</script>`), 'utf8');
+  writeFileSync(out, spliceBundle(html, bundle), 'utf8');
   return out;
+}
+
+/**
+ * Put the bundle where the module script tag was.
+ *
+ * The replacer is a function rather than a string, and that is the whole point
+ * of this being its own function. `String.replace` reads `$&`, `$'`, "$`" and
+ * `$1` in a replacement *string* as instructions about the match, and the
+ * bundle is a hundred kilobytes of punctuation nobody wrote with that in mind:
+ * a regex literal ending in `$` immediately before a backtick was enough, and
+ * it spliced the whole of the preceding page into the middle of a template
+ * literal. Every module still parsed on its own, so nothing caught it until the
+ * editor came up blank. A function replacer is handed the text verbatim, so
+ * nothing in the source can mean anything to the splice.
+ */
+export function spliceBundle(html, bundle) {
+  return html.replace(SCRIPT_TAG, () => `<script type="module">\n${bundle}\n</script>`);
 }
 
 /**

@@ -15,7 +15,7 @@ import {
 import {
   PACK_GROUPS, WEAPONS, WEAPON_ICONS, WEAPON_ANY, parseWeapons, formatWeapons,
   ENEMY_TYPES, ENEMY_ICONS, ENEMY_LABELS, ENEMY_BEHAVIOURS, ENEMY_ANY,
-  parseEnemyTypes, formatEnemyTypes,
+  parseEnemyTypes, formatEnemyTypes, BOUNDARY_PACK,
 } from './packs.js';
 import {
   MODES, layoutFor, unknownKeys, setValue, parseFlags, joinFlags, overrideCount,
@@ -58,6 +58,7 @@ let placingLabel = null;    // set while a library pick-up is following the curs
   wireInspectorTabs();
   wireMirrorTool();
   wireArrayTool();
+  wirePrefabTool();
   wirePreviews();
   wirePreviewButton();
   wireInspector();
@@ -446,6 +447,8 @@ function newObject(def, worldPoint) {
   // ...and puts down a bot-grid brush, which would otherwise still own the left
   // button while an object sat waiting to be placed with it.
   if (vp.navPaint) vp.setNavPaint(null);
+  // Asking for a boundary while boundaries are hidden is asking to see one.
+  if (def.pack === BOUNDARY_PACK) showBoundaries();
   // The scale a piece is placed at comes from the catalog, not from 1,1,1: a
   // solid cylinder is 0.5 x 2 x 0.5 in every map the game wrote, and a tunnel
   // is 1 x 2 x 1.
@@ -799,6 +802,26 @@ function dropOntoSurface() {
     + 'To floor ignores all that and puts it on the ground.');
 }
 
+/**
+ * The floor from the other side: the selection goes down until its top face
+ * rests on the ground rather than its bottom one.
+ *
+ * A map is built on a floor you cannot see the underside of, and the pieces
+ * that belong below it — the block filling a pit, the slab a walkway is bedded
+ * into — are otherwise placed by reading a height off the inspector and
+ * subtracting the object's own thickness by hand.
+ */
+function dropUnderGround() {
+  if (!vp.selection.size) return toast('Select something to put under the ground.');
+  const moved = vp.dropSelection('under');
+  toast(moved
+    ? `Put ${moved} object${moved === 1 ? '' : 's'} under the ground.`
+    : 'Already sitting under the ground — nothing to move.');
+  tip('under',
+    'Under ground is To floor upside down: the top of the object lands on the ground instead of '
+    + 'its bottom, so the whole of it is buried. A group goes down as one, keeping its stacking.');
+}
+
 function groupSelection() {
   if (vp.selection.size < 2) return toast('Select at least two objects to group.');
   const id = `g${groupSeq++}`;
@@ -821,6 +844,175 @@ function deleteSelection() {
   vp.removeObjects([...vp.selection]);
   commit();
   toast(`Deleted ${n} object${n === 1 ? '' : 's'}.`);
+}
+
+// ---------------------------------------------------------------------------
+// Prefabs
+// ---------------------------------------------------------------------------
+// A piece of a map kept on its own, in a file: a bunker, a doorway, a stack of
+// crates. Copy and paste already move a selection about inside one session;
+// this is the same idea outliving the tab, so a thing built once can be built
+// into a second map, or a tenth.
+//
+// The file is the clipboard record with a header on it, and for the same reason
+// the clipboard is values rather than mesh references: what makes a prefab
+// portable is that it says what its pieces *are* — a type, its props, a
+// transform — and nothing about the map it came out of. An object type the
+// reading editor has never heard of still loads, as the same pink marker an
+// unknown type in a map file gets, and exports unchanged.
+//
+// X and Z are written relative to the middle of the selection, so a prefab's
+// own coordinates start where the prefab does. Y is left as it stands, because
+// height in this format means height above the arena floor and that is a fact
+// about the thing: a stack of crates built on the ground comes back on the
+// ground, and a jumbotron hung at three metres comes back at three.
+
+const PREFAB_FORMAT = 'opsforge.prefab';
+const PREFAB_VERSION = 1;
+const PREFAB_EXT = 'opsprefab';
+
+/** The selection as a prefab document, ready to serialise. */
+function prefabFromSelection(name) {
+  const list = [...vp.selection];
+  const box = new THREE.Box3();
+  for (const m of list) box.expandByObject(m);
+  const centre = box.getCenter(new THREE.Vector3());
+  return {
+    format: PREFAB_FORMAT,
+    version: PREFAB_VERSION,
+    name,
+    created: nowStamp(),
+    objects: list.map((m) => {
+      m.updateWorldMatrix(true, false);
+      const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+      m.matrixWorld.decompose(p, q, s);
+      return {
+        type: m.userData.def.type,
+        $type: m.userData.objectType,
+        props: { ...m.userData.props },
+        p: [p.x - centre.x, p.y, p.z - centre.z],
+        q: q.toArray(),
+        s: s.toArray(),
+      };
+    }),
+  };
+}
+
+/** A name to offer, so the common case is a name you accept rather than type. */
+function suggestPrefabName() {
+  const list = [...vp.selection];
+  if (!list.length) return 'Prefab';
+  const first = list[0].userData.def.label;
+  if (list.every((m) => m.userData.def.label === first)) {
+    return list.length === 1 ? first : `${first} x${list.length}`;
+  }
+  return `${list.length} objects`;
+}
+
+function prefabFileName(name) {
+  const safe = String(name || 'Prefab').replace(/[\\/:*?"<>|]/g, '').trim() || 'Prefab';
+  return `${safe}.${PREFAB_EXT}`;
+}
+
+function exportPrefab(meshes = null) {
+  if (meshes) vp.setSelection(meshes);
+  if (!vp.selection.size) return toast('Select what you want to keep as a prefab first.');
+  const n = vp.selection.size;
+  openDialog({
+    title: 'Export prefab',
+    body: `${n} object${n === 1 ? '' : 's'} will be written to a file you can bring back into this `
+      + 'map or any other. The name is the file name, and what the editor calls it on the way back in.',
+    fields: [{ id: 'dlg-prefab', label: 'Name', value: suggestPrefabName(), placeholder: 'Prefab name' }],
+    actions: [
+      { label: 'Cancel', ghost: true, run: () => {} },
+      { label: 'Export', run: (v) => writePrefabFile(v['dlg-prefab']) },
+    ],
+  });
+}
+
+function writePrefabFile(name) {
+  try {
+    const prefab = prefabFromSelection(String(name || '').trim() || 'Prefab');
+    const file = prefabFileName(prefab.name);
+    const url = URL.createObjectURL(
+      new Blob([JSON.stringify(prefab, null, 1)], { type: 'application/json' })
+    );
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = file;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    toast(`Exported ${file} — ${prefab.objects.length} object${prefab.objects.length === 1 ? '' : 's'}.`);
+  } catch (err) {
+    console.error(err);
+    toast(`Could not write that prefab: ${err.message}`, true);
+  }
+}
+
+/** True for a file that is a prefab rather than a map, before reading it. */
+const looksLikePrefab = (file) => (file.name || '').toLowerCase().endsWith(`.${PREFAB_EXT}`);
+
+async function importPrefabFile(file) {
+  try {
+    placePrefab(JSON.parse(await file.text()));
+  } catch (err) {
+    console.error(err);
+    toast(`Could not read that prefab: ${err.message}`, true);
+  }
+}
+
+/**
+ * Rebuild a prefab's objects and hand them to the cursor.
+ *
+ * Everything arrives in one group. A prefab is a thing you assembled and named,
+ * and it should land as that thing rather than as forty loose pieces to be
+ * rounded up before they can be moved; ungroup breaks it apart the moment you
+ * want the pieces. Groups the objects were in when it was written are not
+ * restored, and cannot be — a group here is one flat id per object, with no
+ * nesting for a group of groups to live in.
+ */
+function placePrefab(data) {
+  if (!data || data.format !== PREFAB_FORMAT || !Array.isArray(data.objects)) {
+    throw new Error('that is not an OpsForge prefab file');
+  }
+  if (!data.objects.length) return toast('That prefab has nothing in it.');
+  const newer = data.version > PREFAB_VERSION;
+
+  const group = `g${groupSeq++}`;
+  const made = data.objects.map((rec) => {
+    const mesh = vp.addObject({
+      type: rec.type, $type: rec.$type, props: rec.props,
+      position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 },
+      dirty: true,
+    });
+    mesh.position.fromArray(rec.p);
+    mesh.quaternion.fromArray(rec.q);
+    mesh.scale.fromArray(rec.s);
+    // A single object is a single object, whatever the file it arrived in.
+    if (data.objects.length > 1) mesh.userData.group = group;
+    return mesh;
+  });
+
+  const unknown = new Set(made.filter((m) => m.userData.def.unknown).map((m) => m.userData.def.type));
+  placeReturn = [...vp.selection];
+  placingLabel = data.name || 'prefab';
+  vp.beginPlacement(made);
+
+  let msg = `${data.name || 'Prefab'} — ${made.length} object${made.length === 1 ? '' : 's'}. `
+    + 'Click to place, Esc cancels.';
+  if (newer) msg += ` Written by a newer editor (prefab v${data.version}); anything it added is ignored.`;
+  if (unknown.size) msg += ` ${unknown.size} type(s) not in any loaded pack: ${[...unknown].join(', ')}.`;
+  toast(msg, newer || unknown.size > 0);
+}
+
+function wirePrefabTool() {
+  $('b-prefab-export').onclick = () => exportPrefab();
+  $('b-prefab-import').onclick = () => $('prefabpick').click();
+  $('prefabpick').onchange = (e) => {
+    const f = e.target.files[0];
+    if (f) importPrefabFile(f);
+    e.target.value = '';
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -882,6 +1074,16 @@ function wireToolbar() {
     toast(e.target.checked
       ? 'Showing the built-in stand-in shapes.'
       : 'Showing the game\'s own models where they are on disk.');
+  };
+
+  // Also a way of looking rather than a way of changing: the boundaries stay in
+  // the map and go out with it either way.
+  $('hide-boundaries').onchange = (e) => {
+    vp.setHideBoundaries(e.target.checked);
+    buildOutliner();
+    toast(e.target.checked
+      ? 'Boundaries hidden. They are still on the map and still exported.'
+      : 'Boundaries shown.');
   };
 
   $('b-undo').onclick = undo;
@@ -1078,12 +1280,20 @@ function refreshArrayDefaults() {
 // count is above 1, because that reading is unambiguous — a count of 1 means
 // nothing to preview. Mirror has no such tell, so it shows its ghosts while the
 // pointer is on its panel, and stops when the pointer leaves.
+//
+// The three landing buttons follow Mirror's rule, one hover at a time. They are
+// the case that needs it most: Drop, To floor and Under ground all read as
+// "put it down" and differ in where, which is a distinction the words carry
+// badly and a picture carries exactly. Hovering one shows where that button
+// would leave the selection; a button that would move nothing shows nothing,
+// which is the same answer its toast gives after the fact.
 
 const GHOST_LIMIT = 500;      // the array tool's own ceiling on copies
 
 let arrayPreviewOn = false;   // armed by the array boxes and by a new selection
 let arrayJustApplied = false; // the copies are real now; do not ghost them again
 let mirrorHover = false;      // the pointer, or the focus, is on the Mirror panel
+let dropHover = null;         // 'surface' | 'floor' | 'under' while one is under the pointer
 
 function wirePreviews() {
   const panel = $('sec-mirror');
@@ -1102,10 +1312,37 @@ function wirePreviews() {
   vp.addEventListener('commit-begin', () => vp.clearGhosts());
 }
 
-/** Draw whichever tool has something to say, or nothing. */
+/**
+ * Draw whichever tool has something to say, or nothing.
+ *
+ * A landing wins over the mirror, and the mirror over the array, because that
+ * is the order the pointer put them in: you cannot be hovering a landing button
+ * without having reached past the other two.
+ */
 function refreshPreview() {
   if (!vp.selection.size || vp.placing) return vp.clearGhosts();
+  if (dropHover) return vp.setGhosts(vp.dropGhosts(dropHover));
   vp.setGhosts(mirrorHover ? mirrorGhosts() : arrayGhosts());
+}
+
+/**
+ * Wire one landing button to preview itself. Focus counts as well as the
+ * pointer, so tabbing along the row shows the same thing pointing at it does.
+ *
+ * The ghosts go on click too: the objects are where the ghosts were, and
+ * leaving the ghosts there would draw a second copy of a selection that has
+ * already landed.
+ */
+function wireDropPreview(id, onto) {
+  const button = $(id);
+  if (!button) return;
+  const on = () => { dropHover = onto; refreshPreview(); };
+  const off = () => { if (dropHover === onto) { dropHover = null; refreshPreview(); } };
+  button.addEventListener('pointerenter', on);
+  button.addEventListener('pointerleave', off);
+  button.addEventListener('focus', on);
+  button.addEventListener('blur', off);
+  button.addEventListener('click', off);
 }
 
 function arrayGhosts() {
@@ -1230,6 +1467,10 @@ function buildSelectionPanel() {
   const host = $('sel-body');
   const list = [...vp.selection];
   selFields = null;
+  // The landing buttons are about to be replaced, so no `pointerleave` is
+  // coming for the one the pointer was on. Left set, it would keep drawing a
+  // landing for whatever got selected next.
+  dropHover = null;
   if (!list.length) {
     host.innerHTML = '<p class="hint">Nothing selected. Click an object, or drag a box across the view.</p>';
     return;
@@ -1247,11 +1488,15 @@ function buildSelectionPanel() {
     ${vecRow('Position', 'p', multi ? 'Moves the whole selection' : '')}
     ${vecRow('Rotation', 'r', multi ? 'disabled' : '')}
     ${vecRow('Scale', 's', multi ? 'disabled' : '')}
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:9px">
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;margin-top:9px">
       <button class="btn ghost" id="s-drop"
         title="Let it fall until it rests on whatever is underneath — the top of another object, or the ground. Loose objects each find their own landing; a group falls as one and keeps its stacking (Shift+End)">Drop</button>
       <button class="btn ghost" id="s-floor"
         title="Put it on the ground, whatever is in the way. A group goes down as one, so a stack lands stacked (End)">To floor</button>
+      <button class="btn ghost" id="s-under"
+        title="Put it under the ground — the same landing as To floor, on the other side of it, so the top face sits on y=0 and none of it shows (Ctrl+End)">Under ground</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:5px">
       <button class="btn ghost" id="s-group" title="Move these together from now on (G)">Group</button>
       <button class="btn ghost" id="s-ungroup" title="Break the group up (Shift+G)">Ungroup</button>
     </div>
@@ -1271,6 +1516,12 @@ function buildSelectionPanel() {
   }
   $('s-drop').onclick = dropOntoSurface;
   $('s-floor').onclick = () => vp.dropSelection('floor');
+  $('s-under').onclick = dropUnderGround;
+  // The panel is rebuilt from scratch whenever the selection changes, so these
+  // are rewired here rather than once at startup.
+  wireDropPreview('s-drop', 'surface');
+  wireDropPreview('s-floor', 'floor');
+  wireDropPreview('s-under', 'under');
   $('s-group').onclick = groupSelection;
   $('s-ungroup').onclick = ungroupSelection;
   $('s-del').onclick = deleteSelection;
@@ -1288,7 +1539,12 @@ const PROP_LABELS = {
   enemyTypes: 'Enemy types',
   behaviour: 'Behaviour',
   style: 'Style',
+  content: 'Message',
+  showInGame: 'Show in game',
 };
+
+/** Props with a row of their own; `propRows` leaves these to the builders below. */
+const SPECIAL_PROPS = ['specificWeapon', 'enemyTypes', 'behaviour', 'content', 'showInGame'];
 
 /** Every value the catalog has ever seen for a property, for the datalist. */
 function propSuggestions(key) {
@@ -1347,6 +1603,32 @@ function behaviourRow(value) {
     <select id="f-behaviour">${opts}</select></div>`;
 }
 
+/**
+ * The words on a custom message.
+ *
+ * A textarea rather than the one-line box every other free-text prop gets,
+ * because this one is a sentence and the panel is 250 pixels wide. The value
+ * written to the file is still a single string — a newline typed in here goes
+ * out as one, escaped, which is what the format allows and what the game will
+ * make of it is its own business.
+ */
+function messageRow(value) {
+  return `<div class="field mfield"><span>Message</span>
+    <textarea id="f-content" rows="3"
+      placeholder="What the sign says">${escapeHtml(value ?? '')}</textarea></div>`;
+}
+
+/**
+ * The tick that decides whether players ever see it. Off is a note the author
+ * left for themselves, and the viewport draws it greyed to match.
+ */
+function showInGameRow(value) {
+  const on = value !== false;
+  return `<label class="mtick" title="Unticked, the message is drawn in the editor and left out of the game">
+    <input type="checkbox" id="f-showingame"${on ? ' checked' : ''}>
+    <span>Show in game</span></label>`;
+}
+
 function propRows(mesh) {
   const props = mesh.userData.props || {};
   const keys = Object.keys(props);
@@ -1356,6 +1638,8 @@ function propRows(mesh) {
       if (key === 'specificWeapon') return weaponRow(props[key]);
       if (key === 'enemyTypes') return enemyTypesRow(props[key]);
       if (key === 'behaviour') return behaviourRow(props[key]);
+      if (key === 'content') return messageRow(props[key]);
+      if (key === 'showInGame') return showInGameRow(props[key]);
       const label = PROP_LABELS[key] || key;
       const list = propSuggestions(key);
       const opts = list.map((v) => `<option value="${escapeHtml(v)}">`).join('');
@@ -1432,11 +1716,36 @@ function wireSpawnerRows(mesh) {
   }
 }
 
+/**
+ * The message rows. `input` rather than `change` on the text, so the sign in
+ * the viewport is redrawn as you type and you can see it fit — the whole reason
+ * the words are drawn there at all. The undo step is still one per edit, taken
+ * when the box is left.
+ */
+function wireMessageRows(mesh) {
+  const text = $('f-content');
+  if (text) {
+    text.oninput = () => vp.setProp(mesh, 'content', text.value);
+    text.onchange = () => commit();
+  }
+  const tick = $('f-showingame');
+  if (tick) {
+    tick.onchange = () => {
+      vp.setProp(mesh, 'showInGame', tick.checked);
+      commit();
+      toast(tick.checked
+        ? 'Players will see this message.'
+        : 'Message kept in the map but hidden from players.');
+    };
+  }
+}
+
 function wirePropRows(mesh) {
   wireSpawnerRows(mesh);
+  wireMessageRows(mesh);
   const keys = Object.keys(mesh.userData.props || {});
   keys.forEach((key, i) => {
-    if (['specificWeapon', 'enemyTypes', 'behaviour'].includes(key)) return;
+    if (SPECIAL_PROPS.includes(key)) return;
     const input = $(`f-prop${i}`);
     if (!input) return;
     input.onchange = () => {
@@ -2112,6 +2421,20 @@ function buildOutliner() {
   $('obj-count').textContent = String(vp.objects.length);
 }
 
+/**
+ * Put the invisible walls back, wherever the user has just asked for something
+ * they cannot see — clicked a greyed row, or taken a boundary out of the
+ * library while the switch was on. Placing a piece that never appears is the
+ * kind of thing you spend a minute doubting the editor over.
+ */
+function showBoundaries() {
+  if (!vp.hideBoundaries) return;
+  $('hide-boundaries').checked = false;
+  vp.setHideBoundaries(false);
+  buildOutliner();
+  toast('Boundaries shown again.');
+}
+
 function selectFrom(list, e) {
   if (e.shiftKey) {
     const next = new Set(vp.selection);
@@ -2155,16 +2478,24 @@ function groupRow(id, members) {
 
 function objectRow(m, child) {
   const row = document.createElement('div');
+  // A hidden boundary stays in the list, because it is still in the map and a
+  // list that quietly loses rows is worse than one that greys them. Clicking it
+  // brings the boundaries back rather than putting a gizmo on thin air.
+  const unseen = !m.visible;
   row.className = 'row' + (vp.selection.has(m) ? ' on' : '') +
-    (child ? ' child' : '') + (m.userData.locked ? ' locked' : '');
+    (child ? ' child' : '') + (m.userData.locked ? ' locked' : '') + (unseen ? ' unseen' : '');
   const dot = document.createElement('i');
   dot.className = 'dot';
   dot.style.background = m.userData.def.color;
   const t = document.createElement('span');
   t.className = 't';
   t.textContent = m.userData.def.label;
+  if (unseen) row.title = 'Hidden by the Hide boundaries switch. Click to show them again.';
   row.append(dot, t, lockToggle([m], !!m.userData.locked));
-  row.onclick = (e) => selectFrom(vp.expandGroup(m, e.ctrlKey || e.metaKey), e);
+  row.onclick = (e) => {
+    if (!m.visible) showBoundaries();
+    selectFrom(vp.expandGroup(m, e.ctrlKey || e.metaKey), e);
+  };
   row.oncontextmenu = (e) => {
     e.preventDefault();
     showContextMenu(e.clientX, e.clientY, vp.expandGroup(m, e.ctrlKey || e.metaKey));
@@ -2233,7 +2564,9 @@ function showContextMenu(x, y, meshes) {
   el.appendChild(sep);
 
   item('Select', '', () => vp.setSelection(meshes), locked);
+  item('Swap theme…', '', () => showThemeMenu(x, y, meshes), locked);
   item('Replace…', '', () => openReplace(meshes), locked);
+  item('Export prefab…', '', () => exportPrefab(meshes), locked);
   item('Duplicate', 'Ctrl D', () => { vp.setSelection(meshes); duplicate(); }, locked);
   item('Copy', 'Ctrl C', () => { vp.setSelection(meshes); copySelection(); }, locked);
   item('Delete', 'Del', () => { vp.setSelection(meshes); deleteSelection(); }, locked);
@@ -2249,6 +2582,52 @@ function showContextMenu(x, y, meshes) {
 function hideContextMenu() {
   contextMenuEl?.remove();
   contextMenuEl = null;
+}
+
+/**
+ * The theme picker, as a second menu in the place of the first.
+ *
+ * A second level rather than a panel, because the list is short and the answer
+ * is one click: the pointer is already here and the menu is already open. Each
+ * row says how many of the selection that theme could take, so a pack with
+ * nothing to offer is greyed rather than silently doing nothing, and the one
+ * the pieces are already in reads "already there".
+ */
+function showThemeMenu(x, y, meshes) {
+  hideContextMenu();
+  const targets = meshes.filter((m) => !m.userData.locked);
+  if (!targets.length) return;
+
+  const el = document.createElement('div');
+  el.className = 'ctxmenu';
+  el.style.left = `${x}px`;
+  el.style.top = `${y}px`;
+
+  const head = document.createElement('div');
+  head.className = 'ctxhead';
+  head.textContent = targets.length > 1 ? `Swap ${targets.length} objects to…` : 'Swap theme to…';
+  el.appendChild(head);
+
+  for (const { pack, hits, already } of themeOptions(targets)) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.disabled = !hits;
+    b.innerHTML = `<span>${escapeHtml(pack.name)}</span>`
+      + `<kbd>${hits ? `${hits}/${targets.length}` : already ? '✓' : '—'}</kbd>`;
+    b.title = hits
+      ? `${hits} of ${targets.length} would become ${pack.name} pieces`
+      : already
+        ? `Already ${pack.name}`
+        : `Nothing in the selection has a ${pack.name} equivalent`;
+    b.onclick = () => { hideContextMenu(); swapTheme(pack.id, targets); };
+    el.appendChild(b);
+  }
+
+  document.body.appendChild(el);
+  const r = el.getBoundingClientRect();
+  if (r.right > innerWidth) el.style.left = `${Math.max(0, innerWidth - r.width - 4)}px`;
+  if (r.bottom > innerHeight) el.style.top = `${Math.max(0, innerHeight - r.height - 4)}px`;
+  contextMenuEl = el;
 }
 
 // -- replace ----------------------------------------------------------------
@@ -2340,9 +2719,24 @@ function closeReplace() {
 function replaceWith(def, targets) {
   const live = targets.filter((m) => vp.objects.includes(m));
   if (!live.length) return toast('Those objects are no longer on the map.', true);
+  const swapped = swapInPlace(live.map((m) => [m, def]));
+  toast(`Replaced ${swapped} object${swapped === 1 ? '' : 's'} with ${def.label}.`);
+}
+
+/**
+ * Stand a new object where an old one was, for each `[mesh, def]` pair, and
+ * take the old ones away. Returns how many were swapped.
+ *
+ * Shared by Replace, which points every one at the same entry, and by Swap
+ * theme, which gives each its own — the same operation, differing only in how
+ * the target is chosen.
+ */
+function swapInPlace(pairs) {
+  const live = pairs.filter(([m, def]) => def && vp.objects.includes(m));
+  if (!live.length) return 0;
 
   const made = [];
-  for (const m of live) {
+  for (const [m, def] of live) {
     m.updateWorldMatrix(true, false);
     const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
     m.matrixWorld.decompose(p, q, s);
@@ -2359,10 +2753,60 @@ function replaceWith(def, targets) {
     next.userData.group = m.userData.group;
     made.push(next);
   }
-  vp.removeObjects(live);
+  vp.removeObjects(live.map(([m]) => m));
   vp.setSelection(made);
   commit();
-  toast(`Replaced ${live.length} object${live.length === 1 ? '' : 's'} with ${def.label}.`);
+  return made.length;
+}
+
+// -- swap theme --------------------------------------------------------------
+// Rebuilding an arena in another theme, without rebuilding it. Every themed
+// pack holds the same pieces in a different material — a Camo barrier corner
+// stands for a Default one — and `equivalentIn` is what pairs them up; the
+// mirror tool has used it since it could mirror into a second theme. This is
+// that mapping applied where the pieces already are.
+//
+// Anything the target pack has no equivalent for is left exactly as it was
+// rather than dropped or turned into a stand-in, and the toast says how many.
+// That is the honest answer for a genuinely partial library: Wild West has no
+// U barrier and Hatchet Corp has no low one, so half a wall really can have
+// nowhere to go.
+
+/** The virtual packs a selection could be swapped into, and what each would do. */
+function themeOptions(targets) {
+  return packsInGroup('virtual').map((pack) => {
+    let hits = 0, already = 0;
+    for (const m of targets) {
+      const to = equivalentIn(m.userData.def, pack.id);
+      if (!to) continue;
+      if (to === m.userData.def) already++;
+      else hits++;
+    }
+    return { pack, hits, already };
+  });
+}
+
+function swapTheme(packId, targets) {
+  const live = targets.filter((m) => !m.userData.locked && vp.objects.includes(m));
+  const pairs = [];
+  let missing = 0;
+  for (const m of live) {
+    const to = equivalentIn(m.userData.def, packId);
+    if (!to) { missing++; continue; }
+    if (to !== m.userData.def) pairs.push([m, to]);
+  }
+  const name = getPack(packId)?.name ?? packId;
+  if (!pairs.length) {
+    return toast(missing
+      ? `Nothing in the selection has a ${name} equivalent.`
+      : `Already ${name}.`, !!missing);
+  }
+  const swapped = swapInPlace(pairs);
+  const left = missing ? `, ${missing} left alone with no ${name} equivalent` : '';
+  toast(`Swapped ${swapped} object${swapped === 1 ? '' : 's'} to ${name}${left}.`);
+  tip('swaptheme',
+    'A theme swap keeps every position, rotation and scale, so it is the same arena in different '
+    + 'materials. Pieces the target theme does not have are left where they are.');
 }
 
 /** The padlock beside a row — and the only way back for a locked object. */
@@ -2453,7 +2897,11 @@ function wireKeyboard() {
     switch (e.key) {
       case 'f': case 'F': vp.frameSelection(); break;
       case 'g': case 'G': e.shiftKey ? ungroupSelection() : groupSelection(); break;
-      case 'End': e.shiftKey ? dropOntoSurface() : vp.dropSelection('floor'); break;
+      case 'End':
+        if (mod) dropUnderGround();
+        else if (e.shiftKey) dropOntoSurface();
+        else vp.dropSelection('floor');
+        break;
       case 'Delete': case 'Backspace': deleteSelection(); break;
       case 'Escape': vp.setSelection([]); break;
     }
@@ -2607,6 +3055,9 @@ function wireViewport() {
 // ---------------------------------------------------------------------------
 
 async function openFile(file) {
+  // Both drop targets come through here, so a prefab dropped on the page is
+  // placed rather than tried as a map and rejected for not being one.
+  if (looksLikePrefab(file)) return importPrefabFile(file);
   try {
     await loadMapText(await file.text(), file.name);
   } catch (err) {

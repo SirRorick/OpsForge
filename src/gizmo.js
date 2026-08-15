@@ -61,6 +61,33 @@ const R_CONE = 1;          // where the arrow cone starts — outside everything
 const R_ARROW = 1.2;       // arrow tip
 const ARC_SEGMENTS = 64;
 
+// How big the gizmo is allowed to get in the world, and how fast it stops
+// getting bigger.
+//
+// A gizmo drawn at a constant size on screen is the right answer up close and
+// the wrong one across an arena: at forty metres out it is twelve metres of
+// arrows lying over half the map, hiding the very layout the zoom was for. So
+// the screen-constant scale holds only up to `SOFT_CAP` — about a metre and a
+// half of arrow, which is a piece of furniture rather than a landmark — and
+// past it grows on a curve flat enough that the thing shrinks steadily on
+// screen while still growing, slightly, in metres.
+//
+// The exponent is what makes it a knee rather than a wall. A hard clamp pins
+// the world size and the gizmo then shrinks on screen exactly as fast as the
+// camera pulls back, which at four times the distance is a quarter of the
+// handles and nothing left to grab. At 0.35 the same pull-back leaves it about
+// half, and `HARD_CAP` is only there to stop the drift going anywhere silly
+// from orbit.
+const SOFT_CAP = 1.35;
+const CAP_EXPONENT = 0.35;
+const HARD_CAP = SOFT_CAP * 2.6;
+
+/** Screen-constant up close, compressed past the knee, capped beyond that. */
+function capScale(s) {
+  if (s <= SOFT_CAP) return s;
+  return Math.min(HARD_CAP, SOFT_CAP * (s / SOFT_CAP) ** CAP_EXPONENT);
+}
+
 function lineMaterial(colour, width = 2) {
   return new THREE.LineBasicMaterial({
     color: colour, transparent: true, depthTest: false, depthWrite: false, linewidth: width,
@@ -276,13 +303,14 @@ export class ComboGizmo extends THREE.Object3D {
     this.quaternion.identity();
 
     // Constant screen size. For a perspective camera that is distance times the
-    // vertical field of view; an orthographic one has no distance term.
+    // vertical field of view; an orthographic one has no distance term. Both go
+    // through the same cap, since both grow without limit as the view pulls
+    // back — one on distance, the other on zoom.
     const factor = this.camera.isOrthographicCamera
       ? (this.camera.top - this.camera.bottom) / this.camera.zoom
       : pos.distanceTo(this.camera.position) * Math.min(
         1.9 * Math.tan((Math.PI * this.camera.fov) / 360) / this.camera.zoom, 7);
-    const s = (factor * this.size) / 7;
-    this.scale.setScalar(s);
+    this.scale.setScalar(capScale((factor * this.size) / 7));
 
     // Scale handles ride the object; the centre disc faces the camera.
     this._scaleRoot.quaternion.copy(this.object.getWorldQuaternion(new THREE.Quaternion()));
@@ -533,6 +561,35 @@ export class ComboGizmo extends THREE.Object3D {
     return v.normalize();
   }
 
+  /**
+   * Round a turn to the angle snap — the angle *arrived at*, not the angle
+   * applied.
+   *
+   * The difference is the whole of what the snap is for. Rounding the delta
+   * keeps whatever the piece already had and adds tidy amounts to it, so a
+   * barrier turned freely to 43 degrees with the snap off goes to 58, 73, 88
+   * once it is back on: every one of them off-step, and nothing short of typing
+   * a number ever gets it back. Rounding the result instead means the first
+   * turn after the snap comes on lands on 45, and the piece is square with
+   * everything else built at 15.
+   *
+   * 'YXZ' is the order the map file composes its own euler angles in, and
+   * scene.js hands this the pivot in that frame — so a component read here is
+   * the number the inspector shows and the file stores, and rounding it to the
+   * step is what puts that number on the step.
+   *
+   * Only the axis being dragged is touched. A piece deliberately tipped to a
+   * free angle about X has no business being straightened because someone
+   * turned it about Y.
+   */
+  _snapTurn(q) {
+    const step = this.rotationSnap;
+    if (!step || !this.axis || this.axis === 'view') return q;
+    const e = new THREE.Euler().setFromQuaternion(q, 'YXZ');
+    e[this.axis] = Math.round(e[this.axis] / step) * step;
+    return new THREE.Quaternion().setFromEuler(e);
+  }
+
   /** Where the pointer ray meets a plane, as an offset from `origin`. */
   _planePoint(plane, origin) {
     const p = new THREE.Vector3();
@@ -590,13 +647,12 @@ export class ComboGizmo extends THREE.Object3D {
     } else if (this.activeMode === 'rotate') {
       const now = this._planePoint(s.plane, s.centre);
       if (now.lengthSq() < 1e-8) return;
-      let angle = Math.atan2(
+      const angle = Math.atan2(
         new THREE.Vector3().crossVectors(s.from, now).dot(s.axisWorld),
         s.from.dot(now)
       );
-      if (this.rotationSnap) angle = Math.round(angle / this.rotationSnap) * this.rotationSnap;
-      const q = new THREE.Quaternion().setFromAxisAngle(s.axisWorld, angle);
-      this.object.quaternion.copy(q.multiply(s.quaternion));
+      const q = new THREE.Quaternion().setFromAxisAngle(s.axisWorld, angle).multiply(s.quaternion);
+      this.object.quaternion.copy(this._snapTurn(q));
     } else if (this.activeMode === 'scale') {
       const reach = this._axisPoint(s.centre, s.axisWorld);
       let ratio = reach / (s.offset || (s.offset = 1e-4));

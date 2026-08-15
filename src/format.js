@@ -64,22 +64,39 @@ export function f32(value) {
   return out;
 }
 
-/** .NET "G{p}" for a positive/negative finite double, trailing zeros trimmed. */
+/**
+ * .NET "G{p}" for a positive/negative finite double, trailing zeros trimmed.
+ *
+ * The rule is .NET's own, quoted: fixed-point notation is used when the
+ * exponent is **greater than -5 and less than the precision**, and scientific
+ * notation otherwise. This used to expand everything down to 1e-7 on the
+ * grounds that map data never got that small, and then a map full of custom
+ * messages did: a sign turned by a hair off the vertical carries a Z rotation
+ * of about 1e-7, and the game writes `-1.65042636E-07` where the old code wrote
+ * `-0.000000165042636`. Which is not a rounding difference — it is a different
+ * shape of number, and it broke the byte-for-byte round trip.
+ *
+ * Scientific form is .NET's too: `E`, an explicit sign, and the exponent padded
+ * to at least two digits.
+ *
+ * The exponent is read back off `toExponential` rather than computed with
+ * `Math.log10`, because rounding to `p` digits can carry into it — 9.9999e-5 at
+ * seven digits is 1.000000e-4, and it is the rounded value that decides which
+ * notation .NET uses.
+ */
 function gDigits(v, p) {
-  let s = v.toPrecision(p);
-  if (s.includes('e')) {
-    // .NET switches to E notation outside 1e-5..1e{p}; map data never gets
-    // there in practice, so expand rather than risk a mismatched exponent form.
-    const abs = Math.abs(v);
-    if (abs > 1e-7 && abs < 1e21) s = expand(v, p);
-    else return v.toExponential(p - 1).replace('e', 'E');
-  }
-  if (s.includes('.')) s = s.replace(/0+$/, '').replace(/\.$/, '');
-  return s;
+  const [mantissa, e] = v.toExponential(p - 1).split('e');
+  const exp = Number(e);
+  if (exp > -5 && exp < p) return trimZeros(expand(v, p, exp));
+  const sign = exp < 0 ? '-' : '+';
+  return `${trimZeros(mantissa)}E${sign}${String(Math.abs(exp)).padStart(2, '0')}`;
 }
 
-function expand(v, p) {
-  const exp = Math.floor(Math.log10(Math.abs(v)));
+function trimZeros(s) {
+  return s.includes('.') ? s.replace(/0+$/, '').replace(/\.$/, '') : s;
+}
+
+function expand(v, p, exp) {
   const decimals = Math.min(100, Math.max(0, p - 1 - exp));
   return v.toFixed(decimals);
 }
@@ -107,7 +124,7 @@ function dict(o) {
 }
 
 // -- map object subtypes ----------------------------------------------------
-// Most objects are a bare `MapObject`, but three subtypes carry extra fields,
+// Most objects are a bare `MapObject`, but four subtypes carry extra fields,
 // and the game writes them between "$type" and "type". Key order has to match
 // or an untouched map stops re-exporting byte for byte, so the extras are kept
 // in a `props` object and written in the order below.
@@ -118,6 +135,10 @@ export const OBJECT_PROP_KEYS = {
   WeaponSpawnPoint: ['specificWeapon'],
   DamageBox: ['style'],
   EnemySpawnPoint: ['enemyTypes', 'behaviour'],
+  // The one subtype whose extras are not all strings: `content` is the text on
+  // the sign, `showInGame` a real JSON boolean. Both are written before "type",
+  // in this order, exactly as the game writes them.
+  CustomMessage: ['content', 'showInGame'],
 };
 
 /**

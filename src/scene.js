@@ -16,6 +16,7 @@ import { defFor, modelUrl, iconUrl, sameShapeFamily } from './catalog.js';
 import {
   WEAPON_ICONS, WEAPON_ANY, parseWeapons,
   ENEMY_ICONS, ENEMY_MODELS, ENEMY_TYPES, ENEMY_ANY, parseEnemyTypes,
+  BOUNDARY_PACK,
 } from './packs.js';
 import { convertPosition, unityEulerToQuat, quatToUnityEuler, MODEL_YAW } from './unity.js';
 import { decodeNavCloud, navIndexToWorld, NAV_SPACING } from './format.js';
@@ -95,6 +96,28 @@ function isFurniture(node) {
 }
 
 const lowerLod = (node) => /_LOD[1-9]\d*$/i.test(node.name || '');
+
+/** Is this an invisible wall? Asked by the Hide Boundaries switch. */
+const isBoundary = (def) => def?.pack === BOUNDARY_PACK;
+
+/**
+ * Narrow a prefab's parts to the ones the catalog says are the object.
+ *
+ * `isFurniture` above drops what is furniture in every prefab. This drops what
+ * is surplus in one, and the boundaries are why: each ships two visuals, the
+ * invisible one the game draws in the room and a wood-textured `RemoteVisual`
+ * for a spectator watching from outside it, both the same shape in the same
+ * place. Keeping both paints every invisible wall in the editor with wood
+ * grain. A pattern that matches nothing is ignored rather than obeyed, so a
+ * prefab renamed by a game update falls back to the whole thing instead of
+ * disappearing.
+ */
+function keepParts(def, parts) {
+  if (!def.keepParts) return parts;
+  const re = new RegExp(def.keepParts, 'i');
+  const kept = parts.filter((p) => re.test(p.path));
+  return kept.length ? kept : parts;
+}
 
 /**
  * Sit a loaded prefab on the cell floor, exactly, the way geometryFor does for
@@ -414,6 +437,101 @@ function isNormalMapTexture(texture) {
   return verdict;
 }
 
+// -- text on a pane ----------------------------------------------------------
+// A custom message's words, drawn to a canvas so a plane can wear them.
+//
+// Not cached, unlike every other texture here. One is built per message and
+// disposed with it, because the thing that would key a cache is the message
+// itself: typing into the inspector would leave one texture per keystroke in
+// it, and evicting them by age would take one out from under a sign that is
+// still on screen. A canvas this size costs a fraction of a millisecond.
+
+const TEXT_PX = 512;           // across the long side; the pane is a metre or so
+
+/**
+ * Lay `content` out on a card of aspect `aspect`, filling it as large as it
+ * will go.
+ *
+ * The size is solved rather than chosen: the words are wrapped at a series of
+ * candidate sizes, largest first, and the first that fits both across and down
+ * wins. That is what makes one word fill the pane and a paragraph shrink to
+ * suit, without the author having to think about either — the game's own field
+ * takes a line of text and says nothing about how big it is.
+ *
+ * `live` is the `showInGame` tick. A message players will never see is drawn
+ * greyed and italic over a hatched card, so a glance at the map says which
+ * signs are the author's notes to themselves.
+ */
+function textTexture(content, aspect, live) {
+  const w = aspect >= 1 ? TEXT_PX : Math.max(64, Math.round(TEXT_PX * aspect));
+  const h = aspect >= 1 ? Math.max(64, Math.round(TEXT_PX / aspect)) : TEXT_PX;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = live ? '#12181d' : '#171a1c';
+  ctx.fillRect(0, 0, w, h);
+  if (!live) {
+    // Hatching, so "not in the game" reads from across the arena rather than
+    // depending on telling two dark greys apart.
+    ctx.strokeStyle = '#232a2f';
+    ctx.lineWidth = Math.max(2, w / 90);
+    ctx.beginPath();
+    for (let x = -h; x < w; x += Math.max(10, w / 14)) {
+      ctx.moveTo(x, h);
+      ctx.lineTo(x + h, 0);
+    }
+    ctx.stroke();
+  }
+
+  const words = content.trim().split(/\s+/).filter(Boolean);
+  if (words.length) {
+    const pad = Math.round(Math.min(w, h) * 0.08);
+    const boxW = w - pad * 2, boxH = h - pad * 2;
+    const style = live ? '600' : 'italic 600';
+    let chosen = null;
+    for (let size = Math.round(h * 0.6); size >= 8; size = Math.round(size * 0.88)) {
+      ctx.font = `${style} ${size}px system-ui, sans-serif`;
+      const lines = wrapText(ctx, words, boxW);
+      if (!lines) continue;                       // a single word too wide to fit
+      if (lines.length * size * 1.22 <= boxH) { chosen = { size, lines }; break; }
+    }
+    // Nothing fits, which one very long word in a very small pane can manage:
+    // draw it at the floor size and let it overflow rather than showing blank.
+    if (!chosen) {
+      ctx.font = `${style} 8px system-ui, sans-serif`;
+      chosen = { size: 8, lines: [words.join(' ')] };
+    }
+    ctx.font = `${style} ${chosen.size}px system-ui, sans-serif`;
+    ctx.fillStyle = live ? '#eaf6ff' : '#7f8b93';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const step = chosen.size * 1.22;
+    const top = h / 2 - ((chosen.lines.length - 1) * step) / 2;
+    chosen.lines.forEach((line, i) => ctx.fillText(line, w / 2, top + i * step));
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = 4;
+  return texture;
+}
+
+/** Greedy wrap, or null when a single word is wider than the line. */
+function wrapText(ctx, words, width) {
+  const lines = [];
+  let line = '';
+  for (const word of words) {
+    if (ctx.measureText(word).width > width) return null;
+    const next = line ? `${line} ${word}` : word;
+    if (ctx.measureText(next).width <= width) line = next;
+    else { lines.push(line); line = word; }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
 function displayMaterial(material, tint, opacity = 1, force = false, cut = false, litByVertex = true,
   tile = false) {
   if (Array.isArray(material)) {
@@ -704,6 +822,8 @@ export class Viewport extends EventTarget {
     // the two can be compared. Off by default: the real art is better when it
     // is there.
     this.usePlaceholders = false;
+    // Take the invisible walls out of the view — see setHideBoundaries.
+    this.hideBoundaries = false;
     this.placing = null;
     this._pointer = null;
     this._nextId = 1;
@@ -713,6 +833,10 @@ export class Viewport extends EventTarget {
     this._fixedParts = new Map();
     this._figures = new Map();
     this._figureCache = new Map();
+    this._screens = new Map();
+    this._screenTextures = new Map();
+    this._edges = new Map();
+    this._texts = new Map();
     this._gltf = new GLTFLoader();
 
     this._initRenderer();
@@ -1011,8 +1135,8 @@ export class Viewport extends EventTarget {
       // would be turning about something that moves with the camera, which
       // moves nothing at all.
       const targets = this.placing
-        ? this.objects.filter((m) => !this.placing.meshes.includes(m))
-        : this.objects;
+        ? this.pickable().filter((m) => !this.placing.meshes.includes(m))
+        : this.pickable();
       const hit = ray.intersectObjects(targets, true).find((h) => h.object.isMesh);
       return hit ? hit.point.clone() : this.orbit.target.clone();
     };
@@ -1142,8 +1266,8 @@ export class Viewport extends EventTarget {
       // The piece being carried during a placement is under the pointer by
       // definition, and zooming towards it would be zooming towards nothing.
       const targets = this.placing
-        ? this.objects.filter((m) => !this.placing.meshes.includes(m))
-        : this.objects;
+        ? this.pickable().filter((m) => !this.placing.meshes.includes(m))
+        : this.pickable();
       const hit = ray.intersectObjects(targets, true).find((h) => h.object.isMesh);
       // Failing an object, the floor; failing that — the pointer is on the sky —
       // whatever the view is already turned towards, which at least keeps the
@@ -1222,6 +1346,10 @@ export class Viewport extends EventTarget {
     this.objects.push(mesh);
     this._refreshBadge(mesh);
     this._refreshFigure(mesh);
+    this._refreshScreen(mesh);
+    this._refreshEdges(mesh);
+    this._refreshText(mesh);
+    this.applyVisibility(mesh);
     if (def.model && !this.usePlaceholders) this._swapInModel(mesh, def);
     return mesh;
   }
@@ -1246,6 +1374,11 @@ export class Viewport extends EventTarget {
         this._dropFixedPart(mesh);
         mesh.geometry = geometryFor(def);
         mesh.material = this.materialFor(def);
+        // All three of these are placed off the geometry's own box, which has
+        // just changed shape underneath them.
+        this._refreshScreen(mesh);
+        this._refreshEdges(mesh);
+        this._refreshText(mesh);
         const figure = this._figures.get(mesh)?.child;
         if (figure) figure.position.y = mesh.geometry.boundingBox.max.y;
       } else {
@@ -1298,6 +1431,46 @@ export class Viewport extends EventTarget {
     if (!child) return;
     child.removeFromParent();
     this._fixedParts.delete(mesh);
+  }
+
+  // -- hiding boundaries ------------------------------------------------------
+  // An arena full of invisible walls is an arena you cannot see, which is the
+  // one drawback of drawing them at all: a boundary is placed around a real
+  // sofa, so it stands exactly where you want to look. The switch takes the lot
+  // out of the view for as long as it is on.
+  //
+  // Nothing about the map changes and nothing is marked dirty — this is a
+  // setting of the viewport, not of the file. Hidden objects leave the
+  // selection and stop being pickable, because a selection you cannot see is a
+  // gizmo floating in mid-air over nothing, and a marquee that quietly picked
+  // up thirty invisible walls is worse.
+
+  /** Hide, or show, every object the Boundaries pack owns. */
+  setHideBoundaries(on) {
+    const next = !!on;
+    if (next === this.hideBoundaries) return;
+    this.hideBoundaries = next;
+    let dropped = false;
+    for (const mesh of this.objects) {
+      this.applyVisibility(mesh);
+      if (!mesh.visible && this.selection.delete(mesh)) dropped = true;
+    }
+    if (dropped) {
+      this.rebuildPivot();
+      this._syncOutline();
+      this.emit('selection');
+    }
+    this.emit('change');
+  }
+
+  /** Whether one object is drawn at all, given the switches above. */
+  applyVisibility(mesh) {
+    mesh.visible = !(this.hideBoundaries && isBoundary(mesh.userData.def));
+  }
+
+  /** Objects a click, a marquee or a drop is allowed to find. */
+  pickable() {
+    return this.hideBoundaries ? this.objects.filter((m) => m.visible) : this.objects;
   }
 
   /** Cancel the parent's scale on every fixed part, once per frame. */
@@ -1396,6 +1569,184 @@ export class Viewport extends EventTarget {
     this._figures.delete(mesh);
   }
 
+  // -- edges -----------------------------------------------------------------
+  // A boundary is drawn at a tenth opacity, and a tenth of anything is not
+  // enough to say where it ends: three invisible walls overlapping read as one
+  // smudge, and the corner you are trying to line up with the real sofa is the
+  // part you cannot see at all. So the silhouette is drawn over the top.
+  //
+  // A child of the object rather than geometry merged into it, because it is
+  // lines and the object is triangles. It inherits position, rotation and
+  // scale, which is what makes it track a boundary being stretched, and it is
+  // rebuilt whenever the geometry underneath it changes — the stand-ins toggle
+  // and the prefab arriving both do that.
+  //
+  // Thirty degrees, so a cylinder shows its two rims and its silhouette rather
+  // than all twenty-four of the seams between its side faces.
+
+  /** Build or replace the wireframe over one object, and drop it if it has none. */
+  _refreshEdges(mesh) {
+    this._dropEdges(mesh);
+    const def = mesh.userData.def;
+    if (!def?.edges) return;
+    const child = new THREE.LineSegments(
+      new THREE.EdgesGeometry(mesh.geometry, 30),
+      new THREE.LineBasicMaterial({
+        color: new THREE.Color(def.color), transparent: true, opacity: 0.85,
+      })
+    );
+    // Lines are picked with a world-space threshold rather than by intersecting
+    // them, so leaving this raycastable would let the wireframe answer for the
+    // object a metre away from it — and `_surfaceUnder` takes the first thing
+    // its ray meets, so Drop would land a crate on nothing.
+    child.raycast = () => {};
+    mesh.add(child);
+    this._edges.set(mesh, child);
+  }
+
+  _dropEdges(mesh) {
+    const child = this._edges.get(mesh);
+    if (!child) return;
+    child.geometry.dispose();
+    child.material.dispose();
+    child.removeFromParent();
+    this._edges.delete(mesh);
+  }
+
+  // -- screens ---------------------------------------------------------------
+  // The jumbotron is a frame around a hole, and it is a hole in the dump rather
+  // than in the game: what fills it there is a Unity canvas — team crests, two
+  // scores, a clock — assembled from UI sprites at runtime. A canvas is not a
+  // mesh, so AssetRipper brought out the surround and nothing else, and the
+  // prefab is the only one in the catalog that carries no texture at all.
+  //
+  // So the screen is put back as a picture on a plane across the opening: the
+  // game's own art, cropped out of the display the library icon is a photograph
+  // of, which is the closest thing to the real screen the dump contains. It is
+  // a still, and it is meant to be — nothing here is going to run a match clock.
+  //
+  // A child of the object rather than geometry merged into it, so it can be a
+  // plain textured plane while the frame keeps the catalog's tint, and so that
+  // swapping to the stand-ins is a matter of rebuilding it against a different
+  // box. It does inherit the object's scale, which is right: a jumbotron
+  // dragged out to three metres is three metres of screen.
+
+  /** Build or replace the screen inside one object, and drop it if it has none. */
+  _refreshScreen(mesh) {
+    this._dropScreen(mesh);
+    const spec = mesh.userData.def?.screen;
+    const url = spec && iconUrl({ icon: spec.image });
+    if (!url) return;
+
+    if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+    const b = mesh.geometry.boundingBox;
+    const inset = spec.inset ?? 0;
+    const width = (b.max.x - b.min.x) - inset * 2;
+    const height = (b.max.y - b.min.y) - inset * 2;
+    // A frame narrower than its own border has no opening to fill.
+    if (!(width > 0 && height > 0)) return;
+
+    const child = new THREE.Mesh(
+      new THREE.PlaneGeometry(width, height),
+      new THREE.MeshBasicMaterial({
+        map: this._screenTexture(url),
+        // Coplanar with the front rim on the stand-in, which is a solid slab
+        // rather than a frame with a recess behind it. Nudging the plane
+        // forward instead would put it outside the object's own bounding box,
+        // and that box is what every measurement in the editor is taken from.
+        polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
+      })
+    );
+    // Across the opening, on the face the frame is open at — the prefab's
+    // backing panel is at the far side, so the near one is what you look
+    // through. A plane faces +Z, so it is turned to face out.
+    child.position.set((b.min.x + b.max.x) / 2, (b.min.y + b.max.y) / 2, b.min.z);
+    child.rotation.y = Math.PI;
+    mesh.add(child);
+    this._screens.set(mesh, child);
+  }
+
+  // -- message text ----------------------------------------------------------
+  // A custom message is a pane with the author's own words on it, and the words
+  // are the object: two of them side by side are one sign and another only
+  // because of what they say. So they are drawn, rather than left to the
+  // inspector.
+  //
+  // The same hole as the jumbotron's, one step worse. That prefab is at least a
+  // frame around its missing canvas; `CustomMessage.glb` carries no mesh at all
+  // — its whole visual is a Unity canvas assembled at runtime — so there is
+  // nothing in the dump to paint and the text is drawn here, onto a 2D canvas
+  // that becomes the texture on a plane across the pane.
+  //
+  // A message with `showInGame` off is one the author left for themselves, and
+  // it is drawn as such: greyed, in italics, over a hatched card. Nothing about
+  // the file changes — the tick is the map's, this is only how it reads.
+
+  /** Build or replace the words on one message, and drop them if it has none. */
+  _refreshText(mesh) {
+    this._dropText(mesh);
+    const spec = mesh.userData.def?.text;
+    if (!spec) return;
+
+    if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+    const b = mesh.geometry.boundingBox;
+    const inset = spec.inset ?? 0;
+    const width = (b.max.x - b.min.x) - inset * 2;
+    const height = (b.max.y - b.min.y) - inset * 2;
+    if (!(width > 0 && height > 0)) return;
+
+    const child = new THREE.Mesh(
+      new THREE.PlaneGeometry(width, height),
+      new THREE.MeshBasicMaterial({
+        map: textTexture(
+          String(mesh.userData.props?.[spec.prop] ?? ''),
+          width / height,
+          mesh.userData.props?.showInGame !== false,
+        ),
+        transparent: true,
+        // Coplanar with the face of a one-centimetre pane, which is too thin
+        // for a depth test to separate them reliably.
+        polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
+      })
+    );
+    // Both faces: a sign is readable from the front and the back is a mirror of
+    // it, which is at least honest about which way round it is pointing.
+    child.position.set((b.min.x + b.max.x) / 2, (b.min.y + b.max.y) / 2, b.min.z);
+    child.rotation.y = Math.PI;
+    child.raycast = () => {};
+    mesh.add(child);
+    this._texts.set(mesh, child);
+  }
+
+  _dropText(mesh) {
+    const child = this._texts.get(mesh);
+    if (!child) return;
+    child.geometry.dispose();
+    child.material.map?.dispose();
+    child.material.dispose();
+    child.removeFromParent();
+    this._texts.delete(mesh);
+  }
+
+  /** One texture per image, however many objects wear it. */
+  _screenTexture(url) {
+    if (!this._screenTextures.has(url)) {
+      const texture = new THREE.TextureLoader().load(url, () => this.emit('change'));
+      texture.colorSpace = THREE.SRGBColorSpace;
+      this._screenTextures.set(url, texture);
+    }
+    return this._screenTextures.get(url);
+  }
+
+  _dropScreen(mesh) {
+    const child = this._screens.get(mesh);
+    if (!child) return;
+    child.geometry.dispose();
+    child.material.dispose();
+    child.removeFromParent();
+    this._screens.delete(mesh);
+  }
+
   /**
    * Every part of a prefab worth drawing, baked into the prefab's own space.
    *
@@ -1431,11 +1782,11 @@ export class Viewport extends EventTarget {
       // Two entries can share a prefab and not a pivot, and the normalisation
       // below depends on both.
       const cacheKey = `${def.model}|${def.pivot}|${def.size[1]}|${def.color}|${def.opacity ?? 1}` +
-        `|${def.tintModel}|${def.fixedParts ?? ''}|${def.cutout}|${def.hover}` +
+        `|${def.tintModel}|${def.fixedParts ?? ''}|${def.keepParts ?? ''}|${def.cutout}|${def.hover}` +
         `|${JSON.stringify(def.area ?? null)}|${tilesWithScale(def)}`;
       let model = this._modelCache.get(cacheKey);
       if (!model) {
-        const found = await this._prefabParts(url);
+        const found = keepParts(def, await this._prefabParts(url));
         if (!found.length) return;
 
         const { scaled, fixed } = this._splitFixedPart(mesh, def, found);
@@ -1454,6 +1805,9 @@ export class Viewport extends EventTarget {
       mesh.geometry = model.geometry;
       mesh.material = model.materials;
       this._attachFixedPart(mesh, def, model.fixed, model.dropY);
+      this._refreshScreen(mesh);
+      this._refreshEdges(mesh);
+      this._refreshText(mesh);
       // The pad the figure stands on just changed height under it.
       const figure = this._figures.get(mesh)?.child;
       if (figure) figure.position.y = model.geometry.boundingBox.max.y;
@@ -1471,6 +1825,9 @@ export class Viewport extends EventTarget {
       this._dropBadge(m);
       this._dropFixedPart(m);
       this._dropFigure(m);
+      this._dropScreen(m);
+      this._dropEdges(m);
+      this._dropText(m);
       m.removeFromParent();
       const i = this.objects.indexOf(m);
       if (i >= 0) this.objects.splice(i, 1);
@@ -1492,6 +1849,9 @@ export class Viewport extends EventTarget {
       this._dropBadge(m);
       this._dropFixedPart(m);
       this._dropFigure(m);
+      this._dropScreen(m);
+      this._dropEdges(m);
+      this._dropText(m);
       m.removeFromParent();
     }
     this.objects.length = 0;
@@ -1552,6 +1912,10 @@ export class Viewport extends EventTarget {
     }
     this._refreshBadge(mesh);
     this._refreshFigure(mesh);
+    this._refreshScreen(mesh);
+    this._refreshEdges(mesh);
+    // The message's own words are a prop, so this is what redraws them.
+    this._refreshText(mesh);
     this.markDirty(mesh);
     this.emit('change');
   }
@@ -1582,7 +1946,7 @@ export class Viewport extends EventTarget {
   }
 
   selectAll() {
-    this.setSelection(this.objects);
+    this.setSelection(this.pickable());
   }
 
   setLocked(meshes, locked) {
@@ -1599,7 +1963,7 @@ export class Viewport extends EventTarget {
    */
   pickAt(ndcPoint) {
     this.ray.setFromCamera(ndcPoint, this.camera);
-    const hits = this.ray.intersectObjects(this.objects, true);
+    const hits = this.ray.intersectObjects(this.pickable(), true);
     return this._ownerOf(hits.find((h) => h.object.isMesh)?.object) || null;
   }
 
@@ -1931,11 +2295,15 @@ export class Viewport extends EventTarget {
   /**
    * Let the selection fall until it rests on something.
    *
-   * `onto` is 'floor' for the ground, always, or 'surface' for whatever is
+   * `onto` is 'floor' for the ground, always, 'surface' for whatever is
    * actually underneath — the top of another object if there is one, the ground
-   * if there is not. The second is how a crate goes on a crate: put it roughly
-   * over the target and drop it, rather than reading a height off the inspector
-   * and typing it.
+   * if there is not — or 'under' for the ground with the object on the far side
+   * of it. The second is how a crate goes on a crate: put it roughly over the
+   * target and drop it, rather than reading a height off the inspector and
+   * typing it. The third is the same gesture for the things a map buries: a
+   * ramp's underside, a pit, a barrier used as a floor from below. It lands the
+   * object's *top* on y = 0 rather than its bottom, so the whole of it is under
+   * the ground and nothing pokes through.
    *
    * Height is otherwise unconstrained. This used to run on every edit, off a
    * Floor tick that was on by default, which made anything the catalog marks
@@ -1955,11 +2323,46 @@ export class Viewport extends EventTarget {
    * one inside the other.
    */
   dropSelection(onto = 'floor') {
+    let moved = 0;
+    for (const { body, drop } of this.dropPlan(onto)) {
+      for (const m of body) {
+        const world = new THREE.Vector3();
+        m.getWorldPosition(world);
+        world.y -= drop;
+        m.position.copy(m.parent === this.pivot ? this.pivot.worldToLocal(world.clone()) : world);
+        this.markDirty(m);
+        moved++;
+      }
+    }
+    if (!moved) return 0;
+    // The gizmo hangs off the pivot, and the pivot does not follow a child that
+    // moves underneath it — so without this the gizmo stayed in the air above
+    // whatever had just been dropped until the object was selected again.
+    this.rebuildPivot();
+    this.emit('transform');
+    this.emit('commit-end');
+    return moved;
+  }
+
+  /**
+   * How far each body would fall, without moving anything.
+   *
+   * Split out of `dropSelection` so the hover preview and the button press are
+   * the same arithmetic. Two answers that could disagree would be worse than no
+   * preview at all: the whole promise of the ghosts is that the objects land
+   * where they are drawn.
+   *
+   * Bodies that are already resting are left out, so an empty list means there
+   * is nothing to do — which is what both callers want to say.
+   */
+  dropPlan(onto = 'floor') {
     const targets = [...this.selection];
-    if (!targets.length) return 0;
+    if (!targets.length) return [];
     // Only things outside the selection can be landed on. Otherwise a stack
     // dropped as a group would rest on itself and never move.
-    const others = onto === 'surface' ? this.objects.filter((m) => !this.selection.has(m)) : [];
+    const others = onto === 'surface'
+      ? this.pickable().filter((m) => !this.selection.has(m))
+      : [];
 
     // What falls together: one entry per group, and one per loose object.
     const bodies = new Map();
@@ -1969,7 +2372,7 @@ export class Viewport extends EventTarget {
       bodies.get(key).push(m);
     }
 
-    let moved = 0;
+    const plan = [];
     for (const body of bodies.values()) {
       const box = new THREE.Box3();
       for (const m of body) {
@@ -1980,25 +2383,32 @@ export class Viewport extends EventTarget {
       // The whole body's footprint decides what it lands on, and its lowest
       // point decides how far it goes — so the piece at the bottom of a stack
       // is the one that touches down and the rest keep their heights above it.
+      // Going under is the same measurement taken off the top face instead:
+      // whatever stands highest is what has to clear the ground.
       const rest = others.length ? this._surfaceUnder(box, others) : 0;
-      const drop = box.min.y - rest;
+      const drop = onto === 'under' ? box.max.y : box.min.y - rest;
       if (Math.abs(drop) < 1e-5) continue;
+      plan.push({ body, drop });
+    }
+    return plan;
+  }
+
+  /**
+   * Ghost entries for what a landing would do — one per object that moves,
+   * drawn at the height it would end up at. Shape for `setGhosts`.
+   */
+  dropGhosts(onto = 'floor') {
+    const out = [];
+    for (const { body, drop } of this.dropPlan(onto)) {
       for (const m of body) {
-        const world = new THREE.Vector3();
-        m.getWorldPosition(world);
-        world.y -= drop;
-        m.position.copy(m.parent === this.pivot ? this.pivot.worldToLocal(world.clone()) : world);
-        this.markDirty(m);
-        moved++;
+        m.updateWorldMatrix(true, false);
+        const matrix = m.matrixWorld.clone();
+        const e = m.matrixWorld.elements;
+        matrix.setPosition(e[12], e[13] - drop, e[14]);
+        out.push({ source: m, matrix });
       }
     }
-    // The gizmo hangs off the pivot, and the pivot does not follow a child that
-    // moves underneath it — so without this the gizmo stayed in the air above
-    // whatever had just been dropped until the object was selected again.
-    this.rebuildPivot();
-    this.emit('transform');
-    this.emit('commit-end');
-    return moved;
+    return out;
   }
 
   /** Kept for the old name; the floor is the common case. */
@@ -2246,7 +2656,7 @@ export class Viewport extends EventTarget {
     // an enemy spawner — and clicking the visible thing has to select it.
     // Meshes only, because the selection outline is a child too, and line
     // picking uses a one metre threshold that would grab it from across the map.
-    const hits = this.ray.intersectObjects(this.objects, true);
+    const hits = this.ray.intersectObjects(this.pickable(), true);
     const hit = this._ownerOf(hits.find((h) => h.object.isMesh)?.object);
     if (!hit) {
       if (!mods.shift && !mods.ctrl) this.setSelection([]);
@@ -2284,7 +2694,7 @@ export class Viewport extends EventTarget {
     };
     const corner = new THREE.Vector3();
     const inside = [];
-    for (const m of this.objects) {
+    for (const m of this.pickable()) {
       // Dragged over rather than clicked, but a lock is a lock: the box does
       // not see it. Filtering these out here rather than leaving it to
       // `setSelection` also keeps a locked piece from dragging its unlocked

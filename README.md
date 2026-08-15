@@ -93,16 +93,39 @@ the server until something asks for them.
 
 **Building**
 
-- 167 objects in 13 packs — eleven themes plus gameplay objects and mode
-  objectives, drawn with the game's own meshes. Every object also has a
-  built-in stand-in shape, and the **Stand-ins** switch in the toolbar draws
-  those instead at any time.
+- 173 objects in 14 packs — eleven themes and the boundaries, plus gameplay
+  objects and mode objectives, drawn with the game's own meshes. Every object
+  also has a built-in stand-in shape, and the **Stand-ins** switch in the
+  toolbar draws those instead at any time.
+- **Boundaries** are the game's invisible walls, the AR half of the library: a
+  box, a cylinder and a wall that give collision without being drawn, so a real
+  coffee table becomes cover and a real sofa becomes something to hide behind.
+  The editor draws them at a tenth opacity with their edges picked out, and
+  **Hide boundaries** in the toolbar takes them out of the view entirely.
+- **Custom Text Message** puts a line of your own text on a pane in the arena,
+  with a tick for whether players see it or only you.
+- **Swap theme** on the right-click menu rebuilds a selection in another theme
+  where it stands, keeping every position, angle and size.
 - One gizmo for everything: arrows move, three coloured circles turn about X, Y
   and Z, cubes scale from the far side, and the centre disc slides across the
   floor.
 - Click or drag-box to select, group, duplicate, copy and paste, undo and redo.
 - Grid and angle snapping, and arrow keys that nudge the selection a grid step
-  at a time, the way the view is facing.
+  at a time, the way the view is facing. Angle snap rounds the angle you arrive
+  at rather than the turn you make, so a piece left at 43 degrees squares up
+  with everything else the next time it is turned.
+- **To floor**, **Drop** and **Under ground** land a selection on the ground, on
+  whatever is beneath it, or under the ground with nothing showing. Hovering
+  any of the three draws the selection where it would land, so the three are
+  told apart by looking rather than by reading.
+
+**Prefabs**
+
+- Keep a piece of map on its own — a bunker, a doorway, a stack of crates — in a
+  `.opsprefab` file, and drop it into any other map.
+- **Export prefab** writes the selection out with every type, angle, size and
+  height as it stands; **Import prefab** brings one back under the cursor as a
+  single group, which ungroups like any other.
 
 **Array and Mirror**
 
@@ -160,6 +183,7 @@ the server until something asks for them.
 | <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> | Undo / redo |
 | <kbd>F</kbd> | Frame the selection |
 | <kbd>End</kbd> / <kbd>Shift</kbd>+<kbd>End</kbd> | To the floor / onto whatever is underneath |
+| <kbd>Ctrl</kbd>+<kbd>End</kbd> | Under the ground, top face on y = 0 |
 | <kbd>Del</kbd> | Delete |
 
 ## More

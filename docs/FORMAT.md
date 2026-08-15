@@ -41,8 +41,20 @@ Two rules have to be reproduced to get a byte-identical file:
    `2.54036975` (9 digits). Shortest-round-trip formatting would emit
    `2.5403697` and produce a file that differs from the game's own output.
 
-All 61 distinct float literals in the sample are reproduced exactly by the rule
-above; see `src/format.js`.
+3. **Below `1e-5`, .NET writes scientific notation** — `E`, an explicit sign,
+   and the exponent padded to two digits: `-1.65042636E-07`. The rule is
+   .NET's own for `"G{p}"`: fixed-point when the exponent is greater than −5
+   and less than the precision, scientific otherwise.
+
+That third rule was missing until a map full of custom messages turned up. It
+is easy to go a long way without meeting it, because nothing in the arena is a
+fraction of a micrometre — but a *rotation* can be. A sign placed by hand in VR
+sits a hair off the vertical, and its third axis comes out at about `1e-7`,
+which the editor was spelling as `-0.000000165042636`. The value is the same
+float; the bytes are not.
+
+Every float literal in every reference export is reproduced exactly by the
+three rules above; see `f32` in `src/format.js`.
 
 ## Top-level fields
 
@@ -217,7 +229,7 @@ through untouched; it does not invent them.
 
 ### Subtypes
 
-Three `$type` values carry extra fields, written **between `$type` and
+Four `$type` values carry extra fields, written **between `$type` and
 `type`**. Key order is part of the format: get it wrong and an untouched map
 stops re-exporting byte for byte.
 
@@ -226,9 +238,32 @@ stops re-exporting byte for byte.
 | `WeaponSpawnPoint` | `specificWeapon` | `Handgun`, `SMG`, `Shotgun`, `Sniper`, `RPG`, `Grenade`, `Flashbang`, `RiotShield`, `Healthpack`, `All` |
 | `DamageBox` | `style` | `Red` (`DamageBox`), `Blue` (`DamageBoxTeam1`), `Orange` (`DamageBoxTeam2`) |
 | `EnemySpawnPoint` | `enemyTypes`, `behaviour` | `All`; `Default`, `Aggresive` *(sic)*, `Stationary` |
+| `CustomMessage` | `content`, `showInGame` | any string; `true` / `false` |
 
 `behaviour` really is spelled `Aggresive` in the files. It is written back
 exactly as it came.
+
+`showInGame` is the one extra field that is **not a string**: it is a real JSON
+boolean, written bare. `content` is the text on the sign, and it is the only
+place in the format where a player's own words end up in the file, so it is the
+only string that can carry anything needing escaping.
+
+### `CustomMessage`
+
+A flat pane with a line of the author's text on it. `showInGame` false keeps it
+in the map and out of the game — a note to whoever is building it.
+
+The prefab carries **no mesh at all**: its whole visual is a Unity canvas built
+at runtime, so the extraction brought out the furniture and nothing else. What
+did survive settles the geometry anyway. The `Outline` box is 1 × 1 × 0.1, the
+`Collider` is 1 × 1 × 0.01, and the `Manipulator` has handles at ±0.5 in X and
+Y and **none in Z** — so the unit is a one metre square, the pane is a
+centimetre thick, and the game resizes it in two axes rather than three. Every
+message in `test/fixtures/maps/text example_*` is scaled exactly 1 in Z and
+varies in the other two, which is the same fact from the other direction.
+
+Rotation is free: the reference messages are tilted about X as well as turned
+about Y, which is what a sign angled down towards a player looks like.
 
 The list of values above is what has been observed, not necessarily the whole
 enum, so the parser collects **any** key that is not one of the five base keys
@@ -274,17 +309,18 @@ its `HandgunBotSpawnerHologram` is a shell of the *pad*, not a bot: 1.08 × 0.30
 
 ### Pivots
 
-Consistent across all 178 objects in the reference exports: props
+Consistent across all 198 objects in the reference exports: props
 (`Crate`, `Barrier*`, `DestructibleCrate`, `*ElectricityBox`, every themed
 prop, and every gameplay and objective marker) have their origin **at the
 base**, so a grounded piece sits at `y = 0`. Primitives (`BoxSolid`,
-`CylinderSolid`, `WallSolid`) and `Tunnel` have their origin **at the centre**,
-so a grounded piece sits at `y = height × scale.y / 2`.
+`CylinderSolid`, `WallSolid`), the boundaries and `Tunnel` have their origin
+**at the centre**, so a grounded piece sits at `y = height × scale.y / 2`.
 
 Checking `base_y = pivot === 'center' ? y - h·s.y/2 : y` gives exactly `0.000`
 for every object that is not deliberately tilted or mounted in the air — the
-free-rotated `BoxSolid`, the `DamageBox` volumes (placed at ~90° about X) and
-the wall-mounted `Jumbotron`.
+free-rotated `BoxSolid` and its boundary twin `Box`, the `DamageBox` volumes
+(placed at ~90° about X), the `CustomMessage` signs, and the wall-mounted
+`Jumbotron`.
 
 This has a consequence for the editor's placeholder meshes: **Drop to floor**
 lowers a selection until its bounding box rests on `y = 0`, so a placeholder
@@ -325,6 +361,54 @@ The web editor offers only the plain solids: the VR editor needs the grounded
 variants because there is nothing to snap to in there, whereas here the grid
 does that job. The grounded types stay in the catalog marked `hidden`, so a map
 that already uses them loads, displays and re-exports unchanged.
+
+### Boundaries
+
+**Invisible walls.** Five types, and they are the solid primitives' names with
+`Solid` taken out:
+
+| Type | Same as | Pivot | Placed at |
+|---|---|---|---|
+| `Box` | `BoxSolid` | centre | `1, 1, 1` |
+| `BoxGrounded` | `BoxSolidGrounded` | centre | `1, 1, 1` |
+| `Cylinder` | `CylinderSolid` | centre | `0.5, 2, 0.5` |
+| `CylinderGrounded` | `CylinderSolidGrounded` | centre | `0.5, 2, 0.5` |
+| `Wall` | `WallSolid` | centre | `2, 2.5, 1` |
+
+The game gives them collision and does not draw them, which is what makes them
+the AR half of the library: a boundary over the real coffee table is cover you
+can throw a grenade against, and one along the real sofa is a wall you can hide
+behind, without a virtual object standing in the room.
+
+**Confirmed from a map the game wrote** — `test/fixtures/maps/Example Map 1_*`
+holds one of each — and the prefabs say the same thing three ways:
+
+- `Box.glb`'s visible mesh wears a material called
+  `ProximityWarning_AlphaZero_PVP`. Zero alpha.
+- `Cylinder.glb`'s is named `InvisibleCylinder` outright.
+- The library icons are the unused `*Transparent` set —
+  `Icon_BoxSolidTransparent`, `Icon_CylinderTransparent`,
+  `Icon_WallSolidTransparent` and the two grounded ones — each drawn as a glass
+  box with a standard lamp inside it.
+
+Geometry, pivots and default scales are the solid primitives' exactly, and the
+reference map corroborates all three the same way it did for the solids: its
+`Wall` sits at `y = 1.25` with `scale.y = 2.5`, its `CylinderGrounded` at
+`y = 1` with `(0.5, 2, 0.5)`, its `BoxGrounded` at `y = 0.5` with
+`scale.y = 1`. A centre pivot puts those on the floor only if the unit mesh is
+one metre.
+
+There is no `WallGrounded`, which is the same gap the solid wall has, and no
+themed variant of any of them: a boundary has no colour to theme. The grounded
+pair is `hidden` for the same reason the solids' pair is.
+
+Two things worth knowing before drawing one. Each prefab carries **two**
+visuals — the invisible one the game draws in the room, and a wood-textured
+`RemoteVisual` from the Wild West theme for a spectator watching from outside
+it — so a naive merge paints every invisible wall with wood grain; the catalog's
+`keepParts` keeps only the first. And the invisible material brings neither a
+texture nor a colour, so `displayMaterial`'s existing rule hands it the
+catalog's tint without any special case.
 
 ### Weapon spawners and `specificWeapon`
 
@@ -375,10 +459,15 @@ and no other prefab in the dump has flag geometry either. And
 its hologram shell, which is a couple of centimetres proud of the bird.
 
 The tool also settles which themes genuinely differ. Clustering the traced
-silhouettes puts the 167 catalog entries on 66 shapes: the primitives really are
+silhouettes puts the 173 catalog entries on 71 shapes: the primitives really are
 one mesh across all eleven themes, while the window barrier has four distinct
 forms — a small centred hole, a wide low one, a full-width letterbox, and a tall
 opening — and the U barrier's notch is open at the top rather than being a hole.
+
+Four of those 71 are not traced from anything. The three boundaries are
+deliberately plain — the game's own invisible meshes are a bare cube, cylinder
+and slab, with none of the bevels and end caps the solid versions carry — and
+`CustomMessage` has no mesh in the dump to trace.
 
 ### Base mesh dimensions
 
@@ -457,13 +546,37 @@ Decoded, the sample is 19 881 bytes (141 × 141) with 1 281 ones forming a clean
 disc centred on the origin. Solving the boundary gives a radius between
 5.031 m and 5.056 m — a real room-scale guardian boundary, roughly 10 m across.
 
-Index layout is assumed to be `row * width + col` with `col` along X and `row`
-along Z, world position `(i - (n-1)/2) × 0.25`. The mask is symmetric, so the
-axis assignment **cannot be confirmed** from this file alone; it only matters
-if you generate a non-square play space.
+Index layout is `row * width + col` with `col` along X and `row` along Z, world
+position `(i - (n-1)/2) × 0.25`. The disc in the original sample is symmetric
+and settled nothing, but `Example Map 1` and `Example Map 2` do: both were made
+in a headset by scattering crates and walking a rough boundary round them, so
+the mask and the objects are two measurements of one arrangement. Under this
+layout every crate in both maps sits 5 or 6 cells inside the edge — a near
+constant 1.3 m margin, which is what "walked round them" looks like. Transposed
+it puts a crate outside the mask, and mirrored front to back the margins fall
+apart, ranging from 0 to 9.
 
 Note the play space (10 m disc) is much larger than `mapBoundsSize` (7 × 7).
 The arena sits inside the room.
+
+### Two fields the editor does not read yet
+
+Recorded here because they are the obvious suspects for a grid that lands in
+the wrong place, which is a thing that happens with maps downloaded from other
+players and has not yet been reproduced from a file.
+
+- **`position` and `rotation` are ignored.** `setNavCloud` in `src/scene.js`
+  reads `divisions` and `encodedPoints` and nothing else, so a grid is always
+  drawn centred on the world origin and square to the axes. Every export seen so
+  far has both at zero — but loading a map in the headset asks the player to
+  align it with their own room, and a realignment is exactly what would write a
+  value into those two fields. Two maps realigned differently would then be
+  wrong differently, which matches the symptom.
+- **The 0.25 m spacing is hardcoded** as `NAV_SPACING`, rather than taken from
+  `size / (divisions - 1)`. Every export seen so far is 35 m across 141 points,
+  which is 0.25 exactly; a grid recorded in a room of another size would draw at
+  the wrong scale. `buildNavMask` and `regenerateNav` also assume the grid is
+  square, using `divisions.x` for both axes.
 
 ## The game asset dump
 

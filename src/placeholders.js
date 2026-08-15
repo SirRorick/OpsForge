@@ -200,6 +200,22 @@ const builders = {
       cyl(0.47, 0.03, 0.985, 24),
     ]),
 
+  // -- boundaries -----------------------------------------------------------
+  // The invisible walls, which are the plain solids with the art taken off:
+  // Box.glb's visible mesh is a bare 1 m cube wearing an alpha-zero material,
+  // and Cylinder.glb's is called InvisibleCylinder. So these are the primitives
+  // with none of the bevels, caps or end frames the solid versions carry — the
+  // whole of what the game has, and the right shape to draw an edge on.
+  //
+  // The `Boundary` suffix is a variant of the family the solids head, so
+  // `sameShapeFamily` keeps Replace, Mirror and Swap Theme matching a solid box
+  // to a boundary box and back.
+  boxBoundary: () => box(1, 1, 1, 0, 0.5, 0),
+
+  cylinderBoundary: () => cyl(0.5, 1, 0.5, 24),
+
+  wallBoundary: () => box(1, 1, 1, 0, 0.5, 0),
+
   // -- walls ----------------------------------------------------------------
   // WallSolid: a slab 1.069 x 1.019 x 0.125 whose end caps run 10 mm deeper
   // than the panel — traced as x -0.53..-0.44 and 0.44..0.53 standing outside
@@ -985,6 +1001,17 @@ const builders = {
       box(1, 1, 1, 0, 0.5, 0),
       box(0.88, 0.86, 1.3, 0, 0.5, 0),
       box(1, 0.08, 1.6, 0, 0.96, 0),
+    ]),
+
+  // CustomMessage, 1 x 1 x 0.01. There is nothing to trace: the prefab holds no
+  // mesh, only a canvas the game assembles at runtime, so the shape is taken
+  // from its collider — a flat pane a centimetre thick — and its border from
+  // the Outline box drawn around it. The message itself is painted on top by
+  // `_refreshText`, and this is the card it sits on.
+  messagePane: () =>
+    merge([
+      box(1, 1, 1, 0, 0.5, 0),
+      box(0.92, 0.88, 1.6, 0, 0.5, 0),
     ]),
 
   // DamageBox, 1 x 1 x 1. An open frame on purpose: it marks a volume you have

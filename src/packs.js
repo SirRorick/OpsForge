@@ -41,12 +41,28 @@
 //   fixedParts    regex naming prefab nodes that keep their own size when the
 //                 object is resized — a spawn zone's machine rides the corner
 //                 of the area it stands on rather than stretching with it
+//   keepParts     regex naming the only prefab nodes worth drawing; everything
+//                 else in the file is dropped. The boundaries are the reason it
+//                 exists: each ships the invisible visual the game draws *and*
+//                 a wood-textured one for a spectator outside the room, and
+//                 merging the two paints every invisible wall with wood grain
+//   edges         draw the object's own silhouette as lines over the top. For
+//                 something at a tenth opacity, the fill alone is not enough to
+//                 say where the faces are
+//   text          { prop, inset } — paint the object's `prop` across its front
+//                 face as text, `inset` metres in from each edge. Same idea as
+//                 `screen` and the same cause: the prefab is a Unity canvas and
+//                 the extraction brought out no mesh at all
 //   area          { parts, height, opacity } — regex naming the prefab nodes
 //                 that draw the *volume* an objective covers rather than any
 //                 solid part of it, flattened to `height` metres on the floor
 //                 and drawn at `opacity` so you can see what stands inside
 //   figure        draw a model of what the object produces on top of it;
 //                 "enemy" reads the ENEMIES table above
+//   screen        { image, inset } — paint `image` across the front face,
+//                 `inset` metres in from every edge, for a prefab whose display
+//                 the game draws as a UI canvas and the extraction therefore
+//                 left empty. `image` is staged by tools/stage-assets.mjs
 //   cutout        the prefab's texture is mostly transparent and the export
 //                 forgot to say so — a ground ring drawn on one flat quad
 //   badge         short text floated above the object in the viewport
@@ -325,6 +341,77 @@ const SPAWN_ZONE_AREA = {
   height: 0.1,
   opacity: 0.25,
 };
+
+// ---------------------------------------------------------------------------
+// Boundaries
+// ---------------------------------------------------------------------------
+// Invisible walls. The game treats one exactly as it treats the solid primitive
+// of the same shape — you can throw a grenade against it and hide behind it —
+// and simply does not draw it, which is what makes them the AR half of the
+// library: a boundary over the real coffee table is cover, and a boundary along
+// the real sofa is a wall, without a virtual object standing in the room.
+//
+// **The five types are confirmed from a map the game wrote.** They are the bare
+// `Box`, `BoxGrounded`, `Cylinder`, `CylinderGrounded` and `Wall` — the solid
+// primitives' names with `Solid` taken out — and the prefabs say the same thing
+// three ways. `Box.glb`'s visible mesh wears a material called
+// `ProximityWarning_AlphaZero_PVP`; `Cylinder.glb`'s is named
+// `InvisibleCylinder`; and the library icons are the `*Transparent` set, drawn
+// as a glass box with a standard lamp inside it. There is no `WallGrounded`,
+// which is the same gap the solid wall has, and no themed variant of any of
+// them — a boundary has no colour to theme.
+//
+// Geometry, pivots and default scales are the solid primitives' exactly, and
+// the reference map corroborates all three: its `Wall` sits at y = 1.25 with
+// scale.y = 2.5, its `CylinderGrounded` at y = 1 with scale (0.5, 2, 0.5), its
+// `BoxGrounded` at y = 0.5 with scale.y = 1. A centre pivot puts those on the
+// floor only if the unit mesh is one metre, which is the same reasoning that
+// pinned the solids.
+//
+// `keepParts` is here rather than anywhere else because these prefabs carry two
+// visuals: the invisible one the game normally draws, and a `RemoteVisual` —
+// wood-textured, from the Wild West theme — for the spectator who is not in the
+// room and would otherwise see nothing at all. Merging both would paint every
+// boundary in the editor with wood grain, so only the invisible one is kept. It
+// carries no texture and no colour, which is why `texture` is null and why the
+// pack's tint lands on it without `tintModel`: `displayMaterial` gives the
+// catalog colour to any material that brings neither.
+//
+// The Grounded pair stays `hidden` for the same reason the solids' does — the
+// grid here does the snapping the VR editor needs a separate object for — so a
+// map that already uses them loads, displays and re-exports unchanged.
+const BOUNDARY_VISUAL = "(^|/)(Visual|InvisibleCylinder)$";
+
+const BOUNDARY = {
+  category: "Boundaries", pivot: "center", size: [1, 1, 1], floor: false,
+  opacity: 0.1, edges: true, texture: null, keepParts: BOUNDARY_VISUAL,
+};
+
+const BOUNDARIES = [
+  { ...BOUNDARY, type: "Box", label: "Boundary Box", shape: "boxBoundary",
+    rotationAxes: "xyz", defaultScale: [1, 1, 1],
+    icon: "Icon_BoxSolidTransparent", model: "Box" },
+  { ...BOUNDARY, type: "BoxGrounded", label: "Boundary Box (Grounded)", shape: "boxBoundary",
+    rotationAxes: "y", floor: true, defaultScale: [1, 1, 1], hidden: true,
+    icon: "Icon_BoxGroundedSolidTransparent", model: "BoxGrounded" },
+  { ...BOUNDARY, type: "Cylinder", label: "Boundary Cylinder", shape: "cylinderBoundary",
+    rotationAxes: "xyz", defaultScale: [0.5, 2, 0.5],
+    icon: "Icon_CylinderTransparent", model: "Cylinder" },
+  { ...BOUNDARY, type: "CylinderGrounded", label: "Boundary Cylinder (Grounded)",
+    shape: "cylinderBoundary", rotationAxes: "y", floor: true, defaultScale: [0.5, 2, 0.5],
+    hidden: true, icon: "Icon_CylinderTransparentGrounded", model: "CylinderGrounded" },
+  // The wall's thickness is the one number a placement cannot pin down, and it
+  // measures the same 0.125 the solid wall does.
+  { ...BOUNDARY, type: "Wall", label: "Boundary Wall", shape: "wallBoundary",
+    size: [1, 1, 0.125], rotationAxes: "y", floor: true, defaultScale: [2, 2.5, 1],
+    icon: "Icon_WallSolidTransparent", model: "Wall" },
+];
+
+/** The pack id, for the viewport's Hide switch. */
+export const BOUNDARY_PACK = 'boundaries';
+
+/** Every type it owns, for the tests and for anything counting them. */
+export const BOUNDARY_TYPES = BOUNDARIES.map((o) => o.type);
 
 export const BUILTIN_PACKS = [
   {
@@ -1023,6 +1110,11 @@ export const BUILTIN_PACKS = [
     ],
   },
   {
+    id: BOUNDARY_PACK, name: "Boundaries", group: "virtual", schema: PACK_SCHEMA_VERSION,
+    color: "#4FC3E8",
+    objects: BOUNDARIES,
+  },
+  {
     id: "gameplay", name: "Gameplay Objects", group: "gameplay", schema: PACK_SCHEMA_VERSION,
     objects: [
     { type: "WeaponSpawnPoint", objectType: "WeaponSpawnPoint",
@@ -1048,14 +1140,42 @@ export const BUILTIN_PACKS = [
       shape: "explosiveBarrel", size: [0.61, 0.81, 0.61], pivot: "base", rotationAxes: "y",
       floor: true, color: "#C4452F", defaultScale: [1, 1, 1], model: "ExplosiveBarrel",
       texture: "ExplosiveBarrel_Diffuse.png", icon: "Icon_ExplosiveBarrel" },
+    // The prefab is a frame around a hole: what fills it in game is a Unity
+    // canvas drawn at runtime — scores, team crests, a clock — and a canvas is
+    // not a mesh, so the extraction brought out the surround and nothing else.
+    // `screen` paints the game's own picture of that display back into the
+    // opening. See `_refreshScreen` in scene.js and DERIVED_ICONS in
+    // tools/stage-assets.mjs.
     { type: "Jumbotron", label: "Jumbotron", category: "Emplacements", shape: "jumbotron",
       size: [1.4, 1, 0.057], pivot: "center", rotationAxes: "xyz", floor: false,
       color: "#3A4C5A", defaultScale: [1, 1, 1], model: "Jumbotron",
+      screen: { image: "Image_JumbotronScreen", inset: 0.065 },
       icon: "Icon_JumbotronSingleScreen" },
     { type: "Minigun", label: "Minigun", category: "Emplacements", shape: "minigun",
       size: [0.643, 0.501, 1.206], pivot: "base", anchor: [0.569, 0.59], rotationAxes: "y",
       floor: true, color: "#6E7C8A", defaultScale: [0.9, 0.9, 0.9], model: "Minigun",
       texture: "lambert1_Diffuse_0.png", icon: "Icon_Minigun" },
+    // A note left standing in the arena: a flat pane with a line of the
+    // author's own text on it, and a tick saying whether players see it or only
+    // the person building the map.
+    //
+    // `CustomMessage.glb` holds **no mesh at all** — it is a Unity canvas, the
+    // same hole the Jumbotron has and for the same reason — so the size comes
+    // from the parts of the prefab that did survive: an `Outline` box of
+    // 1 x 1 x 0.1, a `Collider` of 1 x 1 x 0.01, and a `Manipulator` whose
+    // handles sit at +/-0.5 in X and Y. Two things follow. The unit is a one
+    // metre square, and the stretcher has **no Z handles**, so the game resizes
+    // this in X and Y alone; every message in the reference map is scaled
+    // exactly 1 in Z and the other two vary, which is that same fact written
+    // down twice. The 0.01 depth is the collider's, and it is the pane.
+    //
+    // `text` paints `content` across the face — see `_refreshText` in scene.js.
+    { type: "CustomMessage", objectType: "CustomMessage",
+      props: { content: "New message", showInGame: true },
+      label: "Custom Text Message", category: "Emplacements", shape: "messagePane",
+      size: [1, 1, 0.01], pivot: "center", rotationAxes: "xyz", floor: false,
+      color: "#8FA6B8", defaultScale: [1, 1, 1], model: "CustomMessage",
+      text: { prop: "content", inset: 0.06 }, icon: "icon_text_obj" },
     ],
   },
   {

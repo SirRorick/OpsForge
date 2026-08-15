@@ -15,7 +15,7 @@ Delete any of them and that object falls back to its stand-in shape from
 `src/placeholders.js` — a partial folder is fine, and an empty one still runs.
 The **Stand-ins** switch in the toolbar flips between the two at any time.
 
-180 files:
+186 files:
 
 - BarrierCorner.glb
 - BarrierFull.glb
@@ -34,6 +34,8 @@ The **Stand-ins** switch in the toolbar flips between the two at any time.
 - BlueDestructibleCrate.glb
 - BlueTunnel.glb
 - BlueWallSolid.glb
+- Box.glb
+- BoxGrounded.glb
 - BoxSolid.glb
 - BoxSolidGrounded.glb
 - CamoBarrier90CornerVisual.glb
@@ -63,6 +65,9 @@ The **Stand-ins** switch in the toolbar flips between the two at any time.
 - CrystalDark01.glb
 - CrystalDark02.glb
 - CrystalDark03.glb
+- CustomMessage.glb
+- Cylinder.glb
+- CylinderGrounded.glb
 - CylinderSolid.glb
 - CylinderSolidGrounded.glb
 - DamageBox.glb
@@ -181,6 +186,7 @@ The **Stand-ins** switch in the toolbar flips between the two at any time.
 - Tank.glb
 - Truck.glb
 - Tunnel.glb
+- Wall.glb
 - WallSolid.glb
 - WeaponSpawnPoint.glb
 - WildWestBarrel.glb

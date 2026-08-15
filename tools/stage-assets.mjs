@@ -46,6 +46,30 @@ const DUMP = join(ROOT, 'reference/GameAssets');
 const OUT = join(ROOT, 'assets');
 
 /**
+ * Art the editor asks for that the dump does not hold under that name, and how
+ * to cut it out of something that does.
+ *
+ * There is one, and it exists because of a hole in the extraction rather than a
+ * hole in the game. The jumbotron's display is a Unity canvas assembled from UI
+ * sprites at runtime, so the ripped prefab is a frame around nothing; the only
+ * picture of the assembled screen anywhere in the dump is the library icon,
+ * which is a photograph of one. `crop` is that icon's frame trimmed off, in its
+ * own pixels, leaving the display alone — see `screen` on the Jumbotron entry
+ * in src/packs.js.
+ *
+ * Kept bigger than a thumbnail because it is not one: an icon is drawn at about
+ * a hundred pixels in a list, and this is a surface a metre across that you can
+ * walk up to in the preview.
+ */
+const DERIVED_ICONS = {
+  Image_JumbotronScreen: {
+    from: 'Icon_JumbotronSingleScreen',
+    crop: { x: 29, y: 29, width: 312, height: 312 },
+    size: 256,
+  },
+};
+
+/**
  * Everything the running editor can ask for by name.
  *
  * Not just the catalog: the enemy spawner draws a figure of whatever it
@@ -57,16 +81,31 @@ const OUT = join(ROOT, 'assets');
 export function requiredAssets() {
   const icons = new Set();
   const models = new Set();
+  const derived = new Set();
   for (const pack of BUILTIN_PACKS) {
     for (const o of pack.objects) {
       if (o.icon) icons.add(o.icon);
       if (o.model) models.add(o.model);
+      if (o.screen?.image) derived.add(o.screen.image);
     }
   }
   for (const v of Object.values(WEAPON_ICONS ?? {})) icons.add(v);
   for (const v of Object.values(ENEMY_ICONS ?? {})) icons.add(v);
   for (const v of Object.values(ENEMY_MODELS ?? {})) models.add(v);
-  return { icons: [...icons].sort(), models: [...models].sort() };
+  return { icons: [...icons].sort(), models: [...models].sort(), derived: [...derived].sort() };
+}
+
+/** Cut a rectangle out of decoded RGBA. */
+export function crop({ width, height, data }, rect) {
+  const w = Math.min(rect.width, width - rect.x);
+  const h = Math.min(rect.height, height - rect.y);
+  if (w <= 0 || h <= 0) throw new Error('crop falls outside the image');
+  const out = Buffer.alloc(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    data.copy(out, y * w * 4, ((y + rect.y) * width + rect.x) * 4,
+      ((y + rect.y) * width + rect.x + w) * 4);
+  }
+  return { width: w, height: h, data: out };
 }
 
 /**
@@ -168,26 +207,35 @@ export function shrinkTextures(bytes, cap) {
   };
 }
 
-function stageIcons(icons, size) {
+function stageIcons(icons, derived, size) {
   const dir = join(OUT, 'Icons');
   mkdirSync(dir, { recursive: true });
   // Clear stale icons: a renamed catalog entry should not leave its old
   // thumbnail behind in the repository for ever.
-  const keep = new Set(icons.map((i) => `${i}.png`));
+  const keep = new Set([...icons, ...derived].map((i) => `${i}.png`));
   keep.add('NOTICE.md');
   for (const f of readdirSync(dir)) if (!keep.has(f)) rmSync(join(dir, f));
 
   let bytes = 0;
   const missing = [];
+  const write = (name, png) => {
+    writeFileSync(join(dir, `${name}.png`), png);
+    bytes += png.length;
+  };
   for (const name of icons) {
     const src = join(DUMP, 'Icons', `${name}.png`);
     if (!existsSync(src)) { missing.push(name); continue; }
-    const png = encodePng(downscale(decodePng(readFileSync(src)), size));
-    writeFileSync(join(dir, `${name}.png`), png);
-    bytes += png.length;
+    write(name, encodePng(downscale(decodePng(readFileSync(src)), size)));
+  }
+  for (const name of derived) {
+    const spec = DERIVED_ICONS[name];
+    if (!spec) { missing.push(name); continue; }
+    const src = join(DUMP, 'Icons', `${spec.from}.png`);
+    if (!existsSync(src)) { missing.push(name); continue; }
+    write(name, encodePng(downscale(crop(decodePng(readFileSync(src)), spec.crop), spec.size)));
   }
   writeFileSync(join(dir, 'NOTICE.md'), ICON_NOTICE);
-  return { count: icons.length - missing.length, bytes, missing };
+  return { count: icons.length + derived.length - missing.length, bytes, missing };
 }
 
 function stagePrefabs(models, cap, onProgress) {
@@ -225,11 +273,20 @@ const ICON_NOTICE = `# Where these came from
 These thumbnails are sliced out of Spatial Ops' own sprite atlases by
 \`npm run slice-icons\`, and downscaled to 128 px by \`npm run stage-assets\`.
 
-They are the game's artwork, included here with the developers' permission, and
-they are not covered by this project's MIT licence — that covers the code. If
-you fork this and would rather not carry them, delete the folder: the library
-falls back to drawing each object's stand-in shape as its thumbnail, and
-nothing else changes.
+\`Image_*\` files are not thumbnails. They are the same artwork cropped and kept
+larger because the editor draws them as surfaces in the scene rather than as
+icons in a list — \`Image_JumbotronScreen\` is the jumbotron's display, which the
+extraction could not bring out of the prefab because the game assembles it from
+UI sprites at runtime.
+
+They are the game's artwork, owned by its makers and included here with their
+permission to redistribute them with this editor. That permission covers this
+project; it is not a grant to reuse the artwork anywhere else. See
+[LICENSE.md](../../LICENSE.md), section 5.
+
+If you fork this and would rather not carry them, delete the folder: the
+library falls back to drawing each object's stand-in shape as its thumbnail,
+and nothing else changes.
 `;
 
 function prefabReadme(models) {
@@ -241,8 +298,10 @@ out of an AssetRipper extraction of the game and are written here by
 a few hundred pixels tall in a viewport, and the dump's 2048 px originals are
 four hundred megabytes of detail nobody sees.
 
-Like \`../Icons\`, these are the game's artwork, included with the developers'
-permission and not covered by this project's MIT licence.
+Like \`../Icons\`, these are the game's artwork, owned by its makers and included
+with their permission to redistribute them with this editor. That permission
+covers this project; it is not a grant to reuse the models anywhere else. See
+[LICENSE.md](../../LICENSE.md), section 5.
 
 Delete any of them and that object falls back to its stand-in shape from
 \`src/placeholders.js\` — a partial folder is fine, and an empty one still runs.
@@ -271,8 +330,8 @@ function main() {
   const size = number('--size', 128, 16);
   const cap = number('--texture-size', 512, 64);
 
-  const { icons, models } = requiredAssets();
-  console.log(`Catalog asks for ${icons.length} icons and ${models.length} models.`);
+  const { icons, models, derived } = requiredAssets();
+  console.log(`Catalog asks for ${icons.length + derived.length} icons and ${models.length} models.`);
 
   if (!existsSync(DUMP)) {
     console.error(`\nNo dump at ${DUMP}.`);
@@ -282,7 +341,7 @@ function main() {
   }
 
   if (both || only.icons) {
-    const r = stageIcons(icons, size);
+    const r = stageIcons(icons, derived, size);
     console.log(`Icons    ${String(r.count).padStart(4)} at ${size}px  ${mb(r.bytes).padStart(9)}  -> assets/Icons`);
     if (r.missing.length) console.log(`         ${r.missing.length} not in the dump: ${r.missing.slice(0, 4).join(', ')}${r.missing.length > 4 ? ' ...' : ''}`);
   }
