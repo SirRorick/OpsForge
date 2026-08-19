@@ -18,11 +18,24 @@ import {
   ENEMY_ICONS, ENEMY_MODELS, ENEMY_TYPES, ENEMY_ANY, parseEnemyTypes,
   BOUNDARY_PACK,
 } from './packs.js';
-import { convertPosition, unityEulerToQuat, quatToUnityEuler, MODEL_YAW } from './unity.js';
-import { decodeNavCloud, navIndexToWorld, NAV_SPACING } from './format.js';
+import { convertPosition, unityEulerToQuat, quatToUnityEuler, MODEL_YAW, DEG } from './unity.js';
+import { decodeNavCloud, NAV_SPACING } from './format.js';
 
 const ACCENT = 0xe8c547;
 const CYAN = 0x4ec9e0;
+
+// -- the camera gestures -----------------------------------------------------
+// A mouse and a trackpad ask for the view to move in quite different ways, and
+// both of them arrive as `wheel` events. See `_initWheel` for how the two
+// schemes are told apart, which is not something the browser can help with.
+const WHEEL_LINE = 16;           // a notch reported in lines, in pixels
+const WHEEL_PAGE = 400;          // ...and one reported in pages
+// How long a gap in the stream ends a two-finger gesture. A pad reports every
+// frame or faster while the fingers are down, so several frames of silence is
+// the fingers having stopped rather than a slow drag — and anything shorter is
+// still the same gesture, including the coasting tail some pads send on after
+// the fingers have lifted.
+const PAD_IDLE = 140;            // ms
 
 // -- the preview walkaround --------------------------------------------------
 // A map is built from above and played from inside it, and those are not the
@@ -810,6 +823,35 @@ function flattenArea(area, parts) {
   });
 }
 
+/**
+ * The top bar's own wordmark — "Ops" in the editor's body colour, "Forge" in
+ * its accent gold, both in Barlow Condensed bold, matching `.brand` in
+ * `index.html` — stamped bottom right of a `captureMapImage` shot, in a drop
+ * shadow dark enough to read over a bright render and light enough not to
+ * fight a dark one.
+ */
+function drawWordmark(ctx, w, h) {
+  const size = Math.round(h * 0.05);
+  const pad = Math.round(h * 0.035);
+  const font = (style) => `${style} ${size}px "Barlow Condensed","Arial Narrow",sans-serif`;
+
+  ctx.font = font('700');
+  const opsWidth = ctx.measureText('Ops').width;
+  const forgeWidth = ctx.measureText('Forge').width;
+  const x = w - pad - opsWidth - forgeWidth;
+  const y = h - pad;
+
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.shadowColor = 'rgba(0,0,0,0.65)';
+  ctx.shadowBlur = size * 0.25;
+  ctx.fillStyle = '#D6E3EB';
+  ctx.fillText('Ops', x, y);
+  ctx.fillStyle = '#E8C547';
+  ctx.fillText('Forge', x + opsWidth, y);
+  ctx.shadowBlur = 0;
+}
+
 export class Viewport extends EventTarget {
   constructor(canvas) {
     super();
@@ -1029,9 +1071,30 @@ export class Viewport extends EventTarget {
     // Left is reserved for selection. Middle orbits, right pans, Alt+Left orbits.
     this._altDown = false;
     this.orbitAtCursor = false;
+    // The mouse scheme until the top bar says otherwise; the buttons above are
+    // what it means. The trackpad scheme is three two-finger gestures on top of
+    // them — see `_initWheel`.
+    this.trackpad = false;
+    // Orbit and pan run backwards for some trackpad users' taste — natural-
+    // scrolling pads, mostly. Zoom is left alone either way; see `setView('top')`.
+    this.trackpadInverted = false;
+    this._pivotRay = new THREE.Raycaster();
+    this._groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    // The working set for `_turnAbout`, which a pad can call a dozen times
+    // between two frames and should not be allocating in.
+    this._turn = {
+      up: new THREE.Vector3(0, 1, 0),
+      spherical: new THREE.Spherical(),
+      offset: new THREE.Vector3(),
+      axis: new THREE.Vector3(),
+      pivot: new THREE.Vector3(),
+      yaw: new THREE.Quaternion(),
+      pitch: new THREE.Quaternion(),
+      turn: new THREE.Quaternion(),
+    };
     this._applyOrbitButtons();
     this._initCursorOrbit();
-    this._initCursorZoom();
+    this._initWheel();
 
     // One gizmo, doing move, rotate and scale at once. There used to be a mode
     // switch and three single-purpose gizmos behind it; the combined one covers
@@ -1084,6 +1147,19 @@ export class Viewport extends EventTarget {
     this.emit('mode');
   }
 
+  /**
+   * Which input the view is being driven with.
+   *
+   * Nothing here can be worked out by asking the browser: a two-finger drag and
+   * a wheel notch arrive as the same event, and a laptop with a mouse plugged in
+   * has both. So it is a switch, and this is what it sets.
+   */
+  setTrackpad(on, inverted = false) {
+    this.trackpad = !!on;
+    this.trackpadInverted = !!on && !!inverted;
+    this.emit('mode');
+  }
+
   /** A client point as the -1..1 pair a raycaster wants. */
   _ndcAt(clientX, clientY) {
     const r = this.canvas.getBoundingClientRect();
@@ -1091,6 +1167,79 @@ export class Viewport extends EventTarget {
       ((clientX - r.left) / r.width) * 2 - 1,
       -((clientY - r.top) / r.height) * 2 + 1,
     );
+  }
+
+  /**
+   * What a camera gesture is allowed to aim at.
+   *
+   * A piece being carried during a placement rides on the cursor, so it is
+   * always under the pointer and always at the same place on the screen.
+   * Orbiting about it would be turning about something that moves with the
+   * camera, which moves nothing at all, and zooming towards it would be zooming
+   * towards nothing.
+   */
+  _pickTargets() {
+    return this.placing
+      ? this.pickable().filter((m) => !this.placing.meshes.includes(m))
+      : this.pickable();
+  }
+
+  /**
+   * What the pointer is on: an object, failing that the floor, failing
+   * that — the pointer is on the sky — the view target, exactly the fallback
+   * order `_zoomGesture` uses. `pickable()` only ever holds placed objects,
+   * never the ground plane itself, so without the floor test here a cursor
+   * anywhere over open ground fell straight through to the view target —
+   * indistinguishable from "orbit at cursor" being off, which is most of
+   * where the pointer actually sits on an open map.
+   */
+  _pivotUnder(clientX, clientY) {
+    this.camera.updateMatrixWorld();
+    this._pivotRay.setFromCamera(this._ndcAt(clientX, clientY), this.camera);
+    const hit = this._pivotRay
+      .intersectObjects(this._pickTargets(), true)
+      .find((h) => h.object.isMesh);
+    if (hit) return hit.point.clone();
+    const point = new THREE.Vector3();
+    if (this._pivotRay.ray.intersectPlane(this._groundPlane, point)) return point;
+    return this.orbit.target.clone();
+  }
+
+  /**
+   * Turn the camera and the view target about `pivot`, as one rigid body.
+   *
+   * The angles are OrbitControls' own — a drag of the viewport's height is a
+   * full turn, both ways — so every gesture that turns the view feels the same
+   * under the hand, whichever scheme it came from. Moving the pair together is
+   * what lets the pivot be somewhere other than the target at all: OrbitControls
+   * can only ever turn about its own target, and setting that target to the
+   * picked point would have snapped the camera round to look at it first.
+   *
+   * The pitch is clamped against the *target*, not the pivot, because that is
+   * what OrbitControls will re-assert on the next update; clamping the wrong one
+   * lets the camera past the limit and gets it shoved back a frame later.
+   */
+  _turnAbout(pivot, dTheta, dPhi) {
+    const s = this._turn;
+    // Taken by value first: callers pass the view target itself when there is no
+    // other pivot, and the target is about to move.
+    s.pivot.copy(pivot);
+
+    // Where the camera stands relative to what it is looking at: the heading
+    // gives the axis to pitch about, and the elevation is the one with a limit
+    // on it.
+    s.spherical.setFromVector3(s.offset.copy(this.camera.position).sub(this.orbit.target));
+    const phi = THREE.MathUtils.clamp(
+      s.spherical.phi + dPhi, 1e-6, this.orbit.maxPolarAngle) - s.spherical.phi;
+    // The screen's own right, in world terms — perpendicular to up and to the
+    // vertical plane the camera sits in.
+    s.axis.set(Math.cos(s.spherical.theta), 0, -Math.sin(s.spherical.theta));
+    s.yaw.setFromAxisAngle(s.up, dTheta);
+    s.pitch.setFromAxisAngle(s.axis, phi);
+    s.turn.copy(s.yaw).multiply(s.pitch);
+
+    this.camera.position.sub(s.pivot).applyQuaternion(s.turn).add(s.pivot);
+    this.orbit.target.sub(s.pivot).applyQuaternion(s.turn).add(s.pivot);
   }
 
   /**
@@ -1105,41 +1254,12 @@ export class Viewport extends EventTarget {
    * stays still.
    *
    * The camera *and* the target turn about the picked point together, as one
-   * rigid body. That is what keeps the view from jumping the moment the button
-   * goes down: nothing moves until the pointer does. Setting OrbitControls'
-   * target to the picked point would have been a line of code and would have
-   * snapped the camera round to look at it first.
-   *
-   * The angles are OrbitControls' own — a drag of the viewport's height is a
-   * full turn, both ways — so the two modes feel the same under the hand. The
-   * pitch is clamped against the *target*, not the pivot, because that is what
-   * OrbitControls will re-assert on the next update; clamping the wrong one
-   * lets the camera past the limit and gets it shoved back a frame later.
+   * rigid body — `_turnAbout` does the work, and the trackpad's two-finger orbit
+   * shares it. That is what keeps the view from jumping the moment the button
+   * goes down: nothing moves until the pointer does.
    */
   _initCursorOrbit() {
-    const UP = new THREE.Vector3(0, 1, 0);
-    const ray = new THREE.Raycaster();
-    const spherical = new THREE.Spherical();
-    const yaw = new THREE.Quaternion();
-    const pitch = new THREE.Quaternion();
-    const turn = new THREE.Quaternion();
-    const axis = new THREE.Vector3();
     let drag = null;
-
-    /** What the pointer is on, or nothing, in which case the view target does. */
-    const pivotUnder = (e) => {
-      this.camera.updateMatrixWorld();
-      ray.setFromCamera(this._ndcAt(e.clientX, e.clientY), this.camera);
-      // A piece being carried rides on the cursor, so it is always under the
-      // pointer and always at the same place on the screen. Turning about it
-      // would be turning about something that moves with the camera, which
-      // moves nothing at all.
-      const targets = this.placing
-        ? this.pickable().filter((m) => !this.placing.meshes.includes(m))
-        : this.pickable();
-      const hit = ray.intersectObjects(targets, true).find((h) => h.object.isMesh);
-      return hit ? hit.point.clone() : this.orbit.target.clone();
-    };
 
     this.canvas.addEventListener('pointerdown', (e) => {
       // Placing an object is exactly when you most want to look around — to see
@@ -1152,14 +1272,7 @@ export class Viewport extends EventTarget {
       // A handle under the pointer belongs to the gizmo, Alt or no Alt.
       if (!wants || this.gizmo.dragging || this.gizmo.hovered) return;
       e.preventDefault();
-      const pivot = pivotUnder(e);
-      drag = {
-        x: e.clientX,
-        y: e.clientY,
-        pivot,
-        camera: this.camera.position.clone().sub(pivot),
-        target: this.orbit.target.clone().sub(pivot),
-      };
+      drag = { x: e.clientX, y: e.clientY, pivot: this._pivotUnder(e.clientX, e.clientY) };
       this.canvas.setPointerCapture?.(e.pointerId);
     });
 
@@ -1170,22 +1283,7 @@ export class Viewport extends EventTarget {
       const dPhi = (-2 * Math.PI * (e.clientY - drag.y)) / height;
       drag.x = e.clientX;
       drag.y = e.clientY;
-
-      // Where the camera stands relative to what it is looking at: the heading
-      // gives the axis to pitch about, and the elevation is the one with a
-      // limit on it.
-      spherical.setFromVector3(this.camera.position.clone().sub(this.orbit.target));
-      const phi = THREE.MathUtils.clamp(
-        spherical.phi + dPhi, 1e-6, this.orbit.maxPolarAngle) - spherical.phi;
-      // The screen's own right, in world terms — perpendicular to up and to the
-      // vertical plane the camera sits in.
-      axis.set(Math.cos(spherical.theta), 0, -Math.sin(spherical.theta));
-      yaw.setFromAxisAngle(UP, dTheta);
-      pitch.setFromAxisAngle(axis, phi);
-      turn.copy(yaw).multiply(pitch);
-
-      this.camera.position.copy(drag.pivot).add(drag.camera.applyQuaternion(turn));
-      this.orbit.target.copy(drag.pivot).add(drag.target.applyQuaternion(turn));
+      this._turnAbout(drag.pivot, dTheta, dPhi);
     });
 
     const end = (e) => {
@@ -1199,7 +1297,141 @@ export class Viewport extends EventTarget {
   }
 
   /**
-   * The wheel, as a step towards whatever the pointer is over.
+   * The wheel, the trackpad, and which of the two is talking.
+   *
+   * A pad's two-finger drag reaches the page as a stream of `wheel` events — the
+   * same event a mouse notch arrives as, with different numbers in it and
+   * whatever modifiers are held. Nothing in the event says which device sent it,
+   * and a laptop with a mouse plugged in has both, so the answer comes from the
+   * switch in the top bar and not from the browser. Either way it has to be one
+   * listener: two listeners on one event would both fire, both call
+   * `preventDefault`, and both move the camera.
+   *
+   * The pad's scheme is Blender's, because anyone who has built a map before
+   * already has it in their fingers — two fingers turn the view, Shift and two
+   * fingers slide it, Ctrl or the OS key and two fingers zoom. Blender's fourth
+   * gesture, a two-finger tap for a right click, needs nothing here: the
+   * operating system has already turned it into one before the page hears about
+   * it, so the menu on the right button answers it as it always did.
+   *
+   * The deltas are taken as the fingers' own direction, which is how Windows and
+   * Linux report a pad by default and what makes each gesture the twin of the
+   * mouse drag it stands in for. A pad set to "natural" scrolling — the default
+   * on macOS — reports them the other way up, and the gestures come out
+   * inverted; turning that setting off is the fix, but for whoever would
+   * rather flip the sign here instead the top bar's switch has a third
+   * position, Trackpad Inverted — `trackpadInverted` below, on orbit and pan
+   * only. Zoom keeps its one direction under every scheme.
+   */
+  _initWheel() {
+    // The dolly this replaces. Left on, both would answer the same wheel.
+    this.orbit.enableZoom = false;
+
+    const onZoom = this._zoomGesture();
+    const onPan = this._panGesture();
+    const onOrbit = this._orbitGesture();
+
+    this.canvas.addEventListener('wheel', (e) => {
+      // Mid-drag the gizmo is holding the object against a plane pinned to this
+      // camera; moving it under the drag would throw the piece across the map.
+      // In the walkaround the camera belongs to a pair of feet, not to a wheel.
+      if (this.gizmo.dragging || this.preview) return;
+      e.preventDefault();
+      // Ctrl and the OS key are the pad's zoom, and they are also what a browser
+      // puts on a pinch, from a pad or a touchscreen alike. Sending both down the
+      // same path means a pinch zooms under either scheme, and the mouse wheel
+      // keeps every modifier it ever had.
+      if (!this.trackpad || e.ctrlKey || e.metaKey) onZoom(e);
+      else if (e.shiftKey) onPan(e);
+      else onOrbit(e);
+    }, { passive: false });
+  }
+
+  /**
+   * A wheel event's deltas, in pixels.
+   *
+   * Firefox reports a mouse notch in lines and a pad's drag in pixels, and the
+   * two cannot be scaled by the same number: anything measured against the
+   * height of the viewport has to be in the same unit the height is in.
+   */
+  _wheelPixels(e) {
+    const scale = e.deltaMode === 1 ? WHEEL_LINE : e.deltaMode === 2 ? WHEEL_PAGE : 1;
+    return { x: e.deltaX * scale, y: e.deltaY * scale };
+  }
+
+  /**
+   * Two fingers on the pad, turning the view.
+   *
+   * The same law as the middle button's drag, down to the shared `_turnAbout`, so
+   * the pad and the mouse turn the view at the same rate and about the same
+   * point. What the pad needs on top is a gesture: the pivot is picked once and
+   * kept, rather than picked afresh on every event. A pad sends a dozen of these
+   * between two frames, and re-picking each time would chase the surface as the
+   * view turned under it — every event aiming somewhere slightly different, and
+   * the turn wandering off whatever it started on. A gap of `PAD_IDLE` with
+   * nothing arriving is what ends the gesture, which also keeps a coasting tail
+   * turning about the point the fingers chose rather than picking a new one.
+   */
+  _orbitGesture() {
+    let pivot = null;
+    let last = 0;
+    return (e) => {
+      const idle = e.timeStamp - last > PAD_IDLE;
+      last = e.timeStamp;
+      // With "orbit at cursor" off there is nothing to latch onto and nothing to
+      // cast for: the pivot is the view target, wherever the last pan or zoom
+      // left it, exactly as it is for the mouse.
+      if (!this.orbitAtCursor) pivot = this.orbit.target;
+      else if (!pivot || idle) pivot = this._pivotUnder(e.clientX, e.clientY);
+
+      const height = this.canvas.getBoundingClientRect().height || 1;
+      const { x, y } = this._wheelPixels(e);
+      const sign = this.trackpadInverted ? 1 : -1;
+      this._turnAbout(pivot, (sign * 2 * Math.PI * x) / height, (sign * 2 * Math.PI * y) / height);
+    };
+  }
+
+  /**
+   * Shift and two fingers on the pad, sliding the view.
+   *
+   * The arithmetic is OrbitControls' own, so this is the pan on the right button
+   * by another route: a pixel is measured against the height of the frustum at
+   * the distance being looked at, which is what holds it together at every scale
+   * — whatever is under the fingers keeps pace with them, a metre away or thirty.
+   *
+   * Camera and target move as one, so a pan slides the view without turning it,
+   * and the next orbit still pivots on what is in front of you.
+   */
+  _panGesture() {
+    const right = new THREE.Vector3();
+    const up = new THREE.Vector3();
+    const offset = new THREE.Vector3();
+
+    return (e) => {
+      // The camera's basis is only rebuilt when a frame renders, and a pad can
+      // send a dozen of these in between.
+      this.camera.updateMatrixWorld();
+      const height = this.canvas.getBoundingClientRect().height || 1;
+      const { x, y } = this._wheelPixels(e);
+      // Half the frustum's height in metres, out where the view is pointed.
+      const reach = this.camera.position.distanceTo(this.orbit.target)
+        * Math.tan((this.camera.fov / 2) * THREE.MathUtils.DEG2RAD);
+      const perPixel = (2 * reach) / height;
+
+      // The screen's own right and up, in world terms, so the slide follows the
+      // fingers however the view is pitched.
+      right.setFromMatrixColumn(this.camera.matrix, 0);
+      up.setFromMatrixColumn(this.camera.matrix, 1);
+      const sign = this.trackpadInverted ? 1 : -1;
+      offset.copy(right).multiplyScalar(sign * x * perPixel).addScaledVector(up, -sign * y * perPixel);
+      this.camera.position.add(offset);
+      this.orbit.target.add(offset);
+    };
+  }
+
+  /**
+   * The wheel, or Ctrl and two fingers, as a step towards whatever the pointer
+   * is over.
    *
    * OrbitControls measures its dolly against the orbit target, and both of that
    * rule's halves go wrong here. The step is a share of the distance to the
@@ -1227,14 +1459,10 @@ export class Viewport extends EventTarget {
    * is what keeps it from going stale — every scroll leaves the orbit pivot on
    * the thing being looked at, so orbiting and the next scroll both stay honest.
    */
-  _initCursorZoom() {
-    // The dolly this replaces. Left on, both would answer the same wheel.
-    this.orbit.enableZoom = false;
-
+  _zoomGesture() {
     // How much of the distance one pixel of wheel is worth. A notch of a mouse
     // wheel is 100 of them in most browsers, so about a sixth of the gap.
     const RATE = 0.0015;
-    const LINE = 16, PAGE = 400;   // a notch reported in lines or pages, in pixels
     // Close enough to read the grain on a crate, and still twice the near
     // plane, so the surface being approached does not clip away as you arrive.
     const NEAR_GAP = 0.12;
@@ -1248,13 +1476,7 @@ export class Viewport extends EventTarget {
     const forward = new THREE.Vector3();
     const step = new THREE.Vector3();
 
-    this.canvas.addEventListener('wheel', (e) => {
-      // Mid-drag the gizmo is holding the object against a plane pinned to this
-      // camera; moving it under the drag would throw the piece across the map.
-      // In the walkaround the camera belongs to a pair of feet, not to a wheel.
-      if (this.gizmo.dragging || this.preview) return;
-      e.preventDefault();
-
+    return (e) => {
       // A trackpad can deliver a dozen of these between two frames, and the
       // camera's world matrix is only rebuilt when a frame renders. Cast off a
       // matrix that is two moves out of date and the ray leaves from where the
@@ -1263,12 +1485,7 @@ export class Viewport extends EventTarget {
       // and the one after that is wilder still.
       this.camera.updateMatrixWorld();
       ray.setFromCamera(this._ndcAt(e.clientX, e.clientY), this.camera);
-      // The piece being carried during a placement is under the pointer by
-      // definition, and zooming towards it would be zooming towards nothing.
-      const targets = this.placing
-        ? this.pickable().filter((m) => !this.placing.meshes.includes(m))
-        : this.pickable();
-      const hit = ray.intersectObjects(targets, true).find((h) => h.object.isMesh);
+      const hit = ray.intersectObjects(this._pickTargets(), true).find((h) => h.object.isMesh);
       // Failing an object, the floor; failing that — the pointer is on the sky —
       // whatever the view is already turned towards, which at least keeps the
       // step the size it was a moment ago.
@@ -1278,20 +1495,17 @@ export class Viewport extends EventTarget {
       }
 
       const gap = this.camera.position.distanceTo(point);
-      const px = e.deltaMode === 1 ? e.deltaY * LINE
-        : e.deltaMode === 2 ? e.deltaY * PAGE
-        : e.deltaY;
       // Exponential, so the wheel is symmetrical: what one notch in takes off,
       // one notch out puts back. Clamped because a trackpad flick can arrive as
       // a single event of several thousand pixels.
-      const scale = Math.exp(THREE.MathUtils.clamp(px * RATE, -1, 1));
+      const scale = Math.exp(THREE.MathUtils.clamp(this._wheelPixels(e).y * RATE, -1, 1));
       const next = THREE.MathUtils.clamp(gap * scale, NEAR_GAP, FAR_GAP);
 
       step.copy(point).sub(this.camera.position).normalize();
       this.camera.position.addScaledVector(step, gap - next);
       this.camera.getWorldDirection(forward);
       this.orbit.target.copy(this.camera.position).addScaledVector(forward, next);
-    }, { passive: false });
+    };
   }
 
   emit(name, detail) {
@@ -2890,9 +3104,18 @@ export class Viewport extends EventTarget {
    * The walkable grid, kept decoded so a brush stroke does not have to gzip
    * anything between one cell and the next. `navMask` is the live copy;
    * `app.js` re-encodes it once a stroke ends.
+   *
+   * `navCloud.position` and `.rotation` are where the player last aligned this
+   * grid to their room — set by the headset, not by anything in this editor —
+   * and are carried on `navGroup`'s own transform rather than baked into the
+   * mask's vertices. Everything downstream (`_renderNavMask`, `_paintNavAt`)
+   * works in the group's local space, so a grid that arrived off-centre or
+   * turned stays exactly that way instead of snapping to the world origin.
    */
   async setNavCloud(navCloud) {
     this.navGroup.clear();
+    this.navGroup.position.set(0, 0, 0);
+    this.navGroup.rotation.set(0, 0, 0);
     this.navMask = null;
     this.navGrid = null;
     if (!navCloud) return;
@@ -2910,7 +3133,17 @@ export class Viewport extends EventTarget {
       bytes = grown;
     }
     this.navMask = bytes;
-    this.navGrid = { N, M };
+    // Falls back to the format's known spacing rather than dividing by zero on
+    // a one-point-wide grid, which the game has never written but which JSON
+    // does not forbid.
+    const spacingX = N > 1 ? navCloud.size.x / (N - 1) : NAV_SPACING;
+    const spacingZ = M > 1 ? navCloud.size.y / (M - 1) : NAV_SPACING;
+    this.navGrid = { N, M, spacingX, spacingZ };
+    const [px, py, pz] = convertPosition(navCloud.position || { x: 0, y: 0, z: 0 });
+    this.navGroup.position.set(px, py, pz);
+    // Only yaw: this is a floor mask, and the format has never carried a
+    // tilted one. Same sign flip as `unityEulerToQuat`'s Y term.
+    this.navGroup.rotation.set(0, -(navCloud.rotation?.y || 0) * DEG, 0);
     this._renderNavMask();
   }
 
@@ -2919,18 +3152,21 @@ export class Viewport extends EventTarget {
     this.navGroup.clear();
     const bytes = this.navMask;
     if (!bytes || !this.navGrid) return;
-    const { N, M } = this.navGrid;
+    const { N, M, spacingX, spacingZ } = this.navGrid;
     const positions = [];
     // Outline only: draw an edge wherever an inside cell touches an outside one.
     const at = (r, c) => (r < 0 || c < 0 || r >= M || c >= N ? 0 : bytes[r * N + c]);
     const h = 0.012;
+    // Local to `navGroup`, which itself carries the grid's position and yaw.
+    const localX = (c) => (c - (N - 1) / 2) * spacingX;
+    const localZ = (r) => -(r - (M - 1) / 2) * spacingZ;
     for (let r = 0; r < M; r++) {
       for (let c = 0; c < N; c++) {
         if (!at(r, c)) continue;
-        const x0 = navIndexToWorld(c, N) - 0.125;
-        const x1 = x0 + 0.25;
-        const z0 = -(navIndexToWorld(r, M) - 0.125);
-        const z1 = z0 - 0.25;
+        const x0 = localX(c) - spacingX / 2;
+        const x1 = x0 + spacingX;
+        const z0 = localZ(r) + spacingZ / 2;
+        const z1 = z0 - spacingZ;
         if (!at(r - 1, c)) positions.push(x0, h, z0, x1, h, z0);
         if (!at(r + 1, c)) positions.push(x0, h, z1, x1, h, z1);
         if (!at(r, c - 1)) positions.push(x0, h, z0, x0, h, z1);
@@ -2965,26 +3201,34 @@ export class Viewport extends EventTarget {
   /**
    * Paint one dab where the pointer meets the floor.
    *
-   * The row index runs the opposite way to world Z — `_renderNavMask` draws row
-   * r at `-navIndexToWorld(r)` — so the inverse has to negate as well, or the
-   * grid comes out mirrored front to back against the map it belongs to.
+   * The hit point is in world space; `navGroup` carries the grid's own
+   * position and yaw, so it is converted into the group's local space first —
+   * the same space `_renderNavMask` draws in — before it is turned into a
+   * cell. Skipping that step is exactly the old bug: a brush stroke would land
+   * as if the grid were still centred on the world origin and square to the
+   * axes, even when it is not.
+   *
+   * The row index runs the opposite way to local Z — `_renderNavMask` draws row
+   * r at `-localZ(r)` — so the inverse has to negate as well, or the grid comes
+   * out mirrored front to back against the map it belongs to.
    */
   _paintNavAt(e) {
     if (!this.navMask || !this.navGrid || !this.navPaint) return;
     const hit = this.groundPoint(e.clientX, e.clientY);
     if (!hit) return;
-    const { N, M } = this.navGrid;
+    const local = this.navGroup.worldToLocal(hit.clone());
+    const { N, M, spacingX, spacingZ } = this.navGrid;
     const value = this.navPaint === 'add' ? 1 : 0;
-    const toIndex = (metres, divisions) => (metres / NAV_SPACING) + (divisions - 1) / 2;
-    const cx = toIndex(hit.x, N);
-    const cr = toIndex(-hit.z, M);
-    const reach = this.navBrush / NAV_SPACING;
-    const r0 = Math.max(0, Math.floor(cr - reach)), r1 = Math.min(M - 1, Math.ceil(cr + reach));
-    const c0 = Math.max(0, Math.floor(cx - reach)), c1 = Math.min(N - 1, Math.ceil(cx + reach));
+    const cx = local.x / spacingX + (N - 1) / 2;
+    const cr = -local.z / spacingZ + (M - 1) / 2;
+    const reachX = this.navBrush / spacingX;
+    const reachZ = this.navBrush / spacingZ;
+    const r0 = Math.max(0, Math.floor(cr - reachZ)), r1 = Math.min(M - 1, Math.ceil(cr + reachZ));
+    const c0 = Math.max(0, Math.floor(cx - reachX)), c1 = Math.min(N - 1, Math.ceil(cx + reachX));
     let touched = false;
     for (let r = r0; r <= r1; r++) {
       for (let c = c0; c <= c1; c++) {
-        if ((r - cr) ** 2 + (c - cx) ** 2 > reach * reach) continue;
+        if (((r - cr) / reachZ) ** 2 + ((c - cx) / reachX) ** 2 > 1) continue;
         const i = r * N + c;
         if (this.navMask[i] === value) continue;
         this.navMask[i] = value;
@@ -3006,7 +3250,8 @@ export class Viewport extends EventTarget {
     this.camera.position.copy(center).add(dir.multiplyScalar(radius * 3));
   }
 
-  _allBounds() {
+  /** The footprint of every placed object, regardless of selection. */
+  allBounds() {
     const box = new THREE.Box3();
     for (const m of this.objects) box.expandByObject(m);
     return box;
@@ -3022,7 +3267,7 @@ export class Viewport extends EventTarget {
    * built in, so it is what "everything" means when nothing has been built yet.
    */
   _viewBox() {
-    const box = this._allBounds();
+    const box = this.allBounds();
     if (!box.isEmpty() || !this.boundsSize) return box;
     const { x, y, z } = this.boundsSize;
     return new THREE.Box3(
@@ -3061,6 +3306,59 @@ export class Viewport extends EventTarget {
     // In CSS pixels: the composer multiplies by the renderer's pixel ratio
     // itself, and hands every pass the size in device pixels.
     this.composer.setSize(r.width, r.height);
+  }
+
+  /**
+   * A logo shot for the mod.io upload dialog, framed the way `setView('top')`
+   * frames it — straight down, an orthographic camera rather than a
+   * perspective one so the map reads as a plan rather than a photo, and
+   * sized to the map's footprint on the ground plane rather than its full 3D
+   * extent, so a long thin map isn't shrunk to fit a diagonal a straight-down
+   * view never sees. A second `WebGLRenderer`, not the main canvas, so the
+   * main renderer never needs `preserveDrawingBuffer` — which would cost
+   * frame rate on every frame for the sake of one — and the yellow selection
+   * outline never enters the shot, since there is no `EffectComposer` here
+   * to draw it.
+   *
+   * Watermarked with the same wordmark as the top bar's corner, bottom right,
+   * so a map's mod.io listing still reads as OpsForge's once it is on someone
+   * else's screen. Composited on a 2D canvas afterward, since the render
+   * itself is a plain WebGL frame with nothing to draw text into.
+   */
+  captureMapImage(w = 1280, h = 720) {
+    const box = this._viewBox();
+    const center = box.isEmpty() ? new THREE.Vector3(0, 0.75, 0) : box.getCenter(new THREE.Vector3());
+    const size = box.isEmpty() ? new THREE.Vector3(20, 10, 20) : box.getSize(new THREE.Vector3());
+    const height = (box.isEmpty() ? 10 : size.y) + Math.max(size.x, size.z, 6) + 5;
+
+    const canvas = document.createElement('canvas');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+    renderer.setSize(w, h, false);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+    const aspect = w / h;
+    const halfX = Math.max(size.x / 2, (size.z / 2) * aspect, 3) * 1.1;
+    const halfZ = halfX / aspect;
+    const camera = new THREE.OrthographicCamera(-halfX, halfX, halfZ, -halfZ, 0.05, height * 2 + 500);
+    // The same tiny forward nudge `setView('top')` uses — straight down is
+    // degenerate for `lookAt`, since the camera's up vector and view
+    // direction would fall on the same line.
+    camera.position.set(center.x, center.y + height, center.z + 0.001);
+    camera.lookAt(center);
+
+    renderer.render(this.scene, camera);
+
+    const out = document.createElement('canvas');
+    out.width = w;
+    out.height = h;
+    const ctx = out.getContext('2d');
+    ctx.drawImage(canvas, 0, 0, w, h);
+    drawWordmark(ctx, w, h);
+
+    return new Promise((resolve) => {
+      out.toBlob((blob) => { renderer.dispose(); resolve(blob); }, 'image/jpeg', 0.9);
+    });
   }
 
   // -- preview walkaround ----------------------------------------------------

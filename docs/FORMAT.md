@@ -559,24 +559,28 @@ apart, ranging from 0 to 9.
 Note the play space (10 m disc) is much larger than `mapBoundsSize` (7 × 7).
 The arena sits inside the room.
 
-### Two fields the editor does not read yet
+### Two fields the editor now reads
 
-Recorded here because they are the obvious suspects for a grid that lands in
-the wrong place, which is a thing that happens with maps downloaded from other
-players and has not yet been reproduced from a file.
+These used to be the obvious suspects for a grid that lands in the wrong
+place after a map has been realigned in a headset — recorded here because that
+symptom took a while to track down to `src/scene.js` ignoring them.
 
-- **`position` and `rotation` are ignored.** `setNavCloud` in `src/scene.js`
-  reads `divisions` and `encodedPoints` and nothing else, so a grid is always
-  drawn centred on the world origin and square to the axes. Every export seen so
-  far has both at zero — but loading a map in the headset asks the player to
-  align it with their own room, and a realignment is exactly what would write a
-  value into those two fields. Two maps realigned differently would then be
-  wrong differently, which matches the symptom.
-- **The 0.25 m spacing is hardcoded** as `NAV_SPACING`, rather than taken from
-  `size / (divisions - 1)`. Every export seen so far is 35 m across 141 points,
-  which is 0.25 exactly; a grid recorded in a room of another size would draw at
-  the wrong scale. `buildNavMask` and `regenerateNav` also assume the grid is
-  square, using `divisions.x` for both axes.
+- **`position` and `rotation`.** Loading a map in the headset asks the player
+  to align it with their own room, and a realignment is exactly what writes a
+  value into those two fields. `setNavCloud` in `src/scene.js` now sets
+  `navGroup`'s own position (via `convertPosition`) and yaw from them, and
+  `_renderNavMask` / `_paintNavAt` work in that group's local space rather than
+  in world space — so a grid that arrived off-centre or turned stays exactly
+  that way, and a brush stroke lands in the same cell the outline is drawn in.
+  Only yaw is applied; the format has never carried a tilted floor mask.
+- **The 0.25 m spacing** is still `NAV_SPACING` as a fallback for a
+  degenerate one-point-wide grid, but `setNavCloud` otherwise derives it per
+  axis from `size / (divisions - 1)`, so a grid recorded at another scale, or
+  with unequal `divisions.x` / `divisions.y`, draws and paints correctly.
+  `buildNavMask` (used only by the Fill tool's Circle/Rectangle presets, which
+  always build a fresh 141×141 grid at 0.25 m) still assumes a square grid at
+  the hardcoded spacing — that one is a deliberate match to what the Fill tool
+  always produces, not the same gap.
 
 ## The game assets
 

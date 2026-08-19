@@ -95,10 +95,11 @@ is local.
     packs/            object packs, loaded at runtime
 
 Delete anything from \`assets/Prefabs/\` and those objects fall back to the
-editor's own stand-in shapes; the **Stand-ins** switch in the toolbar shows
-them at any time. \`assets/\` is Spatial Ops' artwork, owned by its makers and
-included with their permission to redistribute it with this editor. Everything
-here is under the OpsForge Project & Asset License — see \`LICENSE.md\`.
+editor's own stand-in shapes; the **Stand-ins** switch at the foot of the
+Library panel shows them at any time. \`assets/\` is Spatial Ops' artwork,
+owned by its makers and included with their permission to redistribute it
+with this editor. Everything here is under the OpsForge Project & Asset
+License — see \`LICENSE.md\`.
 
 Exported maps have **no file extension**. That is correct — copy the file
 straight into the game's maps folder.

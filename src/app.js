@@ -29,6 +29,13 @@ import {
   checkpointsAvailable, checkpointList, checkpointText, saveCheckpoint,
   removeCheckpoint, clearCheckpoints, checkpointBytes, timeAgo,
 } from './checkpoints.js';
+import { zipWrite } from './zip.js';
+import {
+  modioSearch, modioFetchMapText, modioValidateToken, modioMyMods,
+  modioAddMod, modioEditMod, modioAddModfile, modioToken, modioSaveToken,
+  modioForgetToken, modioMineMap, modioRecordMine, modioCachedUsername,
+  modioRequestEmailCode, modioExchangeEmailCode,
+} from './modio.js';
 
 const $ = (id) => document.getElementById(id);
 const vp = new Viewport($('view'));
@@ -85,15 +92,15 @@ function resize() {
 // ---------------------------------------------------------------------------
 
 /**
- * Put the Preview button in the middle of the top bar, or beside Tips when the
- * middle is taken.
+ * Put the Preview button in the middle of the top bar, or beside Mouse/Trackpad
+ * when the middle is taken.
  *
  * The middle of the *bar*, which is the middle of the window — not the middle
  * of whatever the controls happen to leave over, which drifts every time a
  * label changes. So it is positioned absolutely and measured against its
  * neighbours: the controls to its left end somewhere, Undo and Redo begin
  * somewhere, and a centred button either clears both or it does not. When it
- * does not it goes back into the flow, where it lands next to Tips.
+ * does not it goes back into the flow, where it lands next to Mouse/Trackpad.
  *
  * Measured with the button in the flow, always, because that is the only state
  * in which its own width is known — an absolutely positioned element has been
@@ -1049,7 +1056,7 @@ function wireToolbar() {
       run: () => { takeCheckpoint('manual', true); startNewMap(); },
     });
   };
-  $('b-open').onclick = () => $('filepick').click();
+  $('b-open').onclick = () => openSourceChooser();
   $('filepick').onchange = (e) => { const f = e.target.files[0]; if (f) openFile(f); e.target.value = ''; };
   $('b-save').onclick = exportMap;
 
@@ -1066,6 +1073,8 @@ function wireToolbar() {
       ? 'Orbiting about whatever is under the pointer. Middle-drag on a piece and it stays put.'
       : 'Orbiting about the middle of the view.');
   };
+
+  wirePointerScheme();
 
   // Nothing about the map changes here, so no commit and no edited stamp — it
   // is a way of looking at the scene, not a way of changing it.
@@ -1093,6 +1102,70 @@ function wireToolbar() {
   document.querySelectorAll('#viewbtns .btn').forEach((b) => {
     b.onclick = () => vp.setView(b.dataset.view);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Mouse or trackpad
+// ---------------------------------------------------------------------------
+// The editor's own scheme wants three mouse buttons and a wheel, and a laptop
+// without a mouse has none of them: no middle button to orbit with, no
+// comfortable right drag to pan with. So the top bar carries a switch between
+// the mouse scheme and a trackpad one — two fingers to orbit, Shift to pan,
+// Ctrl to zoom, which is what Blender does and therefore what a good many
+// people's fingers already know. `Viewport._initWheel` is where the gestures
+// live and why they cannot be detected rather than declared.
+//
+// Remembered in this browser, because it is a fact about the machine rather than
+// about the map: whoever works on a laptop works on a laptop tomorrow as well.
+
+const POINTER_KEY = 'spatialops.pointer';
+// Mouse, then trackpad, then trackpad with orbit and pan reversed — cycling
+// forward on every click and wrapping back to mouse. The dot has one stop
+// per mode, left to right in this order.
+const POINTER_MODES = ['mouse', 'trackpad', 'trackpad-inverted'];
+
+function wirePointerScheme() {
+  let mode = 'mouse';
+  try {
+    const saved = localStorage.getItem(POINTER_KEY);
+    if (POINTER_MODES.includes(saved)) mode = saved;
+  } catch { /* no storage */ }
+  setPointerScheme(mode, false);
+  const sw = $('b-pointer');
+  const advance = () => setPointerScheme(POINTER_MODES[(POINTER_MODES.indexOf(sw.dataset.mode) + 1) % POINTER_MODES.length], true);
+  sw.onclick = advance;
+  // A switch, not a button — Space and Enter both toggle it, the way a
+  // checkbox responds to either.
+  sw.onkeydown = (e) => {
+    if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); advance(); }
+  };
+}
+
+/** The dot's position says which scheme is in force, rather than which one is next. */
+function setPointerScheme(mode, announce) {
+  const pad = mode !== 'mouse';
+  vp.setTrackpad(pad, mode === 'trackpad-inverted');
+  const sw = $('b-pointer');
+  sw.dataset.mode = mode;
+  sw.setAttribute('aria-checked', String(pad));
+  const trackpadLbl = sw.querySelector('.pswitch-trackpad');
+  if (trackpadLbl) trackpadLbl.textContent = mode === 'trackpad-inverted' ? 'Trackpad Inverted' : 'Trackpad';
+  refreshStatus();
+  // Nothing to write on the way in: that is where the value came from.
+  if (!announce) return;
+  try { localStorage.setItem(POINTER_KEY, mode); } catch { /* fine */ }
+  toast(
+    mode === 'trackpad-inverted'
+      ? 'Trackpad, inverted. Same two-finger gestures — orbit and pan run backwards, the zoom is unchanged.'
+      : pad
+        ? 'Trackpad. Two fingers on the pad orbit, Shift and two fingers pan, Ctrl and two fingers zoom.'
+        : 'Mouse. Middle drag orbits, right drag pans, the wheel zooms towards the pointer.',
+  );
+  if (pad) {
+    tip('trackpad',
+      'A two-finger tap is a right click, so the object menu is still there. The mouse scheme '
+      + 'stays live underneath: Alt+left drag orbits without a middle button.');
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -3066,6 +3139,166 @@ async function openFile(file) {
   }
 }
 
+/** `#b-open` — a file on this computer, or a map from the Spatial Ops library. */
+function openSourceChooser() {
+  openDialog({
+    title: 'Open a map',
+    body: 'From a file the game or this editor wrote, or from the maps other players have published.',
+    actions: [
+      { label: 'From this computer', ghost: true, run: () => $('filepick').click() },
+      { label: 'Mod.io Library', run: () => openLibraryBrowser() },
+    ],
+  });
+}
+
+/**
+ * A wide dialog: a debounced search over `modioSearch` and a scrolling list of
+ * results. Clicking one downloads and unzips it, then hands the text to
+ * `loadMapText` — the same ingest point the file picker, the drop handler and
+ * checkpoint restore all already share.
+ */
+function openLibraryBrowser() {
+  const body = document.createElement('div');
+
+  const searchRow = document.createElement('div');
+  searchRow.className = 'field';
+  const label = document.createElement('span');
+  label.textContent = 'Search';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = 'Map name, or leave blank for the most popular';
+  searchRow.append(label, input);
+  body.appendChild(searchRow);
+
+  const status = document.createElement('p');
+  status.className = 'hint';
+  status.style.margin = '8px 0 0';
+  body.appendChild(status);
+
+  const list = document.createElement('div');
+  list.className = 'scroll';
+  list.style.cssText = 'max-height:46vh;margin-top:6px';
+  body.appendChild(list);
+
+  let query = '';
+  let offset = 0;
+  let loading = false;
+  let exhausted = false;
+  let debounce = null;
+
+  function libModRow(mod) {
+    const row = document.createElement('div');
+    row.className = 'libmod';
+    const img = document.createElement('img');
+    img.src = mod.logo?.thumb_320x180 || '';
+    img.alt = '';
+    const meta = document.createElement('div');
+    meta.className = 'libmeta';
+    const name = document.createElement('div');
+    name.className = 'libname';
+    name.textContent = mod.name;
+    const sub = document.createElement('div');
+    sub.className = 'libsub';
+    const updated = mod.date_updated ? new Date(mod.date_updated * 1000).toLocaleDateString() : '';
+    sub.textContent = `${mod.submitted_by?.username || 'unknown'} · `
+      + `${mod.stats?.downloads_total ?? 0} downloads · ${updated}`;
+    meta.append(name, sub);
+    row.append(img, meta);
+    row.onclick = async () => {
+      if (row.classList.contains('busy')) return;
+      row.classList.add('busy');
+      try {
+        const { text, name: fileName } = await modioFetchMapText(mod);
+        closeDialog();
+        await loadMapText(text, fileName);
+        // A downloaded map carries its author's guid — record which mod it
+        // came from, but Export (Part 5) still confirms ownership live before
+        // ever offering to treat it as yours to update.
+        modioRecordMine(map.guid, mod.id);
+        tip('modio-open', 'Downloaded maps keep their author’s ID. Take a New ID, '
+          + 'in the Map tab, if you mean to publish this as your own.');
+      } catch (err) {
+        row.classList.remove('busy');
+        toast(`Could not open "${mod.name}": ${err.message}`, true);
+      }
+    };
+    return row;
+  }
+
+  async function runSearch(reset) {
+    if (loading) return;
+    if (reset) { offset = 0; exhausted = false; list.innerHTML = ''; }
+    if (exhausted) return;
+    loading = true;
+    status.textContent = 'Searching mod.io…';
+    try {
+      const res = await modioSearch(query, offset);
+      status.textContent = res.result_total
+        ? `${res.result_total} map${res.result_total === 1 ? '' : 's'}`
+        : 'No maps found.';
+      for (const mod of res.data) list.appendChild(libModRow(mod));
+      offset += res.data.length;
+      exhausted = res.data.length === 0 || offset >= res.result_total;
+    } catch (err) {
+      status.textContent = `Could not reach mod.io: ${err.message}`;
+      exhausted = true;
+    } finally {
+      loading = false;
+    }
+  }
+
+  input.addEventListener('input', () => {
+    query = input.value;
+    clearTimeout(debounce);
+    debounce = setTimeout(() => runSearch(true), 300);
+  });
+  list.addEventListener('scroll', () => {
+    if (list.scrollTop + list.clientHeight > list.scrollHeight - 48) runSearch(false);
+  });
+
+  openDialog({
+    title: 'The map library',
+    body,
+    wide: true,
+    actions: [{ label: 'Cancel', ghost: true, run: () => {} }],
+  });
+  input.focus();
+  runSearch(true);
+}
+
+/**
+ * Grow the arena box to enclose every object in the map that was just loaded.
+ *
+ * `mapBoundsSize` is authored data, not something the editor measures — most
+ * maps are built with the arena in mind and the two agree. But a map built
+ * and re-aligned inside a headset takes its room's play-space as centre, and
+ * what comes out the far side can have furniture standing outside the arena
+ * its own file still claims. `setBounds` always centres the box on the world
+ * origin, so growing it symmetrically is the only fit that keeps the box it
+ * draws valid — there is no offset to give it instead.
+ *
+ * Only grows, never shrinks: a map that already fits its arena is left
+ * exactly as authored, and this never second-guesses a deliberately generous
+ * one.
+ */
+function fitBoundsToObjects() {
+  const box = vp.allBounds();
+  if (box.isEmpty()) return false;
+  const margin = 0.25; // a little clearance, so objects don't sit flush on the line
+  const needX = 2 * Math.max(Math.abs(box.min.x), Math.abs(box.max.x)) + margin * 2;
+  const needZ = 2 * Math.max(Math.abs(box.min.z), Math.abs(box.max.z)) + margin * 2;
+  const needY = box.max.y + margin;
+  const size = map.mapBoundsSize;
+  const fit = {
+    x: Math.min(60, Math.max(size.x, Math.ceil(needX))),
+    y: Math.min(20, Math.max(size.y, Math.ceil(needY))),
+    z: Math.min(60, Math.max(size.z, Math.ceil(needZ))),
+  };
+  if (fit.x === size.x && fit.y === size.y && fit.z === size.z) return false;
+  map.mapBoundsSize = fit;
+  return true;
+}
+
 /**
  * Replace everything on screen with a map read from `text`.
  *
@@ -3079,6 +3312,7 @@ async function loadMapText(text, sourceName) {
   map = parsed;
   vp.clearObjects();
   for (const mo of parsed.mapObjects) vp.addObject(mo);
+  const resized = fitBoundsToObjects();
   applyMapMeta();
   activeRuleSet = 0;
   buildRules();
@@ -3094,6 +3328,7 @@ async function loadMapText(text, sourceName) {
   let msg = `Loaded "${map.name}" — ${parsed.mapObjects.length} objects.`;
   if (parsed.version !== MAP_VERSION) msg += ` Map format v${parsed.version}, editor targets v${MAP_VERSION}.`;
   if (unknown.size) msg += ` ${unknown.size} type(s) not in any loaded pack: ${[...unknown].join(', ')}.`;
+  if (resized) msg += ' Arena boundary grown to fit objects that landed outside it.';
   toast(msg, unknown.size > 0);
   $('st-file').textContent = sourceName;
 }
@@ -3124,7 +3359,7 @@ function exportMap() {
     promptForMapDetails();
     return;
   }
-  writeMapFile();
+  chooseExportDestination();
 }
 
 function writeMapFile() {
@@ -3164,7 +3399,7 @@ function promptForMapDetails() {
       { id: 'dlg-author', label: 'Author', value: map.author, placeholder: 'Your name' },
     ],
     actions: [
-      { label: 'Export anyway', ghost: true, run: () => writeMapFile() },
+      { label: 'Export anyway', ghost: true, run: () => chooseExportDestination() },
       {
         label: 'Save and export',
         run: (values) => {
@@ -3172,11 +3407,279 @@ function promptForMapDetails() {
           map.author = values['dlg-author'].trim();
           touchEdited();
           refreshMeta();
-          writeMapFile();
+          chooseExportDestination();
         },
       },
     ],
   });
+}
+
+/**
+ * The zip a map leaves the editor in, whichever way it leaves. Kept behind one
+ * function so the layout is a two-line change if the archive needs one.
+ */
+function modfileArchive(text, name) {
+  return zipWrite([{ name, data: text }]);
+}
+
+/**
+ * `Ctrl+S`, `#b-save`, and both buttons in `promptForMapDetails` all land here:
+ * write the file, or publish it. Export to computer is the focused default —
+ * with no token saved this is also the only enabled destination — so the old
+ * `Ctrl+S`, `Enter` muscle memory still writes the file.
+ */
+function chooseExportDestination() {
+  const token = modioToken();
+  const username = modioCachedUsername();
+  const signedIn = !!(token && username);
+
+  const body = document.createElement('div');
+  const intro = document.createElement('p');
+  intro.textContent = 'Write the map out as a file, or publish it for other players.';
+  body.appendChild(intro);
+
+  if (signedIn) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 4px';
+    const who = document.createElement('span');
+    who.className = 'hint';
+    who.style.margin = '0';
+    who.textContent = `Signed in to mod.io as ${username}`;
+    const signOut = document.createElement('button');
+    signOut.className = 'btn ghost';
+    signOut.textContent = 'Sign out';
+    signOut.onclick = () => { modioForgetToken(); closeDialog(); chooseExportDestination(); };
+    row.append(who, signOut);
+    body.appendChild(row);
+  }
+
+  openDialog({
+    title: 'Export',
+    body,
+    actions: signedIn
+      ? [
+        { label: 'Export to Mod.io Library', run: () => openUploadDialog() },
+        { label: 'Export to computer', run: () => writeMapFile() },
+      ]
+      : [
+        { label: 'Sign in to mod.io', ghost: true, run: () => openSignInDialog() },
+        { label: 'Export to computer', run: () => writeMapFile() },
+      ],
+  });
+}
+
+/**
+ * mod.io's personal access tokens (mod.io/me/access) are bound to the account
+ * they were issued for, not to a game — `POST /games/11054/mods` answers
+ * "does not grant access to this resource" no matter which scopes are ticked,
+ * and a game-scoped token isn't offered unless the account is on the Spatial
+ * Ops team. A user OAuth token is the right instrument instead: mod.io emails
+ * a code, and exchanging it hands back a token that represents the person and
+ * can publish to any game that accepts community submissions.
+ */
+function openSignInDialog() {
+  openDialog({
+    title: 'Sign in to mod.io',
+    body: 'mod.io will email you a 5-digit code to confirm it is you.',
+    fields: [{ id: 'email', label: 'Email', placeholder: 'you@example.com' }],
+    actions: [
+      { label: 'Cancel', ghost: true, run: () => {} },
+      {
+        label: 'Send code',
+        keepOpen: true,
+        run: async (values, ui) => {
+          const email = values.email.trim();
+          if (!email.includes('@')) { ui.status('That does not look like an email address.', true); return; }
+          ui.busy(true);
+          ui.enable('Send code', false);
+          try {
+            ui.status('Emailing a code…');
+            await modioRequestEmailCode(email);
+            ui.close();
+            openCodeDialog();
+          } catch (err) {
+            ui.status(err.message, true);
+            ui.enable('Send code', true);
+            ui.busy(false);
+          }
+        },
+      },
+    ],
+  });
+}
+
+function openCodeDialog() {
+  openDialog({
+    title: 'Enter the code',
+    body: 'Check your email for a 5-digit code from mod.io.',
+    fields: [{ id: 'code', label: 'Code', placeholder: '12345' }],
+    actions: [
+      { label: 'Cancel', ghost: true, run: () => {} },
+      {
+        label: 'Verify',
+        keepOpen: true,
+        run: async (values, ui) => {
+          const code = values.code.trim();
+          ui.busy(true);
+          ui.enable('Verify', false);
+          try {
+            ui.status('Checking…');
+            const token = await modioExchangeEmailCode(code);
+            const me = await modioValidateToken(token);
+            modioSaveToken(token, me.username);
+            ui.close();
+            chooseExportDestination();
+          } catch (err) {
+            ui.status(err.message, true);
+            ui.enable('Verify', true);
+            ui.busy(false);
+          }
+        },
+      },
+    ],
+  });
+}
+
+/**
+ * Publish the map to mod.io — new, or an update to a mod already owned. The
+ * logo is captured when the dialog opens; "Choose an image…" overrides it with
+ * a file from disk. Ownership is never trusted from `spatialops.modio.mine`
+ * alone — a downloaded map records the mod it came from too — so it is
+ * confirmed live against `GET /me/mods` before the update option is offered.
+ */
+async function openUploadDialog() {
+  const body = document.createElement('div');
+
+  const shot = document.createElement('img');
+  shot.style.cssText = 'width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:4px;'
+    + 'background:var(--panel2);display:block';
+  body.appendChild(shot);
+
+  let logoBlob = null;
+  const setLogo = (blob) => { logoBlob = blob; shot.src = URL.createObjectURL(blob); };
+
+  const shotRow = document.createElement('div');
+  shotRow.style.cssText = 'display:flex;gap:6px;margin:8px 0 14px';
+  const retake = document.createElement('button');
+  retake.className = 'btn ghost';
+  retake.textContent = 'Retake';
+  retake.onclick = async () => setLogo(await vp.captureMapImage());
+  const chooseFile = document.createElement('button');
+  chooseFile.className = 'btn ghost';
+  chooseFile.textContent = 'Choose an image…';
+  const filePicker = document.createElement('input');
+  filePicker.type = 'file';
+  filePicker.accept = 'image/png,image/jpeg';
+  filePicker.style.display = 'none';
+  filePicker.onchange = () => { if (filePicker.files[0]) setLogo(filePicker.files[0]); };
+  chooseFile.onclick = () => filePicker.click();
+  shotRow.append(retake, chooseFile, filePicker);
+  body.appendChild(shotRow);
+
+  const mineId = modioMineMap()[map.guid];
+  let owned = null;
+  if (mineId) {
+    try {
+      const mine = await modioMyMods();
+      owned = mine.find((m) => m.id === mineId) || null;
+    } catch { /* couldn't confirm — treat as not owned, publishing as new is always safe */ }
+  }
+
+  let updateMode = !!owned;
+  if (owned) {
+    const note = document.createElement('p');
+    note.className = 'hint';
+    note.innerHTML = `You have published this map before, as <b>${owned.name}</b> — `
+      + `${owned.stats?.subscribers_total ?? 0} subscribers.`;
+    body.appendChild(note);
+
+    const choice = document.createElement('div');
+    choice.style.cssText = 'display:flex;flex-direction:column;gap:4px;margin-bottom:12px';
+    const updateOpt = document.createElement('label');
+    updateOpt.className = 'flagopt';
+    updateOpt.innerHTML = '<input type="radio" name="modio-mode" checked> Update it';
+    const newOpt = document.createElement('label');
+    newOpt.className = 'flagopt';
+    newOpt.innerHTML = '<input type="radio" name="modio-mode"> Publish as a separate map';
+    choice.append(updateOpt, newOpt);
+    body.appendChild(choice);
+    updateOpt.querySelector('input').onchange = () => { updateMode = true; };
+    newOpt.querySelector('input').onchange = () => { updateMode = false; };
+  }
+
+  openDialog({
+    title: 'Upload to the map library',
+    body,
+    wide: true,
+    fields: [
+      { id: 'title', label: 'Title', value: owned ? owned.name : map.name },
+      { id: 'summary', label: 'Summary', type: 'textarea', value: owned ? owned.summary : '' },
+      // Shown whenever an update is even possible; ignored at submit time if
+      // "Publish as a separate map" ends up chosen instead.
+      ...(owned ? [
+        { id: 'version', label: 'Version', placeholder: '1.0.0' },
+        { id: 'changelog', label: 'Changelog', type: 'textarea', placeholder: 'What changed' },
+      ] : []),
+    ],
+    actions: [
+      { label: 'Cancel', ghost: true, run: () => {} },
+      {
+        label: 'Upload',
+        keepOpen: true,
+        run: async (values, ui) => {
+          ui.busy(true);
+          ui.enable('Cancel', false);
+          ui.enable('Upload', false);
+          try {
+            if (!logoBlob) { ui.status('Rendering a shot of the map…'); logoBlob = await vp.captureMapImage(); shot.src = URL.createObjectURL(logoBlob); }
+            ui.status('Zipping the map…');
+            const zip = await modfileArchive(currentMapText(), mapFileName(map.name, map.guid));
+
+            let modId = updateMode && owned ? owned.id : null;
+            let modResult = owned;
+            if (!modId) {
+              ui.status('Creating the mod.io entry…');
+              modResult = await modioAddMod({
+                name: values.title, summary: values.summary, logo: logoBlob, visible: true,
+              });
+              modId = modResult.id;
+            } else {
+              // Always re-sent, even when the title and summary are unchanged —
+              // otherwise a retaken screenshot never reaches mod.io on an update.
+              ui.status('Updating the mod.io entry…');
+              modResult = await modioEditMod(modId, { name: values.title, summary: values.summary, logo: logoBlob });
+            }
+
+            ui.status('Uploading the map file…');
+            const fileMeta = updateMode ? { version: values.version, changelog: values.changelog } : {};
+            await modioAddModfile(modId, { zip, ...fileMeta });
+
+            modioRecordMine(map.guid, modId);
+            takeCheckpoint('export');
+
+            const modUrl = modResult?.profile_url || `https://mod.io/g/spatial-ops/m/${modId}`;
+            ui.close();
+            toast(`${updateMode ? 'Updated' : 'Published'} "${values.title}" on mod.io.`);
+            openDialog({
+              title: updateMode ? 'Map updated' : 'Map published',
+              body: `"${values.title}" is ${updateMode ? 'updated' : 'now live'} on mod.io.`,
+              actions: [
+                { label: 'Close', ghost: true, run: () => {} },
+                { label: 'View on mod.io', run: () => window.open(modUrl, '_blank', 'noopener') },
+              ],
+            });
+          } catch (err) {
+            ui.status(err?.errors ? `${err.message} (${Object.values(err.errors).join(', ')})` : err.message, true);
+            ui.enable('Cancel', true);
+            ui.enable('Upload', true);
+            ui.busy(false);
+          }
+        },
+      },
+    ],
+  });
+
+  setLogo(await vp.captureMapImage());
 }
 
 // ---------------------------------------------------------------------------
@@ -3189,20 +3692,48 @@ function promptForMapDetails() {
 
 let dialogClose = null;
 
-function openDialog({ title, body, fields = [], actions }) {
+/**
+ * The export prompt, the prefab prompt, both destructive confirmations, and —
+ * with the additions below — the mod.io token/upload dialogs, all built on one
+ * function.
+ *
+ * `body` may be a string or a `Node` (a link, an image preview). A field may
+ * set `type: 'textarea'|'password'` (default `'text'`), a `hint` shown under
+ * it, and an `oninput(value, ui)` for live validation. An action may set
+ * `keepOpen` (its `run` gets a `ui` handle and decides when to close) and
+ * `disabled` (starts greyed out; toggle with `ui.enable`). `run` is always
+ * called with `(values, ui)` — `ui.status(text, isError)`, `ui.busy(on)`
+ * (blocks Escape while true, for a dialog mid-upload), `ui.enable(label, on)`,
+ * `ui.close()`.
+ */
+function openDialog({ title, body, fields = [], actions, wide }) {
   closeDialog();
   const veil = $('veil');
   const box = document.createElement('div');
-  box.className = 'dlg';
+  box.className = 'dlg' + (wide ? ' wide' : '');
   box.setAttribute('role', 'dialog');
   box.setAttribute('aria-modal', 'true');
 
   const h = document.createElement('h3');
   h.textContent = title;
   box.appendChild(h);
-  const p = document.createElement('p');
-  p.textContent = body;
-  box.appendChild(p);
+
+  const closeX = document.createElement('button');
+  closeX.className = 'x-close';
+  closeX.setAttribute('aria-label', 'Close');
+  closeX.textContent = '×';
+  closeX.onclick = () => { if (!busy) closeDialog(); };
+  box.appendChild(closeX);
+
+  if (body != null) {
+    if (body instanceof Node) {
+      box.appendChild(body);
+    } else {
+      const p = document.createElement('p');
+      p.textContent = body;
+      box.appendChild(p);
+    }
+  }
 
   const inputs = {};
   for (const f of fields) {
@@ -3210,24 +3741,46 @@ function openDialog({ title, body, fields = [], actions }) {
     row.className = 'field';
     const label = document.createElement('span');
     label.textContent = f.label;
-    const input = document.createElement('input');
-    input.type = 'text';
+    const input = document.createElement(f.type === 'textarea' ? 'textarea' : 'input');
+    if (f.type === 'password') input.type = 'password';
+    else if (f.type !== 'textarea') input.type = 'text';
     input.id = f.id;
     input.value = f.value || '';
     input.placeholder = f.placeholder || '';
     inputs[f.id] = input;
     row.append(label, input);
+    if (f.hint) {
+      const hint = document.createElement('p');
+      hint.className = 'hint';
+      hint.textContent = f.hint;
+      row.appendChild(hint);
+    }
     box.appendChild(row);
+    if (f.oninput) input.addEventListener('input', () => f.oninput(input.value, ui));
   }
+
+  const status = document.createElement('p');
+  status.className = 'status';
+  status.hidden = true;
+  box.appendChild(status);
 
   const acts = document.createElement('div');
   acts.className = 'acts';
   const values = () => Object.fromEntries(Object.entries(inputs).map(([k, el]) => [k, el.value]));
+  const buttons = {};
+  const run = (a) => {
+    if (a.disabled) return;
+    const v = values();
+    if (a.keepOpen) a.run(v, ui);
+    else { closeDialog(); a.run(v); }
+  };
   for (const a of actions) {
     const b = document.createElement('button');
     b.className = 'btn' + (a.ghost ? ' ghost' : '');
     b.textContent = a.label;
-    b.onclick = () => { const v = values(); closeDialog(); a.run(v); };
+    b.disabled = !!a.disabled;
+    b.onclick = () => run(a);
+    buttons[a.label] = b;
     acts.appendChild(b);
   }
   box.appendChild(acts);
@@ -3236,20 +3789,40 @@ function openDialog({ title, body, fields = [], actions }) {
   veil.appendChild(box);
   veil.classList.add('show');
 
-  // Escape cancels, which is always the last action listed — the harmless one.
+  let busy = false;
+  const ui = {
+    status(text, isError) {
+      status.textContent = text || '';
+      status.hidden = !text;
+      status.classList.toggle('bad', !!isError);
+    },
+    busy(on) { busy = on; },
+    enable(label, on) {
+      const a = actions.find((x) => x.label === label);
+      const b = buttons[label];
+      if (a) a.disabled = !on;
+      if (b) b.disabled = !on;
+    },
+    close() { closeDialog(); },
+  };
+
+  // Escape cancels, which is always the last action listed — the harmless
+  // one — unless a dialog has marked itself busy (an upload in flight).
   const onKey = (e) => {
+    if (busy) return;
     if (e.key === 'Escape') { e.preventDefault(); closeDialog(); }
-    if (e.key === 'Enter' && fields.length) {
+    if (e.key === 'Enter' && fields.length && e.target.tagName !== 'TEXTAREA') {
       e.preventDefault();
-      const v = values();
-      const primary = actions[actions.length - 1];
-      closeDialog();
-      primary.run(v);
+      run(actions[actions.length - 1]);
     }
   };
   addEventListener('keydown', onKey, true);
+  // A click that lands on the veil itself, not something inside the box,
+  // means outside the dialog — the same "never mind" as Escape or the X.
+  veil.onclick = (e) => { if (e.target === veil && !busy) closeDialog(); };
   dialogClose = () => {
     removeEventListener('keydown', onKey, true);
+    veil.onclick = null;
     veil.classList.remove('show');
     veil.innerHTML = '';
     dialogClose = null;
@@ -3414,7 +3987,7 @@ function refreshCheckpoints() {
     $('cp-note').textContent = autosaveOn()
       ? 'Nothing kept yet. With Autosave on, a snapshot is taken every couple of minutes of '
         + 'editing, when you export, and when you leave the page.'
-      : 'Autosave is off. Turn it on above the view, or take one by hand.';
+      : 'Autosave is off. Turn it on above, or take one by hand.';
     return;
   }
 
@@ -3527,6 +4100,7 @@ function refreshStatus() {
   $('sel-count').textContent = n ? `${n} selected` : 'none';
   $('st-mode').textContent =
     (vp.previewing ? 'walkaround · ' : '') +
+    (vp.trackpad ? `trackpad${vp.trackpadInverted ? ' inverted' : ''} · ` : '') +
     `${vp.uniformScale ? 'uniform' : 'per-axis'} · ` +
     `grid ${vp.snap.translate ? vp.snap.translate + 'm' : 'off'} · ` +
     `angle ${vp.snap.rotate ? vp.snap.rotate + '°' : 'off'}` +

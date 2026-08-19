@@ -2,8 +2,10 @@
 
 A self-hosted map editor for the VR game **Spatial Ops**, running in your own
 browser on your own machine. Open a map exported from the game, build with it,
-and export a file the game reads back. Nothing is uploaded anywhere — you run
-the editor, and your maps stay on your computer.
+and export a file the game reads back — or open one straight from the Spatial
+Ops map library, and publish yours back to it. Nothing is uploaded unless you
+ask for it, and when you do it goes from your browser straight to mod.io under
+your own token — there is no OpsForge server for it to pass through.
 
 The game's own models and thumbnails are included, so what you place is what
 you will see in the headset.
@@ -95,8 +97,8 @@ the server until something asks for them.
 
 - 173 objects in 14 packs — eleven themes and the boundaries, plus gameplay
   objects and mode objectives, drawn with the game's own meshes. Every object
-  also has a built-in stand-in shape, and the **Stand-ins** switch in the
-  toolbar draws those instead at any time.
+  also has a built-in stand-in shape, and the **Stand-ins** switch at the foot
+  of the Library panel draws those instead at any time.
 - **Boundaries** are the game's invisible walls, the AR half of the library: a
   box, a cylinder and a wall that give collision without being drawn, so a real
   coffee table becomes cover and a real sofa becomes something to hide behind.
@@ -118,6 +120,17 @@ the server until something asks for them.
   whatever is beneath it, or under the ground with nothing showing. Hovering
   any of the three draws the selection where it would land, so the three are
   told apart by looking rather than by reading.
+
+**The view**
+
+- Middle drag orbits, right drag pans, and the wheel zooms towards whatever the
+  pointer is over, taking a share of the distance to it each notch: metres at a
+  time across the arena, millimetres up against a crate.
+- **Mouse / Trackpad** in the top bar switches the whole scheme, for a laptop
+  with no mouse to switch to. On the trackpad scheme two fingers on the pad
+  orbit, <kbd>Shift</kbd> and two fingers pan, <kbd>Ctrl</kbd> or the OS key and
+  two fingers zoom, and a two-finger tap is a right click — the gestures
+  Blender uses. The choice is remembered in the browser.
 
 **Prefabs**
 
@@ -169,6 +182,22 @@ the server until something asks for them.
   through a float writer that matches .NET's output.
 - Object types the editor has never seen still load, and export unchanged.
 
+**Publishing to mod.io**
+
+- **Open** offers a choice between a file on this computer and the Spatial Ops
+  map library, and **Export** offers a choice between writing a file and
+  publishing to it. Browsing the library needs no sign-in.
+- Publishing needs a mod.io sign-in: enter your email in the Export dialog,
+  mod.io sends a 5-digit code, and entering that code back signs you in. This
+  is the same sign-in the game itself uses in-headset — not a personal access
+  token from mod.io/me/access, which is bound to your account rather than to
+  Spatial Ops and cannot publish here.
+- The token this exchange returns lives only in this browser's storage. It is
+  never written into a map file, never logged, and never sent anywhere but
+  mod.io itself.
+- Uploading a map you have published before offers to update that entry
+  instead of creating a second one, once mod.io confirms you own it.
+
 ## Keyboard
 
 | | |
@@ -176,6 +205,7 @@ the server until something asks for them.
 | Left drag | Select — click an object, or drag a box across several |
 | Middle drag | Orbit &middot; Right drag pans &middot; <kbd>Alt</kbd>+left orbits |
 | Wheel | Zoom towards the pointer |
+| Two fingers | Orbit, with the top bar switched to **Trackpad** &middot; <kbd>Shift</kbd> pans &middot; <kbd>Ctrl</kbd> zooms &middot; a two-finger tap is a right click |
 | Arrow keys | Nudge the selection, the way the view faces &middot; <kbd>Shift</kbd> for up and down |
 | <kbd>Shift</kbd> / <kbd>Ctrl</kbd> + click | Add to the selection / pick one out of a group |
 | <kbd>G</kbd> / <kbd>Shift</kbd>+<kbd>G</kbd> | Group / ungroup |
