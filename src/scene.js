@@ -1112,15 +1112,35 @@ export class Viewport extends EventTarget {
       this.emit('transform');
     });
 
+    // Ctrl is held to marquee- or click-add several objects to the selection
+    // — the gizmo sitting on the last-picked one is only in the way of seeing
+    // what else is under the cursor while that's happening. `_ctrlDown` is
+    // remembered past the keypress too, since `rebuildPivot` re-attaches (and
+    // re-shows) the gizmo on every selection change, including the ones ctrl
+    // itself is causing.
+    this._ctrlDown = false;
     addEventListener('keydown', (e) => {
       if (e.key === 'Alt') { this._altDown = true; this._applyOrbitButtons(); }
+      if (e.key === 'Control' || e.key === 'Meta') {
+        this._ctrlDown = true;
+        if (this.gizmo.object && !this.gizmo.dragging) this.gizmo.visible = false;
+      }
     });
     addEventListener('keyup', (e) => {
       if (e.key === 'Alt') { this._altDown = false; this._applyOrbitButtons(); }
+      if (e.key === 'Control' || e.key === 'Meta') {
+        this._ctrlDown = false;
+        if (this.gizmo.object) this.gizmo.visible = true;
+      }
     });
     // Alt+tabbing away leaves the keyup on the other window, and the left
     // button would still be orbiting when you came back.
-    addEventListener('blur', () => { this._altDown = false; this._applyOrbitButtons(); });
+    addEventListener('blur', () => {
+      this._altDown = false;
+      this._applyOrbitButtons();
+      this._ctrlDown = false;
+      if (this.gizmo.object) this.gizmo.visible = true;
+    });
   }
 
   /**
@@ -2239,6 +2259,7 @@ export class Viewport extends EventTarget {
     for (const m of list) this.pivot.attach(m);
 
     this.gizmo.attach(this.pivot);
+    if (this._ctrlDown) this.gizmo.visible = false;
     this._applyGizmoConstraints();
   }
 
@@ -2889,8 +2910,8 @@ export class Viewport extends EventTarget {
       if (!mods.shift && !mods.ctrl) this.setSelection([]);
       return;
     }
-    const picked = this.expandGroup(hit, mods.ctrl);
-    if (mods.shift) {
+    const picked = this.expandGroup(hit, mods.shift);
+    if (mods.ctrl) {
       const next = new Set(this.selection);
       const allIn = picked.every((m) => next.has(m));
       for (const m of picked) allIn ? next.delete(m) : next.add(m);
@@ -2935,10 +2956,10 @@ export class Viewport extends EventTarget {
 
     const expanded = new Set();
     for (const m of inside) {
-      for (const g of this.expandGroup(m, mods.ctrl)) if (!g.userData.locked) expanded.add(g);
+      for (const g of this.expandGroup(m, mods.shift)) if (!g.userData.locked) expanded.add(g);
     }
 
-    if (mods.shift) {
+    if (mods.ctrl) {
       const next = new Set(this.selection);
       for (const m of expanded) next.add(m);
       this.setSelection([...next]);

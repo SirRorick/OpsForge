@@ -21,7 +21,7 @@ import {
   MODES, layoutFor, unknownKeys, setValue, parseFlags, joinFlags, overrideCount,
   describeFallback, effectiveValue, optionLabel, splitDuration, joinDuration,
   formatDuration, clampInt, outOfRange, newRuleSet, duplicateRuleSet,
-  resetRuleSet, changeBaseMode, missingRequirements, modeByType,
+  resetRuleSet, changeBaseMode, missingRequirements, modeByType, modeTagsFor, MODE_TAGS,
   INT, BOOL, ENUM, FLAGS,
 } from './rules.js';
 import { geometryFor } from './placeholders.js';
@@ -32,7 +32,8 @@ import {
 import { zipWrite } from './zip.js';
 import {
   modioSearch, modioFetchMapText, modioValidateToken, modioMyMods,
-  modioAddMod, modioEditMod, modioAddModfile, modioToken, modioSaveToken,
+  modioAddMod, modioEditMod, modioAddModfile, modioAddTags, modioDeleteTags,
+  modioToken, modioSaveToken,
   modioForgetToken, modioMineMap, modioRecordMine, modioCachedUsername,
   modioRequestEmailCode, modioExchangeEmailCode,
 } from './modio.js';
@@ -2466,9 +2467,18 @@ function flagsControl(rs, f, clear) {
  */
 const openGroupRows = new Set();
 
+// The row order as last drawn, one entry per row with the objects a click on
+// it stands for — a group row's members, or a lone object's one mesh. Shift
+// click walks this to find everything between two rows; it is rebuilt every
+// buildOutliner, so the anchor index is only ever read back against the list
+// that produced it.
+let outlinerOrder = [];
+let outlinerAnchor = -1;
+
 function buildOutliner() {
   const host = $('outliner');
   host.innerHTML = '';
+  outlinerOrder = [];
 
   // Walk the objects in order and emit either a lone object or, at the first
   // member of a group, the whole group. Order follows the scene, so a group
@@ -2495,6 +2505,38 @@ function buildOutliner() {
 }
 
 /**
+ * A row was clicked in the outliner. Plain click replaces the selection with
+ * this row's objects. Ctrl adds or removes them, for building up a selection
+ * one row at a time. Shift selects every row between the last row clicked and
+ * this one, inclusive — the anchor is whichever row a plain or ctrl click last
+ * touched, so a shift click always reasons from where the user's attention
+ * actually was.
+ */
+function outlinerRowClick(e, index, targets) {
+  if (e.shiftKey && outlinerAnchor >= 0) {
+    const [lo, hi] = outlinerAnchor <= index ? [outlinerAnchor, index] : [index, outlinerAnchor];
+    const next = new Set();
+    for (let i = lo; i <= hi; i++) for (const m of outlinerOrder[i]) next.add(m);
+    vp.setSelection([...next]);
+    return;
+  }
+  outlinerAnchor = index;
+  if (e.ctrlKey || e.metaKey) {
+    const next = new Set(vp.selection);
+    const allIn = targets.every((m) => next.has(m));
+    for (const m of targets) allIn ? next.delete(m) : next.add(m);
+    vp.setSelection([...next]);
+  } else {
+    vp.setSelection(targets);
+  }
+}
+
+/** Double click: this object and every other object of the same type. */
+function outlinerRowDblClick(m) {
+  vp.setSelection(vp.objects.filter((o) => o.userData.def.type === m.userData.def.type));
+}
+
+/**
  * Put the invisible walls back, wherever the user has just asked for something
  * they cannot see — clicked a greyed row, or taken a boundary out of the
  * library while the switch was on. Placing a piece that never appears is the
@@ -2506,14 +2548,6 @@ function showBoundaries() {
   vp.setHideBoundaries(false);
   buildOutliner();
   toast('Boundaries shown again.');
-}
-
-function selectFrom(list, e) {
-  if (e.shiftKey) {
-    const next = new Set(vp.selection);
-    for (const o of list) next.add(o);
-    vp.setSelection([...next]);
-  } else vp.setSelection(list);
 }
 
 function groupRow(id, members) {
@@ -2544,7 +2578,9 @@ function groupRow(id, members) {
   n.textContent = String(members.length);
 
   row.append(tw, dot, t, n, lockToggle(members, locked));
-  row.onclick = (e) => selectFrom(members, e);
+  const index = outlinerOrder.length;
+  outlinerOrder.push(members);
+  row.onclick = (e) => outlinerRowClick(e, index, members);
   row.oncontextmenu = (e) => { e.preventDefault(); showContextMenu(e.clientX, e.clientY, members); };
   return row;
 }
@@ -2565,9 +2601,15 @@ function objectRow(m, child) {
   t.textContent = m.userData.def.label;
   if (unseen) row.title = 'Hidden by the Hide boundaries switch. Click to show them again.';
   row.append(dot, t, lockToggle([m], !!m.userData.locked));
+  const index = outlinerOrder.length;
+  outlinerOrder.push([m]);
   row.onclick = (e) => {
     if (!m.visible) showBoundaries();
-    selectFrom(vp.expandGroup(m, e.ctrlKey || e.metaKey), e);
+    outlinerRowClick(e, index, [m]);
+  };
+  row.ondblclick = () => {
+    if (!m.visible) showBoundaries();
+    outlinerRowDblClick(m);
   };
   row.oncontextmenu = (e) => {
     e.preventDefault();
@@ -3066,7 +3108,7 @@ function wireViewport() {
     // thing clicked and its group.
     const meshes = vp.selection.has(hit) && vp.selection.size > 1
       ? [...vp.selection]
-      : vp.expandGroup(hit, e.ctrlKey || e.metaKey);
+      : vp.expandGroup(hit, e.shiftKey);
     showContextMenu(e.clientX, e.clientY, meshes);
   });
   addEventListener('pointerdown', (e) => {
@@ -3185,6 +3227,10 @@ function openLibraryBrowser() {
   let loading = false;
   let exhausted = false;
   let debounce = null;
+  // Bumped on every reset search, so a slow response for a query the user has
+  // since changed (e.g. retyping "rtx" as "RTx" before the first request
+  // lands) is dropped instead of overwriting the newer, correct results.
+  let searchToken = 0;
 
   function libModRow(mod) {
     const row = document.createElement('div');
@@ -3226,13 +3272,14 @@ function openLibraryBrowser() {
   }
 
   async function runSearch(reset) {
-    if (loading) return;
     if (reset) { offset = 0; exhausted = false; list.innerHTML = ''; }
-    if (exhausted) return;
+    else if (loading || exhausted) return;
+    const token = reset ? ++searchToken : searchToken;
     loading = true;
     status.textContent = 'Searching mod.io…';
     try {
       const res = await modioSearch(query, offset);
+      if (token !== searchToken) return; // superseded by a newer search
       status.textContent = res.result_total
         ? `${res.result_total} map${res.result_total === 1 ? '' : 's'}`
         : 'No maps found.';
@@ -3240,10 +3287,11 @@ function openLibraryBrowser() {
       offset += res.data.length;
       exhausted = res.data.length === 0 || offset >= res.result_total;
     } catch (err) {
+      if (token !== searchToken) return;
       status.textContent = `Could not reach mod.io: ${err.message}`;
       exhausted = true;
     } finally {
-      loading = false;
+      if (token === searchToken) loading = false;
     }
   }
 
@@ -3423,6 +3471,22 @@ function modfileArchive(text, name) {
 }
 
 /**
+ * The header the game submits beside a map, rebuilt field for field: its own
+ * key casing, its own order, the bounds split into three. mod.io keeps it as
+ * an opaque string, and the library shows what a map published without one
+ * costs — no size, no guid, nothing to match a download against.
+ */
+function mapMetadataBlob() {
+  return JSON.stringify({
+    Guid: map.guid,
+    EditedTime: map.editedTime,
+    MapWidth: map.mapBoundsSize.x,
+    MapHeight: map.mapBoundsSize.y,
+    MapDepth: map.mapBoundsSize.z,
+  });
+}
+
+/**
  * `Ctrl+S`, `#b-save`, and both buttons in `promptForMapDetails` all land here:
  * write the file, or publish it. Export to computer is the focused default —
  * with no token saved this is also the only enabled destination — so the old
@@ -3542,10 +3606,11 @@ function openCodeDialog() {
 
 /**
  * Publish the map to mod.io — new, or an update to a mod already owned. The
- * logo is captured when the dialog opens; "Choose an image…" overrides it with
- * a file from disk. Ownership is never trusted from `spatialops.modio.mine`
- * alone — a downloaded map records the mod it came from too — so it is
- * confirmed live against `GET /me/mods` before the update option is offered.
+ * logo is a top-down shot taken automatically when the dialog opens; there is
+ * no way to override it with a custom image for now. Ownership is never
+ * trusted from `spatialops.modio.mine` alone — a downloaded map records the
+ * mod it came from too — so it is confirmed live against `GET /me/mods`
+ * before the update option is offered.
  */
 async function openUploadDialog() {
   const body = document.createElement('div');
@@ -3557,24 +3622,22 @@ async function openUploadDialog() {
 
   let logoBlob = null;
   const setLogo = (blob) => { logoBlob = blob; shot.src = URL.createObjectURL(blob); };
+  shot.style.margin = '0 0 14px';
 
-  const shotRow = document.createElement('div');
-  shotRow.style.cssText = 'display:flex;gap:6px;margin:8px 0 14px';
-  const retake = document.createElement('button');
-  retake.className = 'btn ghost';
-  retake.textContent = 'Retake';
-  retake.onclick = async () => setLogo(await vp.captureMapImage());
-  const chooseFile = document.createElement('button');
-  chooseFile.className = 'btn ghost';
-  chooseFile.textContent = 'Choose an image…';
-  const filePicker = document.createElement('input');
-  filePicker.type = 'file';
-  filePicker.accept = 'image/png,image/jpeg';
-  filePicker.style.display = 'none';
-  filePicker.onchange = () => { if (filePicker.files[0]) setLogo(filePicker.files[0]); };
-  chooseFile.onclick = () => filePicker.click();
-  shotRow.append(retake, chooseFile, filePicker);
-  body.appendChild(shotRow);
+  // Retake / choose-a-file-instead are hidden for now — a top-down shot is
+  // taken automatically below, and the custom-thumbnail option may come back
+  // later.
+
+  // The library sorts by game mode, so this is the difference between a map
+  // other players can find and one only its author ever sees. Shown before the
+  // upload rather than after, while adding the missing spawn zone is still a
+  // matter of closing the dialog.
+  const modeTags = modeTagsFor(map.ruleSets, placedTypes());
+  const modes = document.createElement('p');
+  modes.className = 'hint';
+  modes.textContent = `Listed under: ${modeTags.join(', ')}. `
+    + 'A mode needs its rule set and its objectives before the library lists the map under it.';
+  body.appendChild(modes);
 
   const mineId = modioMineMap()[map.guid];
   let owned = null;
@@ -3634,6 +3697,7 @@ async function openUploadDialog() {
             if (!logoBlob) { ui.status('Rendering a shot of the map…'); logoBlob = await vp.captureMapImage(); shot.src = URL.createObjectURL(logoBlob); }
             ui.status('Zipping the map…');
             const zip = await modfileArchive(currentMapText(), mapFileName(map.name, map.guid));
+            const tags = modeTags;
 
             let modId = updateMode && owned ? owned.id : null;
             let modResult = owned;
@@ -3641,13 +3705,25 @@ async function openUploadDialog() {
               ui.status('Creating the mod.io entry…');
               modResult = await modioAddMod({
                 name: values.title, summary: values.summary, logo: logoBlob, visible: true,
+                tags, metadataBlob: mapMetadataBlob(),
               });
               modId = modResult.id;
             } else {
               // Always re-sent, even when the title and summary are unchanged —
               // otherwise a retaken screenshot never reaches mod.io on an update.
               ui.status('Updating the mod.io entry…');
-              modResult = await modioEditMod(modId, { name: values.title, summary: values.summary, logo: logoBlob });
+              modResult = await modioEditMod(modId, {
+                name: values.title, summary: values.summary, logo: logoBlob,
+                metadataBlob: mapMetadataBlob(),
+              });
+              // Tags are their own endpoints, and a map that gained a flag or
+              // lost a spawn zone since the last upload has to lose the tag
+              // with it — only the mode tags are ours to touch, so anything
+              // else the map carries is left where it is.
+              const had = (owned.tags || []).map((t) => t.name);
+              const ours = Object.values(MODE_TAGS);
+              await modioDeleteTags(modId, had.filter((t) => ours.includes(t) && !tags.includes(t)));
+              await modioAddTags(modId, tags.filter((t) => !had.includes(t)));
             }
 
             ui.status('Uploading the map file…');

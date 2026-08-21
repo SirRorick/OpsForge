@@ -705,3 +705,34 @@ export function missingRequirements(type, present) {
   const have = present instanceof Set ? present : new Set(present || []);
   return need.filter((r) => !r.types.some((t) => have.has(t))).map((r) => r.label);
 }
+
+// ---------------------------------------------------------------------------
+// The tags the library sorts a map by
+// ---------------------------------------------------------------------------
+// mod.io's "Map files" tag group is the game's mode list under another name,
+// and the in-headset browser lists a map under the modes it is tagged for. A
+// map published without them is in none of those lists — uploaded, visible on
+// the website, and unreachable from a headset, which is exactly what an
+// untagged upload looks like from the couch. The strings are mod.io's own and
+// have to match character for character, or the submission is rejected whole.
+//
+// What the game tags is what it would let someone *pick*: a mode the map holds
+// a rule set for, whose objectives are actually placed. Free For All needs
+// neither — any map plays that way — and Survival, going by every tagged map
+// in the library, rides on the rule set alone without its enemy spawner.
+export const MODE_TAGS = {
+  FreeForAll: 'Free For All',
+  Survival: 'Survival',
+  TeamDeathMatch: 'Team Death Match',
+  CaptureTheFlag: 'Capture The Flag',
+  Domination: 'Domination',
+};
+
+/** The mode tags a map earns. `present` is any set of its object types. */
+export function modeTagsFor(ruleSets, present) {
+  const types = new Set((ruleSets || []).map((r) => r.type));
+  return Object.entries(MODE_TAGS)
+    .filter(([type]) => type === 'FreeForAll' || types.has(type))
+    .filter(([type]) => type === 'Survival' || !missingRequirements(type, present).length)
+    .map(([, tag]) => tag);
+}

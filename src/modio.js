@@ -99,7 +99,13 @@ async function modioError(res) {
   return err;
 }
 
-/** Every call: `api_key` when there is no token, `Bearer` when there is. */
+/**
+ * Every call: `api_key` when there is no token, `Bearer` when there is. A
+ * `URLSearchParams` body needs its `Content-Type` set by hand — left to
+ * `fetch`, it appends `;charset=UTF-8`, and mod.io's tag endpoints reject
+ * that suffix with the same strict `application/x-www-form-urlencoded` check
+ * `modioFormRequest` already works around for the oauth endpoints.
+ */
 async function modioRequest(path, { method = 'GET', token, params, body } = {}) {
   const url = new URL(MODIO_HOST + path);
   if (!token) url.searchParams.set('api_key', MODIO_API_KEY);
@@ -107,6 +113,7 @@ async function modioRequest(path, { method = 'GET', token, params, body } = {}) 
     if (v != null) url.searchParams.set(k, v);
   }
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  if (body instanceof URLSearchParams) headers['Content-Type'] = 'application/x-www-form-urlencoded';
   const res = await fetch(url, { method, headers, body });
   if (!res.ok) throw await modioError(res);
   return res.status === 204 ? null : res.json();
@@ -190,7 +197,13 @@ export async function modioMyMods() {
   return body.data;
 }
 
-export async function modioAddMod({ name, summary, logo, visible = true, tags } = {}) {
+/**
+ * `metadataBlob` is the small JSON header the game itself submits beside every
+ * map — guid, edited time, and the bounds in metres. The library carries one
+ * on every map the game uploaded and on nothing else, so a map published
+ * without it is marked as not-from-the-game whatever its file says.
+ */
+export async function modioAddMod({ name, summary, logo, visible = true, tags, metadataBlob } = {}) {
   const token = modioToken();
   if (!token) throw new Error('Sign in to mod.io before publishing.');
   const form = new FormData();
@@ -198,25 +211,49 @@ export async function modioAddMod({ name, summary, logo, visible = true, tags } 
   if (summary) form.set('summary', summary);
   form.set('logo', logo, 'logo.jpg');
   form.set('visible', visible ? '1' : '0');
+  if (metadataBlob) form.set('metadata_blob', metadataBlob);
   for (const tag of tags || []) form.append('tags[]', tag);
   return modioRequest(`/games/${MODIO_GAME_ID}/mods`, { method: 'POST', token, body: form });
 }
 
-export async function modioEditMod(id, { name, summary, logo } = {}) {
+export async function modioEditMod(id, { name, summary, logo, metadataBlob } = {}) {
   const token = modioToken();
   if (!token) throw new Error('Sign in to mod.io before editing.');
   const form = new FormData();
   if (name != null) form.set('name', name);
   if (summary != null) form.set('summary', summary);
   if (logo) form.set('logo', logo, 'logo.jpg');
+  if (metadataBlob) form.set('metadata_blob', metadataBlob);
   return modioRequest(`/games/${MODIO_GAME_ID}/mods/${id}`, { method: 'POST', token, body: form });
 }
+
+/**
+ * Tags live on their own endpoints — Edit Mod ignores a `tags[]` field, so
+ * changing them on an update means adding and removing them by hand. Adding
+ * one the mod already carries is harmless, which leaves only the stale ones
+ * needing a delete. Both endpoints want a form body rather than query
+ * parameters, the delete included.
+ */
+async function modioTagRequest(id, method, tags) {
+  const token = modioToken();
+  if (!token) throw new Error('Sign in to mod.io before editing.');
+  if (!tags?.length) return;
+  const body = new URLSearchParams();
+  for (const tag of tags) body.append('tags[]', tag);
+  await modioRequest(`/games/${MODIO_GAME_ID}/mods/${id}/tags`, { method, token, body });
+}
+
+export const modioAddTags = (id, tags) => modioTagRequest(id, 'POST', tags);
+export const modioDeleteTags = (id, tags) => modioTagRequest(id, 'DELETE', tags);
 
 export async function modioAddModfile(id, { zip, version, changelog, active = true } = {}) {
   const token = modioToken();
   if (!token) throw new Error('Sign in to mod.io before publishing.');
   const form = new FormData();
-  form.set('filedata', zip, 'map.zip');
+  // `upload.zip` is what the game names its own submissions, and mod.io keeps
+  // the name it was given — `upload-xxxx.zip` beside `map-xxxx.zip` is the one
+  // difference a person browsing the library would notice.
+  form.set('filedata', zip, 'upload.zip');
   if (version) form.set('version', version);
   if (changelog) form.set('changelog', changelog);
   form.set('active', active ? '1' : '0');
