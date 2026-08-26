@@ -3,14 +3,14 @@
 // ---------------------------------------------------------------------------
 
 import * as THREE from 'three';
-import { Viewport } from './scene.js';
+import { Viewport, PLAYABLE_SIZE, brandImage } from './scene.js';
 import {
   parseMap, serializeMap, newMap, newGuid, nowStamp, mapFileName,
   buildNavMask, encodeNavCloud, MAP_VERSION,
 } from './format.js';
 import {
   getPacks, getPack, registerPack, categoriesOf, packsInGroup, getByKey, iconUrl,
-  equivalentIn,
+  equivalentIn, teamVariants, teamVariant,
 } from './catalog.js';
 import {
   PACK_GROUPS, WEAPONS, WEAPON_ICONS, WEAPON_ANY, parseWeapons, formatWeapons,
@@ -22,6 +22,7 @@ import {
   describeFallback, effectiveValue, optionLabel, splitDuration, joinDuration,
   formatDuration, clampInt, outOfRange, newRuleSet, duplicateRuleSet,
   resetRuleSet, changeBaseMode, missingRequirements, modeByType, modeTagsFor, MODE_TAGS,
+  objectWeapon,
   INT, BOOL, ENUM, FLAGS,
 } from './rules.js';
 import { geometryFor } from './placeholders.js';
@@ -66,6 +67,7 @@ let placingLabel = null;    // set while a library pick-up is following the curs
   wireInspectorTabs();
   wireMirrorTool();
   wireArrayTool();
+  wireBrand();
   wirePrefabTool();
   wirePreviews();
   wirePreviewButton();
@@ -178,7 +180,7 @@ function snapshot() {
         props: { ...m.userData.props },
         p: p.toArray(), q: q.toArray(), s: s.toArray(),
         dirty: m.userData.dirty, raw: m.userData.raw, group: m.userData.group,
-        locked: !!m.userData.locked,
+        locked: !!m.userData.locked, hidden: !!m.userData.hidden,
       };
     }),
     selection: vp.objects.map((m) => vp.selection.has(m)),
@@ -193,7 +195,7 @@ function restore(snap) {
     const mesh = vp.addObject({
       type: rec.type, $type: rec.$type, props: rec.props,
       position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 },
-      raw: rec.raw, dirty: rec.dirty,
+      raw: rec.raw, dirty: rec.dirty, hidden: rec.hidden,
     });
     mesh.position.fromArray(rec.p);
     mesh.quaternion.fromArray(rec.q);
@@ -205,6 +207,9 @@ function restore(snap) {
   map.mapBoundsSize = { ...snap.bounds };
   vp.setBounds(map.mapBoundsSize);
   vp.setSelection(picked);
+  // Quietly, before `refreshAll` would do it loudly: putting a state back is
+  // not putting a foot over a line.
+  vp.refreshOutside(vp.objects, true);
   refreshAll();
 }
 
@@ -608,42 +613,6 @@ function selectionExtent() {
 }
 
 /**
- * Where each copy of an array goes, relative to the original.
- *
- * Shared by the tool and by the ghosts that preview it, so what you are shown
- * and what you get cannot drift apart. The steps are taken along the pivot's
- * axes rather than the world's, so a rotated piece arrays along its own length
- * instead of skewing off it; up stays up whatever the piece is doing. The
- * original occupies cell 0,0,0 and is not in the list.
- */
-function arraySteps({ nx, ny, nz, dx, dy, dz }) {
-  vp.pivot.updateMatrixWorld(true);
-  const basis = {
-    x: new THREE.Vector3(1, 0, 0).applyQuaternion(vp.pivot.quaternion),
-    y: new THREE.Vector3(0, 1, 0),
-    z: new THREE.Vector3(0, 0, 1).applyQuaternion(vp.pivot.quaternion),
-  };
-  const out = [];
-  for (let ix = 0; ix < nx; ix++) {
-    for (let iy = 0; iy < ny; iy++) {
-      for (let iz = 0; iz < nz; iz++) {
-        if (!ix && !iy && !iz) continue;
-        out.push({
-          // Each cell of the array gets its own group id, so the copies can be
-          // moved apart later without dragging the whole wall.
-          cell: `${ix},${iy},${iz}`,
-          step: new THREE.Vector3()
-            .addScaledVector(basis.x, ix * dx)
-            .addScaledVector(basis.y, iy * dy)
-            .addScaledVector(basis.z, iz * dz),
-        });
-      }
-    }
-  }
-  return out;
-}
-
-/**
  * Duplicate the selection into a grid of copies — five across and six high
  * builds a wall in one go, and widening the spacing turns the same wall into a
  * row of barricades.
@@ -661,7 +630,7 @@ function arraySelection({ nx, ny, nz, dx, dy, dz }) {
   const source = [...vp.selection];
   const made = [];
   const groups = new Map();
-  for (const { cell, step } of arraySteps({ nx, ny, nz, dx, dy, dz })) {
+  for (const { cell, step } of vp.arraySteps({ nx, ny, nz, dx, dy, dz })) {
     for (const m of source) {
       m.updateWorldMatrix(true, false);
       const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
@@ -701,26 +670,16 @@ function arraySelection({ nx, ny, nz, dx, dy, dz }) {
 }
 
 /**
- * Where the mirror across `axis` puts one object, and whether it had to be
- * turned inside out to get there.
+ * Where the mirror across `axis` puts one object, and how it had to be turned
+ * inside out to get there.
  *
- * Shared by the tool and by its ghosts. Chirality is asked of the *source*
- * piece: the copy's model may still be loading, and a themed swap is the same
- * shape anyway.
+ * Shared by the tool and by its ghosts, and the same call Flip makes with the
+ * plane somewhere other than the middle of the arena. Chirality is asked of the
+ * *source* piece: the copy's model may still be loading, and a themed swap is
+ * the same shape anyway.
  */
 function mirroredPlacement(mesh, axis) {
-  mesh.updateWorldMatrix(true, false);
-  const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
-  mesh.matrixWorld.decompose(p, q, s);
-  const turn = axis === 'x' ? [1, -1, -1] : [-1, -1, 1];   // quaternion x,y,z signs
-  const flipped = vp.needsMirrorFlip(mesh, axis);
-  if (flipped) s[axis] = -s[axis];
-  return {
-    position: new THREE.Vector3(axis === 'x' ? -p.x : p.x, p.y, axis === 'z' ? -p.z : p.z),
-    quaternion: new THREE.Quaternion(q.x * turn[0], q.y * turn[1], q.z * turn[2], q.w),
-    scale: s,
-    flipped,
-  };
+  return vp.reflectedPlacement(mesh, axis, 0);
 }
 
 /**
@@ -731,33 +690,35 @@ function mirroredPlacement(mesh, axis) {
  * so a piece two metres to the left comes back two metres to the right.
  *
  * A reflection is three things, not one. The position flips, obviously. The
- * rotation is reflected — under a mirror, a rotation about an axis becomes one
- * about the mirrored axis, which for the quaternion is negating the two
- * components perpendicular to the plane. And the piece itself has to be turned
- * inside out, which no rotation can do: that is a negative scale, always on the
- * object's own axis matching the mirror plane, and it is the difference between
- * a corner barrier that faces the right way and one that actually closes the
- * far corner.
+ * rotation is reflected. And the piece itself has to be turned inside out,
+ * which is the difference between a corner barrier that faces the right way and
+ * one that actually closes the far corner — see `reflectedPlacement` in
+ * scene.js for how much of that a half turn can do and how little is left for a
+ * negative scale.
  *
- * The flip is spent only where it buys something. `needsMirrorFlip` asks the
- * geometry whether the piece is already its own reflection; a crate, a cylinder
- * and a plain wall all are, and they export exactly as they always did.
- *
- * `packId` renders the copy in another theme, which is how you get a blue half
- * and an orange half. An entry with no equivalent there keeps its own.
+ * `into` renders the copy as something else, which is how you get a blue half
+ * and an orange half: `{ label, pick }`, where `pick` is handed each piece's
+ * catalog entry and returns what to build instead, or null to keep it. The two
+ * that exist are a theme, which swaps a Camo barrier for a Default one, and a
+ * team, which swaps a blue spawn zone for the orange one. A piece the picker
+ * has nothing for keeps its own.
  */
-function mirrorSelection(axis, packId = null) {
+function mirrorSelection(axis, into = null) {
   if (!vp.selection.size) return toast('Select something to mirror.');
   const made = [];
   const remap = new Map();
-  let swapped = 0, kept = 0, flipped = 0;
+  let already = 0, kept = 0, flipped = 0;
 
   for (const m of [...vp.selection]) {
     const placement = mirroredPlacement(m, axis);
 
-    const target = packId ? equivalentIn(m.userData.def, packId) : null;
+    const target = into ? into.pick(m.userData.def) : null;
     const def = target || m.userData.def;
-    if (packId) (target ? swapped++ : kept++, undefined);
+    // Two of the three outcomes are worth a word in the toast: a piece that was
+    // already what was asked for, and a piece with nothing of that kind to
+    // become — a genuinely partial library rather than a mistake. The third,
+    // the ones that swapped, is everything else and needs no counting.
+    if (into) { if (!target) kept++; else if (target === m.userData.def) already++; }
 
     const copy = vp.addObject({
       type: def.type,
@@ -771,7 +732,7 @@ function mirrorSelection(axis, packId = null) {
     copy.position.copy(placement.position);
     copy.quaternion.copy(placement.quaternion);
     copy.scale.copy(placement.scale);
-    if (placement.flipped) flipped++;
+    if (placement.flip !== 'none') flipped++;
     if (m.userData.group) {
       if (!remap.has(m.userData.group)) remap.set(m.userData.group, `g${groupSeq++}`);
       copy.userData.group = remap.get(m.userData.group);
@@ -785,13 +746,37 @@ function mirrorSelection(axis, packId = null) {
   mirrorHover = false;
   vp.setSelection(made);
   commit();
-  const where = packId ? ` as ${getPack(packId)?.name ?? packId}` : '';
+  const where = into ? ` as ${into.label}` : '';
+  const same = already ? `, ${already} already ${into.label}` : '';
   const missing = kept ? `, ${kept} with no equivalent kept as they were` : '';
   const turned = flipped ? `, ${flipped} turned inside out to face the other way` : '';
-  toast(`Mirrored ${made.length} object${made.length === 1 ? '' : 's'} across ${axis.toUpperCase()}${where}${missing}${turned}.`);
+  toast(`Mirrored ${made.length} object${made.length === 1 ? '' : 's'} across ${axis.toUpperCase()}${where}${same}${missing}${turned}.`);
   tip('mirror',
     'The copies are a reflection, not just a move: a piece with a left and a right comes out the '
     + 'other way round. Build one half of the arena, then mirror it.');
+}
+
+/**
+ * Turn a selection round where it stands, rather than copying it across the
+ * arena. Mirror's reflection with the plane moved to the selection's own middle
+ * and the copies left out — see `flipSelection` in scene.js.
+ *
+ * The objects stay selected afterwards. They are the same objects: a flip is an
+ * edit, and the next thing anyone does to a piece they have just turned round is
+ * nudge it.
+ */
+function flipSelection(meshes, axis) {
+  const targets = meshes.filter((m) => !m.userData.locked);
+  if (!targets.length) return toast('Nothing to flip.');
+  vp.setSelection(targets);
+  const n = vp.flipSelection(axis);
+  if (!n) return toast('Nothing to flip.');
+  commit();
+  toast(`Flipped ${n} object${n === 1 ? '' : 's'} across ${axis.toUpperCase()}.`);
+  tip('flip',
+    'Flip turns the selection round where it stands, the way Mirror turns a copy round on the far '
+    + 'side of the arena. Several pieces flip as one, so a run comes out as the run you would have '
+    + 'built from the other end.');
 }
 
 /**
@@ -827,7 +812,7 @@ function dropUnderGround() {
     : 'Already sitting under the ground — nothing to move.');
   tip('under',
     'Under ground is To floor upside down: the top of the object lands on the ground instead of '
-    + 'its bottom, so the whole of it is buried. A group goes down as one, keeping its stacking.');
+    + 'its bottom, so the whole of it is buried. A stack goes down as one, keeping its stacking.');
 }
 
 function groupSelection() {
@@ -1036,6 +1021,7 @@ function wireToolbar() {
     activeRuleSet = 0;
     buildRules();
     undoStack = []; redoStack = []; current = snapshot();
+    adoptMapGuides();
     // Back to where the editor opens. A new map is an empty arena, and leaving
     // the camera wherever the last map's far corner left it means starting the
     // new one looking at nothing — with no object on screen to say which way is
@@ -1094,6 +1080,20 @@ function wireToolbar() {
     toast(e.target.checked
       ? 'Boundaries hidden. They are still on the map and still exported.'
       : 'Boundaries shown.');
+  };
+
+  // The way back from Hide. Also a way of looking rather than a way of
+  // changing: what it does is bring the put-away objects into view faded, so
+  // one of them can be picked out and brought back for good.
+  $('show-hidden').onchange = (e) => {
+    vp.setShowHidden(e.target.checked);
+    buildOutliner();
+    refreshHiddenCount();
+    const n = vp.hiddenCount();
+    toast(e.target.checked
+      ? `Showing ${n} hidden object${n === 1 ? '' : 's'}, faded. Right-click one and pick Show `
+        + 'to bring it back for good.'
+      : 'Hidden objects put away again.');
   };
 
   $('b-undo').onclick = undo;
@@ -1250,23 +1250,100 @@ function wireInspectorTabs() {
     }
   };
   for (const t of tabs) t.onclick = () => show(t.dataset.pane);
+  showInspectorTab = (name, call = false) => {
+    show(name);
+    if (!call) return;
+    // A panel that changes with nothing else moving on screen is a panel nobody
+    // notices has changed, and someone sent here from the export reminder was
+    // looking at a dialog a moment ago rather than at the inspector. So the tab
+    // itself says where they have been put — twice, and then never again.
+    const tab = tabs.find((t) => t.dataset.pane === name);
+    if (!tab) return;
+    tab.classList.remove('calling');
+    void tab.offsetWidth;                    // restart the animation
+    tab.classList.add('calling');
+    tab.addEventListener('animationend', () => tab.classList.remove('calling'), { once: true });
+  };
   show('build');
 }
+
+/**
+ * Switch the inspector to a tab from elsewhere, optionally drawing attention to
+ * it on the way. Set by `wireInspectorTabs`.
+ */
+let showInspectorTab = () => {};
 
 /**
  * The mirror tool. It lives in the Build tab beside Array because the two are
  * the same kind of thing — one selection in, a lot of objects out — and both
  * want the object list they act on within reach.
  */
-function wireMirrorTool() {
-  const packSelect = $('mirror-pack');
-  for (const p of packsInGroup('virtual')) {
-    const o = document.createElement('option');
-    o.value = p.id;
-    o.textContent = p.name;
-    packSelect.appendChild(o);
+/** What the second box currently offers, in the order it lists them. */
+let mirrorTargetList = [];
+
+/**
+ * What the Mirror panel's second box currently offers, and what picking each
+ * one would build.
+ *
+ * Two different lists, because a selection is one kind of thing or the other. A
+ * wall belongs to a *theme* and the eleven virtual packs are its choices. A
+ * player spawn zone belongs to a *team*, and blue and orange are its only two —
+ * no themed pack holds a spawn zone at all, which is why offering the themes
+ * over one used to mirror the zone and leave it the colour it started.
+ *
+ * The team list appears only when the whole selection is one family, since that
+ * is when the answer is unambiguous. Mirror a half-arena with a spawn zone in
+ * it and the themes are back, which is right: the eleven pieces of wall are
+ * what the choice is about, and the zone goes across as itself.
+ */
+function mirrorTargets() {
+  const sel = [...vp.selection];
+  const family = sel.length && sel[0].userData.def.teamFamily;
+  if (family && sel.every((m) => m.userData.def.teamFamily === family)) {
+    return teamVariants(sel[0].userData.def).map((d) => ({
+      value: `team:${d.team}`,
+      // The damage boxes have a third member that belongs to nobody, and
+      // "Neutral Team" is not a thing anybody says.
+      label: d.team === 'Neutral' ? 'No team' : `${d.team} Team`,
+      pick: (def) => teamVariant(def, d.team),
+    }));
   }
-  $('b-mirror').onclick = () => mirrorSelection($('mirror-axis').value, packSelect.value || null);
+  return packsInGroup('virtual').map((p) => ({
+    value: `pack:${p.id}`,
+    label: p.name,
+    pick: (def) => equivalentIn(def, p.id),
+  }));
+}
+
+/**
+ * Fill the second box from the selection. Called on every selection change, and
+ * it keeps whatever was picked if that option still exists — swapping between
+ * two walls should not silently reset a chosen theme.
+ */
+function refreshMirrorTargets() {
+  const select = $('mirror-pack');
+  const was = select.value;
+  mirrorTargetList = mirrorTargets();
+  select.textContent = '';
+  const same = document.createElement('option');
+  same.value = '';
+  same.textContent = mirrorTargetList[0]?.value.startsWith('team:') ? 'Same team' : 'Same pack';
+  select.appendChild(same);
+  for (const t of mirrorTargetList) {
+    const o = document.createElement('option');
+    o.value = t.value;
+    o.textContent = t.label;
+    select.appendChild(o);
+  }
+  select.value = [...select.options].some((o) => o.value === was) ? was : '';
+}
+
+function wireMirrorTool() {
+  refreshMirrorTargets();
+  $('b-mirror').onclick = () => {
+    const chosen = mirrorTargetList.find((t) => t.value === $('mirror-pack').value) || null;
+    mirrorSelection($('mirror-axis').value, chosen);
+  };
 }
 
 /** Whatever the array boxes currently say, as the tool takes them. */
@@ -1368,6 +1445,7 @@ let arrayPreviewOn = false;   // armed by the array boxes and by a new selection
 let arrayJustApplied = false; // the copies are real now; do not ghost them again
 let mirrorHover = false;      // the pointer, or the focus, is on the Mirror panel
 let dropHover = null;         // 'surface' | 'floor' | 'under' while one is under the pointer
+let flipHover = null;         // { meshes, axis } while a Flip row is under the pointer
 
 function wirePreviews() {
   const panel = $('sec-mirror');
@@ -1389,12 +1467,19 @@ function wirePreviews() {
 /**
  * Draw whichever tool has something to say, or nothing.
  *
- * A landing wins over the mirror, and the mirror over the array, because that
- * is the order the pointer put them in: you cannot be hovering a landing button
- * without having reached past the other two.
+ * A flip wins over a landing, a landing over the mirror, and the mirror over
+ * the array, because that is the order the pointer put them in: you cannot be
+ * hovering a landing button without having reached past the other two, and the
+ * right-click menu is over the top of all of it.
  */
 function refreshPreview() {
-  if (!vp.selection.size || vp.placing) return vp.clearGhosts();
+  if (vp.placing) return vp.clearGhosts();
+  // Flip first, and before the selection is consulted at all: the right-click
+  // menu reads what was clicked rather than what is selected, so a flip can be
+  // asked about an object that is not in the selection — or when there is no
+  // selection whatsoever.
+  if (flipHover) return vp.setGhosts(vp.flipGhosts(flipHover.meshes, flipHover.axis));
+  if (!vp.selection.size) return vp.clearGhosts();
   if (dropHover) return vp.setGhosts(vp.dropGhosts(dropHover));
   vp.setGhosts(mirrorHover ? mirrorGhosts() : arrayGhosts());
 }
@@ -1425,7 +1510,7 @@ function arrayGhosts() {
   if (spec.nx * spec.ny * spec.nz <= 1) return [];
   const source = [...vp.selection];
   const out = [];
-  for (const { step } of arraySteps(spec)) {
+  for (const { step } of vp.arraySteps(spec)) {
     for (const m of source) {
       if (out.length >= GHOST_LIMIT) return out;
       m.updateWorldMatrix(true, false);
@@ -1566,7 +1651,7 @@ function buildSelectionPanel() {
       <button class="btn ghost" id="s-drop"
         title="Let it fall until it rests on whatever is underneath — the top of another object, or the ground. Loose objects each find their own landing; a group falls as one and keeps its stacking (Shift+End)">Drop</button>
       <button class="btn ghost" id="s-floor"
-        title="Put it on the ground, whatever is in the way. A group goes down as one, so a stack lands stacked (End)">To floor</button>
+        title="Put it on the ground, whatever is in the way. Anything stacked or grouped goes down as one, so a stack lands stacked; pieces standing apart each land on their own (End)">To floor</button>
       <button class="btn ghost" id="s-under"
         title="Put it under the ground — the same landing as To floor, on the other side of it, so the top face sits on y=0 and none of it shows (Ctrl+End)">Under ground</button>
     </div>
@@ -1909,6 +1994,9 @@ function applyNumericEdit() {
     );
     for (const m of list) vp.markDirty(m);
   }
+  // The three boxes can put a piece off the floor or outside the square as
+  // surely as a drag can, so they end the same way a drag does.
+  vp.settle();
   vp.rebuildPivot();
   commit();
 }
@@ -2390,7 +2478,12 @@ function flagsControl(rs, f, clear) {
   const wrap = document.createElement('div');
   wrap.className = 'flagset';
   const chosen = new Set(parseFlags(effectiveValue(rs, f.key), f.options));
-  const weapons = (f.options || []).every((o) => WEAPON_ICONS[o]);
+  // The icons are keyed the way a map object names a weapon and these options
+  // are named the way a rule names one, which for four of the nine is not the
+  // same word. `objectWeapon` is the bridge; see the note at the top of
+  // rules.js for why there are two spellings at all.
+  const weaponIcon = (o) => WEAPON_ICONS[objectWeapon(o)];
+  const weapons = (f.options || []).every((o) => weaponIcon(o));
 
   const push = (next) => {
     setValue(rs, f.key, f.kind, joinFlags([...next], f));
@@ -2441,7 +2534,7 @@ function flagsControl(rs, f, clear) {
     l.appendChild(cb);
     if (weapons) {
       const img = document.createElement('img');
-      img.src = iconUrl({ icon: WEAPON_ICONS[opt] });
+      img.src = iconUrl({ icon: weaponIcon(opt) });
       img.alt = '';
       img.loading = 'lazy';
       l.appendChild(img);
@@ -2587,28 +2680,43 @@ function groupRow(id, members) {
 
 function objectRow(m, child) {
   const row = document.createElement('div');
-  // A hidden boundary stays in the list, because it is still in the map and a
-  // list that quietly loses rows is worse than one that greys them. Clicking it
-  // brings the boundaries back rather than putting a gizmo on thin air.
+  // Anything out of sight stays in the list, because it is still in the map and
+  // a list that quietly loses rows is worse than one that greys them. Clicking
+  // it brings it back into view rather than putting a gizmo on thin air — and
+  // which switch does that depends on why it went: the Boundaries one for an
+  // invisible wall, Show hidden for something put away by hand. An object can
+  // be both, so the boundaries come back first.
+  const away = !!m.userData.hidden;
   const unseen = !m.visible;
+  const reveal = () => {
+    if (!m.visible) showBoundaries();
+    if (!m.visible && away) revealHidden();
+  };
   row.className = 'row' + (vp.selection.has(m) ? ' on' : '') +
-    (child ? ' child' : '') + (m.userData.locked ? ' locked' : '') + (unseen ? ' unseen' : '');
+    (child ? ' child' : '') + (m.userData.locked ? ' locked' : '') + (unseen ? ' unseen' : '') +
+    (away ? ' away' : '');
   const dot = document.createElement('i');
   dot.className = 'dot';
   dot.style.background = m.userData.def.color;
   const t = document.createElement('span');
   t.className = 't';
   t.textContent = m.userData.def.label;
-  if (unseen) row.title = 'Hidden by the Hide boundaries switch. Click to show them again.';
+  if (away) {
+    row.title = unseen
+      ? 'Hidden. Click to bring the hidden objects into view, then right-click for Show.'
+      : 'Hidden, and shown faded because Show hidden is on. Right-click for Show.';
+  } else if (unseen) {
+    row.title = 'Hidden by the Hide boundaries switch. Click to show them again.';
+  }
   row.append(dot, t, lockToggle([m], !!m.userData.locked));
   const index = outlinerOrder.length;
   outlinerOrder.push([m]);
   row.onclick = (e) => {
-    if (!m.visible) showBoundaries();
+    reveal();
     outlinerRowClick(e, index, [m]);
   };
   row.ondblclick = () => {
-    if (!m.visible) showBoundaries();
+    reveal();
     outlinerRowDblClick(m);
   };
   row.oncontextmenu = (e) => {
@@ -2632,6 +2740,8 @@ function showContextMenu(x, y, meshes) {
   if (!meshes.length) return;
   const locked = meshes.every((m) => m.userData.locked);
   const mixed = !locked && meshes.some((m) => m.userData.locked);
+  const away = meshes.every((m) => m.userData.hidden);
+  const someAway = !away && meshes.some((m) => m.userData.hidden);
   const many = meshes.length > 1;
 
   const el = document.createElement('div');
@@ -2639,12 +2749,23 @@ function showContextMenu(x, y, meshes) {
   el.style.left = `${x}px`;
   el.style.top = `${y}px`;
 
-  const item = (label, hint, fn, disabled = false) => {
+  // `preview` is what the row would do, drawn in the viewport while the pointer
+  // is on it. The menu covers a corner of the view and the ghosts are in the
+  // middle of it, so a row can show its own answer without being in the way of
+  // it — see `flipHover`, which is the one row where the answer is not obvious
+  // from the words.
+  const item = (label, hint, fn, disabled = false, preview = null) => {
     const b = document.createElement('button');
     b.type = 'button';
     b.disabled = disabled;
     b.innerHTML = `<span>${escapeHtml(label)}</span>` + (hint ? `<kbd>${escapeHtml(hint)}</kbd>` : '');
     b.onclick = () => { hideContextMenu(); fn(); };
+    if (preview && !disabled) {
+      b.addEventListener('pointerenter', () => { flipHover = preview; refreshPreview(); });
+      b.addEventListener('pointerleave', () => {
+        if (flipHover === preview) { flipHover = null; refreshPreview(); }
+      });
+    }
     el.appendChild(b);
     return b;
   };
@@ -2678,7 +2799,23 @@ function showContextMenu(x, y, meshes) {
   sep.className = 'ctxsep';
   el.appendChild(sep);
 
+  // Its own band, between locking and everything that edits. Both are about
+  // whether a piece is in your way rather than about what the piece is, and
+  // neither changes the map. Hide is offered for a locked object too: locking
+  // it is a reason to want it out of the way, not a reason to keep looking
+  // at it.
+  if (away || someAway) item(someAway ? 'Show all' : 'Show', '', () => showObjects(meshes));
+  if (!away) item(many ? `Hide ${meshes.length}` : 'Hide', '', () => hideObjects(meshes));
+
+  const sep0 = document.createElement('div');
+  sep0.className = 'ctxsep';
+  el.appendChild(sep0);
+
   item('Select', '', () => vp.setSelection(meshes), locked);
+  item('Flip across X', '', () => flipSelection(meshes, 'x'), locked,
+    { meshes, axis: 'x' });
+  item('Flip across Z', '', () => flipSelection(meshes, 'z'), locked,
+    { meshes, axis: 'z' });
   item('Swap theme…', '', () => showThemeMenu(x, y, meshes), locked);
   item('Replace…', '', () => openReplace(meshes), locked);
   item('Export prefab…', '', () => exportPrefab(meshes), locked);
@@ -2697,6 +2834,10 @@ function showContextMenu(x, y, meshes) {
 function hideContextMenu() {
   contextMenuEl?.remove();
   contextMenuEl = null;
+  // The menu is gone, so the row the pointer was on is gone with it. Nothing
+  // else clears this: `pointerleave` does not fire on a button that has been
+  // removed from under the pointer.
+  if (flipHover) { flipHover = null; refreshPreview(); }
 }
 
 /**
@@ -2924,6 +3065,70 @@ function swapTheme(packId, targets) {
     + 'materials. Pieces the target theme does not have are left where they are.');
 }
 
+// -- putting things out of the way -------------------------------------------
+// A roof over the room you are building, an outer wall between the camera and
+// everything behind it, the mezzanine you finished an hour ago. All of them are
+// finished work that is now in the way, and the answer is neither to delete
+// them nor to keep fighting them.
+//
+// Hiding is a way of looking, not a way of building: the objects stay on the
+// map, export exactly as they would have done, and come back with an undo. What
+// they stop doing is being *there* — no click, no marquee, no drop landing on
+// them, and nothing for the wheel or Orbit at cursor to catch on.
+//
+// The way back is the switch in the toolbar, which brings them into view faded
+// so you can find the one you want and put it back for good.
+
+function hideObjects(meshes) {
+  if (!meshes.length) return;
+  vp.setHidden(meshes, true);
+  // Not `commit`: nothing about the map changed, and an undo stack full of
+  // "hid a roof" is an undo stack that cannot reach the edit before it. It does
+  // go into the *next* snapshot, so an undo taken later does not resurrect it.
+  current = snapshot();
+  refreshAll();
+  const n = meshes.length;
+  toast(`Hid ${n} object${n === 1 ? '' : 's'}. Still on the map, still exported — `
+    + 'tick Show hidden in the toolbar to find them again.');
+  tip('hide',
+    'Hidden objects are out of the way of everything, not just out of sight: the camera will not '
+    + 'catch on one, a marquee will not pick one up, and a drop will not land on one.');
+}
+
+function showObjects(meshes) {
+  const away = meshes.filter((m) => m.userData.hidden);
+  if (!away.length) return;
+  vp.setHidden(away, false);
+  current = snapshot();
+  refreshAll();
+  toast(`Brought back ${away.length} object${away.length === 1 ? '' : 's'}.`);
+}
+
+/**
+ * Tick Show hidden, from somewhere that is not the switch — the outliner, where
+ * clicking a row you cannot see has to do something about not being able to
+ * see it. The mirror of `showBoundaries`.
+ */
+function revealHidden() {
+  if (vp.showHidden) return;
+  $('show-hidden').checked = true;
+  vp.setShowHidden(true);
+  buildOutliner();
+  toast('Hidden objects shown, faded. Right-click one and pick Show to bring it back for good.');
+}
+
+/** The count beside the toolbar switch, so you know there is something to find. */
+function refreshHiddenCount() {
+  const n = vp.hiddenCount();
+  const el = $('hidden-count');
+  if (el) el.textContent = n ? `${n}` : '';
+  const sw = $('show-hidden');
+  if (sw) {
+    sw.disabled = !n && !vp.showHidden;
+    sw.closest('.sw')?.classList.toggle('idle', !n && !vp.showHidden);
+  }
+}
+
 /** The padlock beside a row — and the only way back for a locked object. */
 function lockToggle(meshes, locked) {
   const b = document.createElement('button');
@@ -3129,6 +3334,7 @@ function wireViewport() {
     buildSelectionPanel();
     buildOutliner();
     refreshArrayDefaults();
+    refreshMirrorTargets();
     // A new selection is a new question for the array tool to answer — except
     // the one the tool makes for itself, which is the answer.
     arrayPreviewOn = !arrayJustApplied;
@@ -3137,6 +3343,8 @@ function wireViewport() {
     refreshStatus();
   });
   vp.addEventListener('transform', () => { refreshSelectionValues(); refreshStatus(); });
+  vp.addEventListener('outside', (e) => warnOutside(e.detail.fresh));
+  vp.addEventListener('ground-held', () => warnGroundOnly());
   vp.addEventListener('commit-end', () => commit());
   vp.addEventListener('placement-end', (e) => {
     const { committed, meshes } = e.detail;
@@ -3368,15 +3576,28 @@ async function loadMapText(text, sourceName) {
   vp.setSelection([]);
   vp.setView('persp');
   undoStack = []; redoStack = []; current = snapshot();
+  vp.refreshOutside(vp.objects, true);
+  // Before `refreshAll`, which paints the object bar and would otherwise open
+  // the budget dialog on the way past a line this map arrived on the far side
+  // of. A map already over the budget was built that way on purpose, and the
+  // objects already outside the playable square are somebody else's decision
+  // too: both are adopted rather than argued with. Both go back to asking as
+  // soon as this session puts a foot over the line.
+  adoptMapGuides();
   refreshAll();
 
   const unknown = new Set(
     vp.objects.filter((m) => m.userData.def.unknown).map((m) => m.userData.def.type)
   );
+  const outside = vp.outsideCount();
   let msg = `Loaded "${map.name}" — ${parsed.mapObjects.length} objects.`;
   if (parsed.version !== MAP_VERSION) msg += ` Map format v${parsed.version}, editor targets v${MAP_VERSION}.`;
   if (unknown.size) msg += ` ${unknown.size} type(s) not in any loaded pack: ${[...unknown].join(', ')}.`;
   if (resized) msg += ' Arena boundary grown to fit objects that landed outside it.';
+  if (outside) {
+    msg += ` ${outside} object${outside === 1 ? '' : 's'} outside the ${PLAYABLE_SIZE} m `
+      + 'playable square, marked in red — the headset will not draw those.';
+  }
   toast(msg, unknown.size > 0);
   $('st-file').textContent = sourceName;
 }
@@ -3402,9 +3623,33 @@ const UNNAMED = (name) => !name || !name.trim() || /^new map$/i.test(name.trim()
  * default is to ask: a maps folder full of "New Map" is not recoverable after
  * the fact, since the name is most of how you tell one from another.
  */
+/**
+ * What the map is missing that the game will notice and the editor cannot fix
+ * on its own.
+ *
+ * A name and an author because both are on screen in the game's map list beside
+ * the map, and neither can be added afterwards without re-exporting. Rules
+ * because a map with none is a map the game has nothing to play on it: the
+ * modes are picked from rule sets, and a file where every one of the five is
+ * untouched offers the player no way in.
+ *
+ * "Untouched" is the same test the Rules panel counts with. A new map carries
+ * all five modes with four empty dictionaries each, which is exactly what the
+ * game writes when nobody has been near the rules screen — so the presence of a
+ * rule set says nothing and the presence of a *setting* says everything.
+ */
+function exportGaps() {
+  return {
+    name: UNNAMED(map.name),
+    author: !map.author.trim(),
+    rules: !(map.ruleSets || []).some((rs) => overrideCount(rs) > 0),
+  };
+}
+
 function exportMap() {
-  if (tipsOn() && (UNNAMED(map.name) || !map.author.trim())) {
-    promptForMapDetails();
+  const gaps = exportGaps();
+  if (tipsOn() && (gaps.name || gaps.author || gaps.rules)) {
+    promptForMapDetails(gaps);
     return;
   }
   chooseExportDestination();
@@ -3434,21 +3679,60 @@ function writeMapFile() {
   }
 }
 
-function promptForMapDetails() {
-  const missing = UNNAMED(map.name) && !map.author.trim() ? 'a name and an author'
-    : UNNAMED(map.name) ? 'a name' : 'an author';
+function promptForMapDetails(gaps = exportGaps()) {
+  const body = document.createElement('div');
+
+  // The two that can be fixed here, in the dialog itself.
+  const needsDetails = gaps.name || gaps.author;
+  if (needsDetails) {
+    const missing = gaps.name && gaps.author ? 'a name and an author'
+      : gaps.name ? 'a name' : 'an author';
+    const p = document.createElement('p');
+    p.textContent = `This map still needs ${missing}. Both are shown in the game's map list, and `
+      + 'the name becomes the file name — a folder of maps all called "New Map" is hard to sort '
+      + 'out later. Fill them in here, or export as it is.';
+    body.appendChild(p);
+  }
+
+  // ...and the one that cannot: a rule set is half a screenful of settings and
+  // belongs in the panel built for it, not in a box in front of an export. So
+  // this says what is wrong and offers the way there.
+  if (gaps.rules) {
+    const p = document.createElement('p');
+    p.style.marginBottom = '0';
+    p.innerHTML = needsDetails
+      ? '<b>No game rules have been set either.</b> '
+      : '<b>No game rules have been set.</b> ';
+    p.append('The game picks its modes from the rule sets a map carries, and every one of this '
+      + "map's five is still exactly as it came — so the map will load with nothing to play on "
+      + 'it. Open the Rules tab and set up at least the mode you built this map for.');
+    body.appendChild(p);
+  }
+
   openDialog({
     title: 'Before you export',
-    body: `This map still needs ${missing}. Both are shown in the game's map list, and the name ` +
-      'becomes the file name — a folder of maps all called "New Map" is hard to sort out later. ' +
-      'Fill them in here, or export as it is.',
-    fields: [
-      { id: 'dlg-name', label: 'Name', value: UNNAMED(map.name) ? '' : map.name, placeholder: 'Map name' },
+    body,
+    fields: needsDetails ? [
+      { id: 'dlg-name', label: 'Name', value: gaps.name ? '' : map.name, placeholder: 'Map name' },
       { id: 'dlg-author', label: 'Author', value: map.author, placeholder: 'Your name' },
-    ],
+    ] : [],
+    // Going to the Rules tab ends the export rather than continuing it, which
+    // is the point: there is work to do there before this map is worth writing
+    // out. It is offered alongside Save and export rather than instead of it
+    // when both are wrong, so neither piece of advice is the price of the
+    // other — and it comes last when it is the only thing wrong, since Enter
+    // and the eye both land on the last button.
     actions: [
       { label: 'Export anyway', ghost: true, run: () => chooseExportDestination() },
-      {
+      ...(gaps.rules ? [{
+        label: 'Go to Rules',
+        ghost: needsDetails,
+        run: () => {
+          showInspectorTab('rules', true);
+          toast('Pick a mode and set its rules, then export again.');
+        },
+      }] : []),
+      ...(needsDetails ? [{
         label: 'Save and export',
         run: (values) => {
           if (values['dlg-name'].trim()) map.name = values['dlg-name'].trim();
@@ -3457,7 +3741,7 @@ function promptForMapDetails() {
           refreshMeta();
           chooseExportDestination();
         },
-      },
+      }] : []),
     ],
   });
 }
@@ -3612,6 +3896,62 @@ function openCodeDialog() {
  * mod it came from too — so it is confirmed live against `GET /me/mods`
  * before the update option is offered.
  */
+// -- the thumbnail somebody brings themselves ---------------------------------
+// A map's picture on mod.io is the whole of its first impression, and a render
+// of the arena is not always the best one anybody has — a poster, a photograph
+// of the room the map was built for, a shot taken in the headset.
+//
+// It is not on the panel because it is not for everyone. A library of maps whose
+// thumbnails are pictures of something other than the map is a library nobody
+// can browse, and the honest default — this is what the map looks like — is the
+// one worth keeping in front of the person who has not thought about it. So the
+// door exists and is not signposted: five clicks on the wordmark, which is a
+// thing nobody does by accident and anybody can be told.
+//
+// The wordmark itself gets no hover, no cursor and no pressed state. A control
+// that looks like a control has been signposted.
+
+const CUSTOM_LOGO_CLICKS = 5;
+let customLogoUnlocked = false;
+let brandClicks = 0;
+let brandClickTimer = null;
+
+function wireBrand() {
+  const brand = $('brand');
+  if (!brand) return;
+  brand.addEventListener('click', () => {
+    if (customLogoUnlocked) return;
+    brandClicks++;
+    // The run has to be a run. Left to accumulate for ever, a click a day for
+    // five days would open it, which is not a gesture anybody made.
+    clearTimeout(brandClickTimer);
+    brandClickTimer = setTimeout(() => { brandClicks = 0; }, 2500);
+    if (brandClicks < CUSTOM_LOGO_CLICKS) return;
+    customLogoUnlocked = true;
+    toast('Custom export image enabled for this session.');
+  });
+}
+
+/**
+ * Ask for a picture, crop and badge it, and hand it back. The input is reused
+ * and its value cleared, so choosing the same file twice in a row still fires.
+ */
+function pickCustomLogo(done) {
+  const input = $('logopick');
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) return;
+    try {
+      done(await brandImage(file));
+    } catch (err) {
+      console.error(err);
+      toast(`That image could not be read: ${err.message}`, true);
+    }
+  };
+  input.click();
+}
+
 async function openUploadDialog() {
   const body = document.createElement('div');
 
@@ -3622,11 +3962,31 @@ async function openUploadDialog() {
 
   let logoBlob = null;
   const setLogo = (blob) => { logoBlob = blob; shot.src = URL.createObjectURL(blob); };
-  shot.style.margin = '0 0 14px';
+  shot.style.margin = '0 0 8px';
 
-  // Retake / choose-a-file-instead are hidden for now — a top-down shot is
-  // taken automatically below, and the custom-thumbnail option may come back
-  // later.
+  // What the picture is, said once. The shot is taken from wherever the editor
+  // was looking when Export was pressed, and the only way to change it is to
+  // close this, frame the map, and press Export again — so the sentence is
+  // worth the two lines it costs.
+  const shotNote = document.createElement('p');
+  shotNote.className = 'hint';
+  shotNote.style.cssText = 'margin:0 0 14px';
+  shotNote.textContent = customLogoUnlocked
+    ? 'Taken from the view as you left it. Close this and reframe the map to take another, '
+      + 'or use a picture of your own.'
+    : 'Taken from the view as you left it. Close this and reframe the map to take another.';
+  body.appendChild(shotNote);
+
+  if (customLogoUnlocked) {
+    const choose = document.createElement('button');
+    choose.className = 'btn ghost';
+    choose.style.cssText = 'margin:0 0 14px';
+    choose.textContent = 'Upload an image…';
+    choose.title = 'Use a picture of your own. It is cropped to fill 16:9 and badged the '
+      + 'same way a screenshot is.';
+    choose.onclick = () => pickCustomLogo(setLogo);
+    body.appendChild(choose);
+  }
 
   // The library sorts by game mode, so this is the difference between a map
   // other players can find and one only its author ever sees. Shown before the
@@ -3923,6 +4283,166 @@ function confirmDialog({ title, body, confirmLabel, run }) {
 }
 
 // ---------------------------------------------------------------------------
+// Warnings
+// ---------------------------------------------------------------------------
+// Three things the editor will happily let you do that the game will not thank
+// you for, and none of them shows up until the map is in a headset:
+//
+//   the object budget   past about 700 objects the frame rate goes, and a map
+//                       that stutters is not a better map for having more in it
+//   the playable square the game draws a 60 m square and nothing outside it, so
+//                       an object placed entirely beyond that is simply absent
+//   enemy spawns        bots arrive on the ground under the pad wherever the pad
+//                       is, so a spawner on a rooftop delivers them into
+//                       whatever is standing below it
+//
+// All three are advice rather than rules, and all three are dismissible,
+// because the person building the map knows things this editor does not.
+// Dismissal lasts the session and no longer: it is not written to storage,
+// since a limit silently switched off two weeks ago is worse than no limit.
+//
+// The third has no override — it is held rather than warned about, because a
+// spawner off the ground is not a trade-off anyone would knowingly make. The
+// dialog explains why the piece would not stay where it was put.
+
+/** Where the frame rate starts to go, in objects. */
+const OBJECT_BUDGET = 700;
+
+let budgetOverride = false;    // "I know what I'm doing", for this session
+let budgetWarned = false;      // the count is over and has been mentioned
+let outsideDismissed = false;  // don't mention the playable square again
+let groundWarned = false;      // the enemy-spawn explanation has been given
+
+/**
+ * Paint the bar at the foot of the window, and speak up on the way past the
+ * line.
+ *
+ * The warning fires on the *crossing*, not on every object placed past it:
+ * `budgetWarned` latches on the way up and is cleared again when the count
+ * comes back under, so deleting thirty objects and adding them back asks once
+ * more, and nudging the four hundredth object into place asks not at all.
+ */
+/**
+ * The bar's colour at a given fraction of the budget: green, through amber, to
+ * red at the line.
+ *
+ * A slide rather than three steps, because the question the bar answers is how
+ * much room is left rather than whether the line has been crossed — and a bar
+ * that stays green until it suddenly is not answers the second one only. Hue
+ * alone moves; holding saturation and lightness keeps every point on the slide
+ * as legible as every other, which stepping through named colours does not.
+ *
+ * The green end is held for the first quarter. A map of forty objects is not
+ * "slightly full", and shading it towards amber would say it was.
+ */
+function budgetColour(ratio) {
+  const t = Math.min(1, Math.max(0, (ratio - 0.25) / 0.75));
+  // 142° is the green the rest of the editor uses; 0° is the danger red.
+  return `hsl(${(142 * (1 - t)).toFixed(0)} 62% 52%)`;
+}
+
+function refreshBudget() {
+  const n = vp.objects.length;
+  const el = $('budget');
+  if (!el) return;
+  const over = n > OBJECT_BUDGET;
+  const ratio = n / OBJECT_BUDGET;
+  $('budget-count').innerHTML = `<b>${n}</b> / ${OBJECT_BUDGET}`;
+  const fill = $('budget-fill');
+  fill.style.width = `${Math.min(100, ratio * 100)}%`;
+  // The class handles the two states off the slide; everything else is a colour.
+  fill.style.backgroundColor = budgetOverride ? '' : budgetColour(ratio);
+  el.classList.toggle('free', budgetOverride);
+  el.classList.toggle('over', !budgetOverride && over);
+  el.title = budgetOverride
+    ? `${n} objects. The ${OBJECT_BUDGET} object guide is off for this session.`
+    : over
+      ? `${n} objects — past the ${OBJECT_BUDGET} a headset comfortably draws. Expect the frame `
+        + 'rate to drop where the most is in view at once.'
+      : `${n} of about ${OBJECT_BUDGET} objects — the number a headset comfortably draws. `
+        + `Room for ${OBJECT_BUDGET - n} more.`;
+
+  if (!over) { budgetWarned = false; return; }
+  if (budgetWarned || budgetOverride) return;
+  budgetWarned = true;
+  openDialog({
+    title: 'That is a lot of objects',
+    body: `This map is up to ${n} objects. Past about ${OBJECT_BUDGET} the headset starts `
+      + 'to struggle — the map is still playable and still exports normally, but expect the '
+      + 'frame rate to drop, and expect it to drop hardest where the most is in view at once.',
+    actions: [
+      {
+        label: 'I know what I am doing',
+        ghost: true,
+        run: () => { budgetOverride = true; refreshBudget(); toast('Object guide off for this session.'); },
+      },
+      { label: 'OK', run: () => {} },
+    ],
+  });
+}
+
+/**
+ * Say, once, that something has been put where the headset will not draw it.
+ *
+ * Only for objects that have *just* gone outside, which is what the viewport's
+ * `outside` event carries. A map that arrives already holding some is painted
+ * and left alone — see `loadMapText`, which is where that is decided, and it is
+ * deliberate: a warning about somebody else's map, before a single edit, is a
+ * warning about nothing anyone in the room has done.
+ */
+function warnOutside(count) {
+  if (outsideDismissed) return;
+  openDialog({
+    title: 'Outside the playable area',
+    body: `${count === 1 ? 'That object is' : `${count} objects are`} entirely outside the `
+      + `${PLAYABLE_SIZE} × ${PLAYABLE_SIZE} meter square the game draws, and will not appear in `
+      + `the headset at all — the map will load and play but the object${count === 1 ? '' : 's'} `
+      + `will not be visible. Anything that overlaps the square even partly is drawn in full, so `
+      + 'a piece stretched out past the edge is fine. The ones out there are marked in red.',
+    actions: [
+      {
+        label: "Don't mention it again",
+        ghost: true,
+        run: () => { outsideDismissed = true; },
+      },
+      { label: 'OK', run: () => {} },
+    ],
+  });
+}
+
+/**
+ * Take a freshly opened map as given.
+ *
+ * A map over the budget is a map somebody built over the budget, and greeting
+ * them with a dialog about it is arguing with a decision already made — so the
+ * override starts on and the bar says so. A map with objects outside the
+ * playable square gets them painted and counted in the load message, and no
+ * dialog. Both revert to asking the moment this session pushes it further:
+ * `budgetWarned` clears on the way back under the line, and `outsideDismissed`
+ * is left alone so the first object *placed* outside still says something.
+ */
+function adoptMapGuides() {
+  budgetOverride = vp.objects.length > OBJECT_BUDGET;
+  budgetWarned = budgetOverride;
+  outsideDismissed = false;
+  groundWarned = false;
+}
+
+/** Say, once, why an enemy spawn will not come off the floor. */
+function warnGroundOnly() {
+  if (groundWarned) return;
+  groundWarned = true;
+  openDialog({
+    title: 'Enemy spawns stay on the ground',
+    body: 'An enemy spawn has been put back on the floor. The game spawns its bots on the '
+      + 'ground beneath the pad rather than on the pad itself, so a spawner lifted onto a crate '
+      + 'does not put enemies on the crate — it puts them inside whatever is standing under it, '
+      + 'which breaks the round. Move it across the floor to wherever the enemies should arrive.',
+    actions: [{ label: 'Understood', run: () => {} }],
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Tips
 // ---------------------------------------------------------------------------
 // First-time hints. Every one of them is something the editor cannot make
@@ -4161,6 +4681,13 @@ function refreshMeta() {
 }
 
 function refreshAll() {
+  // Everything that edits the map ends here, which makes it the one place that
+  // has to notice a piece having left the playable square. Objects built by
+  // Duplicate, Paste, Array, Mirror and Replace are all made at the origin and
+  // moved afterwards, so asking at the moment each was added would ask about
+  // the wrong place every time.
+  vp.refreshOutside();
+  refreshHiddenCount();
   buildOutliner();
   buildSelectionPanel();
   refreshModeAvailability();
@@ -4174,14 +4701,18 @@ function refreshAll() {
 function refreshStatus() {
   const n = vp.selection.size;
   $('sel-count').textContent = n ? `${n} selected` : 'none';
-  $('st-mode').textContent =
-    (vp.previewing ? 'walkaround · ' : '') +
-    (vp.trackpad ? `trackpad${vp.trackpadInverted ? ' inverted' : ''} · ` : '') +
-    `${vp.uniformScale ? 'uniform' : 'per-axis'} · ` +
-    `grid ${vp.snap.translate ? vp.snap.translate + 'm' : 'off'} · ` +
-    `angle ${vp.snap.rotate ? vp.snap.rotate + '°' : 'off'}` +
-    (vp.navPaint ? ` · brush ${vp.navPaint}` : '');
-  $('st-sel').textContent = `${vp.objects.length} objects · ${n} selected`;
+  // Only the modes you are currently in, and only the ones you cannot see for
+  // yourself: the snap settings and the scale mode are already legible in the
+  // controls that set them, so repeating them here just crowds the bar.
+  $('st-mode').textContent = [
+    vp.previewing ? 'walkaround' : '',
+    vp.trackpad ? `trackpad${vp.trackpadInverted ? ' inverted' : ''}` : '',
+    vp.navPaint ? `brush ${vp.navPaint}` : '',
+  ].filter(Boolean).join(' · ');
+  // The map's own object count lives in the budget bar; this says only what is
+  // selected, sitting beside the map name it belongs to.
+  $('st-sel').textContent = n ? `${n} selected` : '';
+  refreshBudget();
   $('b-undo').disabled = !undoStack.length;
   $('b-redo').disabled = !redoStack.length;
 

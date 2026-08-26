@@ -67,30 +67,106 @@ export const DICT_FOR_KIND = {
 export const FLAG_ALL = 'All';
 export const FLAG_NONE = 'None';
 
+// -- the same nine weapons, under two sets of names --------------------------
+// The game calls a weapon one thing when a map object names it and another when
+// a rule names it, and the two sets are not interchangeable:
+//
+//   "specificWeapon":"Sniper"                  on a WeaponSpawnPoint
+//   "HolsterWeaponsBackLeft":"SniperRifle"     in a rule set
+//
+// Both are confirmed, and by different evidence. The object spelling appears in
+// the reference exports and in the game's own asset names —
+// `WeaponRespawnTimeSniperRule`, `WeaponRespawnTimeHealthpackRule`. The rule
+// spelling comes from `reference/HolsterRules/`, two maps saved in-headset that
+// between them set every option of every holster: the four-of-five and
+// three-of-four selections in one, the single odd ones out in the other.
+//
+// Four of the nine differ, and they are exactly the four the rules screen gives
+// a different name to on screen. The rule dictionaries use the screen name with
+// its space taken out; the object fields use the internal one. `RiotShield` is
+// the near miss that shows this is not simply "the screen name": it is written
+// `RiotShield` in both, while the rules *asset* for it is spelled
+// `WeaponRespawnTimeRiotshieldRule` with a small s. Three spellings of one
+// weapon, and each belongs where it belongs.
+//
+// This is what made a holster read as None in game. The editor wrote `Sniper`
+// into a field that only accepts `SniperRifle`, the game matched nothing, and
+// nothing is None.
+
 /**
- * Weapon ids, in the order the rules screen lists them (which is not the order
- * the library lists them in). Confirmed: every one of these appears as a
- * `specificWeapon` value in a reference export.
+ * Weapon ids as a *map object* names them, in the order the rules screen lists
+ * them (which is not the order the library lists them in). Confirmed: every one
+ * appears as a `specificWeapon` value in a reference export, and every one is
+ * also a `WeaponRespawnTime<id>Rule` asset — which is what this list is for,
+ * since those key names are built from it.
  */
 const WEAPON_IDS = [
   'Handgun', 'SMG', 'Shotgun', 'Sniper', 'Grenade',
   'Healthpack', 'RiotShield', 'RPG', 'Flashbang',
 ];
 
-/** Which weapons each holster position accepts. From the spec, section 7. */
-const BACK_HOLSTER = ['SMG', 'Shotgun', 'Sniper', 'RiotShield', 'RPG'];
-const CHEST_HOLSTER = ['Handgun', 'Grenade', 'Healthpack', 'Flashbang'];
-const WAIST_HOLSTER = ['Handgun', 'Shotgun', 'Grenade', 'Healthpack', 'Flashbang'];
+/**
+ * The same weapon as a *rule* names it. Absent means the two agree, which is
+ * five of the nine.
+ */
+const RULE_WEAPON = {
+  Handgun: 'Revolver',
+  SMG: 'TommyGun',
+  Sniper: 'SniperRifle',
+  Healthpack: 'HealthKit',
+};
+
+/** And back again, for anything keyed by the object spelling — the icons are. */
+export const OBJECT_WEAPON = Object.fromEntries(
+  Object.entries(RULE_WEAPON).map(([object, rule]) => [rule, object])
+);
+
+/** The `specificWeapon` id for a weapon named the way a rule names it. */
+export function objectWeapon(value) {
+  return OBJECT_WEAPON[value] ?? value;
+}
+
+/**
+ * Which weapons each holster position accepts, in the order the game writes
+ * them. Both confirmed by `reference/HolsterRules/`, including the order: a
+ * back holster with everything but the Tommy Gun ticked wrote
+ * `Shotgun;SniperRifle;RiotShield;RPG`, which is this list minus its first
+ * entry.
+ */
+const BACK_HOLSTER = ['TommyGun', 'Shotgun', 'SniperRifle', 'RiotShield', 'RPG'];
+const CHEST_HOLSTER = ['Revolver', 'Grenade', 'HealthKit', 'Flashbang'];
+const WAIST_HOLSTER = ['Revolver', 'Shotgun', 'Grenade', 'HealthKit', 'Flashbang'];
+
+/**
+ * Allowed weapons, the seventh flags dropdown, in screen order.
+ *
+ * **Inferred, not confirmed.** No export to hand has ever carried an
+ * `AllowedWeapons` value, so nothing shows what the game writes for it. It is
+ * taken to share the holsters' spelling because it is the same kind of control
+ * in the same `flagsValues` dictionary, listing the same weapons under the same
+ * screen names, and the spec describes its None/All behaviour in the same
+ * breath as theirs. If a restricted weapon list turns out not to take in game,
+ * this line is the one to change — and the holsters above are settled either
+ * way, since those are measured.
+ */
+const ALLOWED_WEAPONS = WEAPON_IDS.map((w) => RULE_WEAPON[w] ?? w);
 
 /**
  * How an option reads in the editor, where the game's own id is not what the
  * rules screen calls it. Everything absent from here shows as its id.
+ *
+ * Both spellings appear, because both reach this function: the rule spellings
+ * label the holster chips, and the object spellings label the per-weapon
+ * respawn times, whose keys are built from `WEAPON_IDS`.
  */
 const OPTION_LABELS = {
   Handgun: 'Revolver',
   SMG: 'Tommy Gun',
   Sniper: 'Sniper Rifle',
   Healthpack: 'Health Kit',
+  TommyGun: 'Tommy Gun',
+  SniperRifle: 'Sniper Rifle',
+  HealthKit: 'Health Kit',
   RiotShield: 'Riot Shield',
   BlueTeam: 'Blue Team',
   OrangeTeam: 'Orange Team',
@@ -241,7 +317,7 @@ const KEYS = {
     kind: BOOL, label: 'Enable allowed weapons', confirmed: true, fallback: false,
   },
   AllowedWeapons: {
-    kind: FLAGS, label: 'Allowed weapons', fallback: FLAG_ALL, options: WEAPON_IDS,
+    kind: FLAGS, label: 'Allowed weapons', fallback: FLAG_ALL, options: ALLOWED_WEAPONS,
     when: (rs) => effectiveValue(rs, 'EnableAllowedWeapons') === true,
   },
 

@@ -181,9 +181,49 @@ untouched setting stays absent.
 ### Flags
 
 Multi-select values are semicolon-joined member lists. **A full selection is
-spelled out, not collapsed** — the one flags value any export contains was
-written `"Spawners;Holsters"` rather than `"All"`. `All` is a display
-convention of the in-game dropdown only.
+spelled out, not collapsed** — a back holster with four of its five weapons
+ticked was written `"Shotgun;SniperRifle;RiotShield;RPG"`, and the one
+two-of-two value any export contains was written `"Spawners;Holsters"` rather
+than `"All"`. `All` is a display convention of the in-game dropdown only.
+Members come out in the rules screen's own order rather than the order they
+were ticked.
+
+### The same weapon has two names
+
+A weapon is spelled one way when a map object names it and another when a rule
+names it, and the two are not interchangeable:
+
+```
+"specificWeapon":"Sniper"                    a WeaponSpawnPoint
+"HolsterWeaponsBackLeft":"SniperRifle"       a rule set
+```
+
+Four of the nine differ, and they are exactly the four the rules screen shows
+under a different name:
+
+| Object | Rule | On screen |
+|---|---|---|
+| `Handgun` | `Revolver` | Revolver |
+| `SMG` | `TommyGun` | Tommy Gun |
+| `Sniper` | `SniperRifle` | Sniper Rifle |
+| `Healthpack` | `HealthKit` | Health Kit |
+| `Shotgun` `RiotShield` `RPG` `Grenade` `Flashbang` | the same | Riot Shield, … |
+
+Both halves are confirmed and by different evidence. The object spelling appears
+as `specificWeapon` in the reference exports and again in the game's own asset
+names — `WeaponRespawnTimeSniperRule`, `WeaponRespawnTimeHealthpackRule`, which
+is why the per-weapon respawn *keys* keep it. The rule spelling comes from two
+maps saved in-headset that between them set every option of every holster.
+
+The rule name is the screen name with its space taken out, but that is a
+description rather than a rule to derive from: `RiotShield` is written
+`RiotShield` in both namespaces while its own rule asset is
+`WeaponRespawnTimeRiotshieldRule`, with a small s. Three spellings of one
+weapon, each belonging where it belongs.
+
+Getting this wrong is silent. A holster sent a name the game does not recognise
+matches nothing and reads as **None** in the headset — no error, no warning, and
+a map that looks correct everywhere else.
 
 ### Still unconfirmed
 
@@ -191,6 +231,10 @@ convention of the in-game dropdown only.
   `Hard` and `Permadeath` are confirmed; `Off`, `BlueTeam`, `OrangeTeam`,
   `Individual`, `Team`, `UnlimitedLives`, `Easy` and `Normal` are the spec's
   option names and are what the editor writes if you pick them.
+- **How Allowed Weapons spells its weapons.** No export to hand has ever
+  carried an `AllowedWeapons` value. It is taken to share the holsters' spelling
+  above, being the same kind of control in the same dictionary listing the same
+  weapons under the same screen names, but nothing has been seen to confirm it.
 - **What a flags field emptied to nothing writes.** `None` is an option the
   rules screen offers on the holsters and on Allowed Weapons, so it serialises
   as something; `src/rules.js` writes `"None"`, and an empty string is the other

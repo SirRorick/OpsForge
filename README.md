@@ -96,9 +96,18 @@ the server until something asks for them.
 **Building**
 
 - 173 objects in 14 packs — eleven themes and the boundaries, plus gameplay
-  objects and mode objectives, drawn with the game's own meshes. Every object
+  objects and mode objectives, drawn with the game's own meshes. Boxes, walls,
+  cylinders and tunnels tile their texture as they are stretched, so four metres
+  of wall is four metres of brick rather than one smeared one. Every object
   also has a built-in stand-in shape, and the **Stand-ins** switch at the foot
   of the Library panel draws those instead at any time.
+- **Hide** on the right-click menu puts finished work out of the way — a roof
+  over the room you are building, an outer wall between the camera and
+  everything behind it. Hidden objects stay on the map and export exactly as
+  they would have done; what they stop doing is being *there*, so a click, a
+  marquee, a drop, the wheel and **Orbit at cursor** all pass straight through
+  where they used to be. **Show hidden** in the toolbar brings them back faded
+  so you can pick one out and restore it for good.
 - **Boundaries** are the game's invisible walls, the AR half of the library: a
   box, a cylinder and a wall that give collision without being drawn, so a real
   coffee table becomes cover and a real sofa becomes something to hide behind.
@@ -106,8 +115,22 @@ the server until something asks for them.
   **Hide boundaries** in the toolbar takes them out of the view entirely.
 - **Custom Text Message** puts a line of your own text on a pane in the arena,
   with a tick for whether players see it or only you.
+- **Weapon spawners** are drawn holding the weapon they would produce, at the
+  height and the angle the game holds it — across the crate rather than along
+  it. A spawner offering several shows the longest, since that is the one whose
+  clearance is in question: an RPG is a metre long, and a spawner set flush
+  against a wall spawns it with its tube through the wall.
+- **Damage boxes** are drawn as the crackling volume they are in the headset
+  rather than as a solid slab, so you can see what is standing inside the
+  region they mark.
 - **Swap theme** on the right-click menu rebuilds a selection in another theme
   where it stands, keeping every position, angle and size.
+- **Flip across X** and **Flip across Z**, also on the right-click menu, turn a
+  selection round where it stands rather than copying it across the arena. A
+  piece with a left and a right comes out the other way round; several pieces
+  flip as one, so a run comes out as the run you would have built from the
+  other end. Hovering either row draws the result in the view before you commit
+  to it, and the selection stays live afterwards.
 - One gizmo for everything: arrows move, three coloured circles turn about X, Y
   and Z, cubes scale from the far side, and the centre disc slides across the
   floor.
@@ -119,7 +142,27 @@ the server until something asks for them.
 - **To floor**, **Drop** and **Under ground** land a selection on the ground, on
   whatever is beneath it, or under the ground with nothing showing. Hovering
   any of the three draws the selection where it would land, so the three are
-  told apart by looking rather than by reading.
+  told apart by looking rather than by reading. What falls together is whatever
+  is standing on what: a stack lands stacked whether or not it was ever grouped,
+  and pieces standing apart each land on their own. The under-ground preview is
+  drawn through the floor and through the object it is about to leave, since a
+  hologram of somewhere you cannot see is no preview at all.
+
+**Three things the headset minds and the editor cannot show you**
+
+- A bar across the foot of the window fills as objects are placed, and is full
+  at **700**. Past that the frame rate goes — the map still plays and still
+  exports, it just stutters. The warning can be overridden for the session, and
+  a map opened with more than 700 in it starts overridden, because that is a
+  decision its author already made.
+- The game draws a **60 x 60 metre square** and nothing outside it. An object
+  placed entirely beyond that loads and exports perfectly and then is simply
+  not there in the headset, so the editor paints those red and says so once.
+  Anything overlapping the square even partly is drawn in full, so stretching a
+  wall out past the edge is fine.
+- **Enemy spawns stay on the ground.** The game delivers its bots to the floor
+  beneath the pad wherever the pad is, so a spawner lifted onto a crate puts
+  enemies inside the crate. The editor holds them down and explains why once.
 
 **The view**
 
@@ -146,7 +189,9 @@ the server until something asks for them.
   sit flush.
 - **Mirror** copies half the arena to the other side as a true reflection, so
   pieces with a left and a right come out the other way round. Optionally in a
-  different theme, for a blue half and an orange half.
+  different theme, for a blue half and an orange half — and with player spawn
+  zones, capture flags or damage boxes selected, the same box offers the teams
+  instead, since a team is not a theme and no themed pack holds either.
 - Both show their work first: translucent copies stand where the current
   settings would put real ones, so the numbers need no guessing.
 
@@ -187,6 +232,8 @@ the server until something asks for them.
 - **Open** offers a choice between a file on this computer and the Spatial Ops
   map library, and **Export** offers a choice between writing a file and
   publishing to it. Browsing the library needs no sign-in.
+- The thumbnail is the view as you left it, so framing the map before pressing
+  Export is how you choose the picture. OpsForge is badged in the corner.
 - Publishing needs a mod.io sign-in: enter your email in the Export dialog,
   mod.io sends a 5-digit code, and entering that code back signs you in. This
   is the same sign-in the game itself uses in-headset — not a personal access

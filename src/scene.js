@@ -14,7 +14,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { geometryFor } from './placeholders.js';
 import { defFor, modelUrl, iconUrl, sameShapeFamily } from './catalog.js';
 import {
-  WEAPON_ICONS, WEAPON_ANY, parseWeapons,
+  WEAPON_ICONS, WEAPON_ANY, WEAPON_MODELS, WEAPON_HOVER, parseWeapons, longestWeapon,
   ENEMY_ICONS, ENEMY_MODELS, ENEMY_TYPES, ENEMY_ANY, parseEnemyTypes,
   BOUNDARY_PACK,
 } from './packs.js';
@@ -23,6 +23,29 @@ import { decodeNavCloud, NAV_SPACING } from './format.js';
 
 const ACCENT = 0xe8c547;
 const CYAN = 0x4ec9e0;
+const ALARM = 0xd8352a;
+// Gunmetal, for the weapon a spawner holds. See `_loadWeapon`: the game's
+// preview prefabs carry no art at all, so the mesh is its own and the colour
+// is the editor's.
+const WEAPON_TINT = '#9aa5ae';
+// What a weapon prefab's `Visuals` carries besides the weapon. See
+// `_weaponPart`, which is the only place this is used and where each of these
+// is accounted for.
+const WEAPON_KIT =
+  /attachment|LOD[1-9]|ModelLODs|SlotMagazine|ReloadMagazine|MagazineReload|ReloadRocket|SpeedLoader|Highlight|HealthCounter|Image_|Instruction|(^|\/)Mesh$/i;
+
+// -- the square the headset draws --------------------------------------------
+// Sixty metres on a side, centred on the origin, and the Arena boxes in the
+// World tab cap X and Z at exactly that. What is new here is what happens
+// outside it: an object placed entirely beyond the square loads, exports and
+// reads back perfectly, and then does not appear in the headset at all.
+//
+// Entirely is the word. A piece that starts inside and is stretched out past
+// the edge is drawn in full, so the test is whether *any* of an object's box is
+// still within the square — not whether all of it is. Height is not part of it;
+// only the floor plan is bounded.
+export const PLAYABLE_SIZE = 60;
+const PLAYABLE_HALF = PLAYABLE_SIZE / 2;
 
 // -- the camera gestures -----------------------------------------------------
 // A mouse and a trackpad ask for the view to move in quite different ways, and
@@ -80,6 +103,14 @@ const PREVIEW_KEYS = {
  * editor draws now means what the map file means by it.
  */
 const MAP_FRAME = new THREE.Quaternion().fromArray(MODEL_YAW);
+
+/**
+ * A half turn about the object's own Y, as mirroring uses it — the same number
+ * as `MAP_FRAME` and nothing to do with it. That one is a frame conversion
+ * between the map file and the mesh; this one is a piece being turned round to
+ * face the other way. Two things that happen to be the same rotation.
+ */
+const HALF_TURN_Y = new THREE.Quaternion(0, 1, 0, 0);
 
 // -- prefab meshes -----------------------------------------------------------
 // A missing asset is normal, not an error, so each one is mentioned once.
@@ -172,10 +203,15 @@ function seatOnFloor(geometry, def) {
 /**
  * Which prefabs tile their texture with the object's scale.
  *
- * The three building blocks in the Shapes category, and only those: solid box,
- * solid wall, solid cylinder, plus their grounded twins and every pack's take on
- * them — `sameShapeFamily` is what pulls `wallLayered`, `wallPlain` and
- * `wallPlank` in with `wall`.
+ * The building blocks, and only those: solid box, solid wall, solid cylinder
+ * and tunnel, plus their grounded twins and every pack's take on them —
+ * `sameShapeFamily` is what pulls `wallLayered`, `wallPlain` and `wallPlank`
+ * in with `wall`.
+ *
+ * The tunnel belongs with the other three for the same reason they belong with
+ * each other: it is a doorway dragged out to whatever width the gap needs, in
+ * every theme, and a tunnel stretched to four metres was four metres of one
+ * brick. Nothing about it is painted for a particular size.
  *
  * These are the pieces you build *out of*, sized to the job: a wall is dragged
  * to whatever length the cover needs, and its texture is a material that should
@@ -184,7 +220,7 @@ function seatOnFloor(geometry, def) {
  * painted for that object at that size. Scaling one of those is deforming a
  * prop, and its art should deform with it, so those stretch as they always did.
  */
-const TILED_SHAPES = ['box', 'cylinder', 'wall'];
+const TILED_SHAPES = ['box', 'cylinder', 'wall', 'tunnel'];
 const tilesWithScale = (def) =>
   !!def?.shape && TILED_SHAPES.some((shape) => sameShapeFamily(def.shape, shape));
 
@@ -324,6 +360,84 @@ function tileWithScale(material) {
   };
   return material;
 }
+
+// -- the electric field ------------------------------------------------------
+// The shader behind `_refreshField`. One unit cube stretched to whatever volume
+// it is filling, so `position` arrives as [-0.5, 0.5] on every axis whatever
+// size the box has been dragged to.
+//
+// `vCell` is that position multiplied back up by the object's world scale —
+// the same `modelMatrix` column-length trick the texture tiling uses — so the
+// arcs stay a fixed size in metres instead of stretching with the box. A damage
+// box ten metres long has ten metres of crackle in it, not one stretched
+// crackle.
+
+const UNIT_BOX = new THREE.BoxGeometry(1, 1, 1);
+
+const FIELD_VERTEX = /* glsl */`
+	varying vec3 vCell;
+	varying vec3 vLocal;
+	void main() {
+		vec3 scale = vec3(
+			length( modelMatrix[ 0 ].xyz ),
+			length( modelMatrix[ 1 ].xyz ),
+			length( modelMatrix[ 2 ].xyz ) );
+		vLocal = position;
+		vCell = position * scale;
+		gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+	}
+`;
+
+const FIELD_FRAGMENT = /* glsl */`
+	uniform float uTime;
+	uniform vec3 uColour;
+	varying vec3 vCell;
+	varying vec3 vLocal;
+
+	float hash( vec3 p ) {
+		return fract( sin( dot( p, vec3( 12.9898, 78.233, 37.719 ) ) ) * 43758.5453 );
+	}
+
+	// Ordinary value noise. Smooth enough that thresholding it gives a curve
+	// rather than a staircase, which is the whole point: an arc is a line.
+	float noise( vec3 p ) {
+		vec3 i = floor( p );
+		vec3 f = fract( p );
+		f = f * f * ( 3.0 - 2.0 * f );
+		float n000 = hash( i );
+		float n100 = hash( i + vec3( 1.0, 0.0, 0.0 ) );
+		float n010 = hash( i + vec3( 0.0, 1.0, 0.0 ) );
+		float n110 = hash( i + vec3( 1.0, 1.0, 0.0 ) );
+		float n001 = hash( i + vec3( 0.0, 0.0, 1.0 ) );
+		float n101 = hash( i + vec3( 1.0, 0.0, 1.0 ) );
+		float n011 = hash( i + vec3( 0.0, 1.0, 1.0 ) );
+		float n111 = hash( i + vec3( 1.0, 1.0, 1.0 ) );
+		return mix(
+			mix( mix( n000, n100, f.x ), mix( n010, n110, f.x ), f.y ),
+			mix( mix( n001, n101, f.x ), mix( n011, n111, f.x ), f.y ), f.z );
+	}
+
+	void main() {
+		// Two fields drifting past each other. Where they agree is a thin
+		// surface through the volume, and a thin surface seen on a face is a
+		// line — which is what an arc looks like.
+		float a = noise( vCell * 3.0 + vec3( 0.0, uTime * 0.55, 0.0 ) );
+		float b = noise( vCell * 4.5 - vec3( uTime * 0.4, 0.0, uTime * 0.22 ) );
+		float arc = pow( clamp( 1.0 - abs( a - b ) * 11.0, 0.0, 1.0 ), 5.0 );
+
+		// The box's own edges, so the region it marks stays readable between
+		// arcs. An edge is where two of the three local coordinates are at
+		// their limit at once.
+		vec3 e = smoothstep( 0.44, 0.5, abs( vLocal ) );
+		float edge = max( min( e.x, e.y ), max( min( e.y, e.z ), min( e.x, e.z ) ) );
+
+		float glow = arc * 0.9 + edge * 0.5;
+		// A haze thin enough to see a crate through and thick enough to say the
+		// volume is there at all.
+		float alpha = 0.05 + glow;
+		gl_FragColor = vec4( uColour * ( 0.5 + glow * 1.8 ), alpha );
+	}
+`;
 
 /**
  * Settings for an object the catalog marks translucent. A damage box marks a
@@ -788,6 +902,25 @@ function isMirrorSymmetric(geometry, axis) {
 }
 
 /**
+ * Is this catalog entry its own reflection across `axis`?
+ *
+ * `isMirrorSymmetric` answers off the vertices, which is the right evidence
+ * right up until the asymmetry is not in the vertices at all. A jumbotron is a
+ * symmetric frame with a screen painted on one face of it; a message pane is a
+ * symmetric card with a line of text on one face; a weapon spawner is a
+ * symmetric crate with a gun lying across the top. Mirror any of the three by
+ * the geometry's answer and it comes out facing the way it came in.
+ *
+ * So a `facing` axis in the catalog overrides the measurement outright rather
+ * than adding to it: it says which axis the piece reads differently along, and
+ * that it is its own reflection across the other one.
+ */
+function mirrorSymmetric(def, axis) {
+  if (def?.facing) return def.facing !== axis;
+  return isMirrorSymmetric(geometryFor(def), axis);
+}
+
+/**
  * Flatten the parts of a prefab that draw a volume rather than a solid.
  *
  * A player spawn zone ships as a one metre cube centred on the object's origin.
@@ -852,6 +985,58 @@ function drawWordmark(ctx, w, h) {
   ctx.shadowBlur = 0;
 }
 
+// -- what counts as standing on something -------------------------------------
+// Two numbers, and both are about telling a stack from an arrangement.
+//
+// `STACK_GAP` is how far apart two pieces may be and still be one stack. A
+// crate placed on a crate leaves nothing between them; a crate placed by hand a
+// couple of centimetres proud is the same intention with a rounding error in
+// it. A crate a metre above another is a shelf and a floor, and those are two
+// bodies whatever else is true of them.
+//
+// `STACK_OVERLAP` is how much footprint has to be shared before one piece is on
+// top of another rather than beside it. Two crates in a row, pushed together
+// until their faces graze, share a millimetre of footprint through nothing but
+// floating point, and they are not a stack.
+const STACK_GAP = 0.05;        // 5 cm
+const STACK_OVERLAP = 0.01;    // 1 cm
+
+/** Is one of these two boxes standing on the other? */
+function stacked(a, b) {
+  if (Math.min(a.max.x, b.max.x) - Math.max(a.min.x, b.min.x) <= STACK_OVERLAP) return false;
+  if (Math.min(a.max.z, b.max.z) - Math.max(a.min.z, b.min.z) <= STACK_OVERLAP) return false;
+  // Negative where they overlap in height, which counts: a piece pushed into
+  // another is resting on it as surely as one sitting exactly on top.
+  return Math.max(a.min.y - b.max.y, b.min.y - a.max.y) <= STACK_GAP;
+}
+
+/**
+ * A picture of somebody's own, badged and sized like a captured one.
+ *
+ * The wordmark goes on a custom thumbnail for the same reason it goes on a
+ * rendered one: the corner of a map's library card is where OpsForge gets its
+ * only credit, and a map published with a photograph instead of a screenshot is
+ * still a map this editor built.
+ *
+ * Cropped to fill rather than letterboxed. mod.io's card is 16:9 whatever is
+ * handed to it, and bars down the side of somebody's artwork look like a
+ * mistake in a list of thumbnails that all fill their frame.
+ */
+export async function brandImage(file, w = 1280, h = 720) {
+  const bitmap = await createImageBitmap(file);
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  const scale = Math.max(w / bitmap.width, h / bitmap.height);
+  const dw = bitmap.width * scale;
+  const dh = bitmap.height * scale;
+  ctx.drawImage(bitmap, (w - dw) / 2, (h - dh) / 2, dw, dh);
+  bitmap.close?.();
+  drawWordmark(ctx, w, h);
+  return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.9));
+}
+
 export class Viewport extends EventTarget {
   constructor(canvas) {
     super();
@@ -866,6 +1051,8 @@ export class Viewport extends EventTarget {
     this.usePlaceholders = false;
     // Take the invisible walls out of the view — see setHideBoundaries.
     this.hideBoundaries = false;
+    this.showHidden = false;
+    this._faded = new Map();
     this.placing = null;
     this._pointer = null;
     this._nextId = 1;
@@ -875,6 +1062,11 @@ export class Viewport extends EventTarget {
     this._fixedParts = new Map();
     this._figures = new Map();
     this._figureCache = new Map();
+    this._weapons = new Map();
+    this._weaponCache = new Map();
+    this._outside = new Map();
+    this._fields = new Map();
+    this._fieldMaterials = new Map();
     this._screens = new Map();
     this._screenTextures = new Map();
     this._edges = new Map();
@@ -993,9 +1185,15 @@ export class Viewport extends EventTarget {
     this.scene.add(fill);
 
     // Ground catches shadows but is otherwise invisible.
+    //
+    // And does not write depth, for the same reason none of the other ground
+    // layers below do. A shadow catcher is two hundred metres of nothing, and a
+    // plane of nothing standing in the depth buffer hides everything under the
+    // floor behind it — which is exactly where the Under ground preview draws
+    // its ghosts.
     this.ground = new THREE.Mesh(
       new THREE.PlaneGeometry(200, 200),
-      new THREE.ShadowMaterial({ opacity: 0.32 })
+      new THREE.ShadowMaterial({ opacity: 0.32, depthWrite: false })
     );
     this.ground.rotation.x = -Math.PI / 2;
     this.ground.receiveShadow = true;
@@ -1055,6 +1253,28 @@ export class Viewport extends EventTarget {
       // "how many" nor "how far apart". Front faces only, as everything here
       // is, so a ghost cannot hide behind its own back wall.
       transparent: true, opacity: 0.62, depthWrite: true,
+    });
+    // The exception, for the ghosts that land under the floor. Under ground
+    // puts a piece where by definition nothing can be seen — which is the
+    // point of it, and useless in a preview whose whole job is to show where
+    // the piece is going to end up. Depth testing off, drawn last, so it reads
+    // as the hologram it is: the object itself is standing over the top of it,
+    // and the floor is in the way as well.
+    this.ghostThroughMaterial = new THREE.MeshStandardMaterial({
+      color: ACCENT, roughness: 0.65, metalness: 0,
+      transparent: true, opacity: 0.4, depthWrite: false, depthTest: false,
+    });
+    this.ghostGroup.renderOrder = 3;
+
+    // The skin worn by an object outside the playable square. Unlit and flat,
+    // because this is a marking rather than a material — a shaded red object
+    // reads as a red object, and the point is that something is wrong with
+    // where it is. Offset a hair towards the camera so it does not fight the
+    // surface it covers for the same pixels.
+    this._alarmMaterial = new THREE.MeshBasicMaterial({
+      color: ALARM, transparent: true, opacity: 0.85,
+      polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
+      side: THREE.DoubleSide,
     });
 
     this.pivot = new THREE.Group();
@@ -1572,7 +1792,13 @@ export class Viewport extends EventTarget {
       raw: mo.raw || null,
       dirty: !!mo.dirty,
       group: null,
+      // Put away by hand, and nothing to do with the map: an undo has to bring
+      // this back with the object, and an export has to ignore it entirely.
+      hidden: !!mo.hidden,
     };
+    // After `userData`, which it writes into — and which is replaced wholesale
+    // just above.
+    this._setMaterial(mesh, mesh.material);
     mesh.position.fromArray(convertPosition(mo.position));
     mesh.quaternion.fromArray(unityEulerToQuat(mo.rotation));
     mesh.scale.set(mo.scale.x, mo.scale.y, mo.scale.z);
@@ -1580,9 +1806,12 @@ export class Viewport extends EventTarget {
     this.objects.push(mesh);
     this._refreshBadge(mesh);
     this._refreshFigure(mesh);
+    this._refreshWeapon(mesh);
     this._refreshScreen(mesh);
     this._refreshEdges(mesh);
     this._refreshText(mesh);
+    this._refreshField(mesh);
+    this._refreshOutside(mesh);
     this.applyVisibility(mesh);
     if (def.model && !this.usePlaceholders) this._swapInModel(mesh, def);
     return mesh;
@@ -1607,7 +1836,9 @@ export class Viewport extends EventTarget {
       if (next) {
         this._dropFixedPart(mesh);
         mesh.geometry = geometryFor(def);
-        mesh.material = this.materialFor(def);
+        this._setMaterial(mesh, this.materialFor(def));
+        this._reskinOutside(mesh);
+        this._refreshField(mesh);
         // All three of these are placed off the geometry's own box, which has
         // just changed shape underneath them.
         this._refreshScreen(mesh);
@@ -1667,23 +1898,73 @@ export class Viewport extends EventTarget {
     this._fixedParts.delete(mesh);
   }
 
-  // -- hiding boundaries ------------------------------------------------------
-  // An arena full of invisible walls is an arena you cannot see, which is the
-  // one drawback of drawing them at all: a boundary is placed around a real
-  // sofa, so it stands exactly where you want to look. The switch takes the lot
-  // out of the view for as long as it is on.
+  // -- getting things out of the way ------------------------------------------
+  // Two switches, one idea. An arena full of invisible walls is an arena you
+  // cannot see, which is the one drawback of drawing them at all: a boundary is
+  // placed around a real sofa, so it stands exactly where you want to look. And
+  // a roof, a mezzanine or an outer wall is in front of everything you are
+  // trying to build under it, which is what **Hide** on the right-click menu is
+  // for — the same problem one object at a time.
   //
-  // Nothing about the map changes and nothing is marked dirty — this is a
-  // setting of the viewport, not of the file. Hidden objects leave the
-  // selection and stop being pickable, because a selection you cannot see is a
-  // gizmo floating in mid-air over nothing, and a marquee that quietly picked
-  // up thirty invisible walls is worse.
+  // Neither changes the map. Nothing is marked dirty, nothing is written and
+  // nothing is left out of the export: a hidden object goes into the file
+  // exactly as it would have done, because this is a way of looking rather than
+  // a way of building. `userData.hidden` rides along in the undo snapshot the
+  // way `locked` does, so an undo does not resurrect a roof you put away.
+  //
+  // What "out of the way" has to mean, and the reason `pickable` exists: a
+  // hidden object is not there for *anything*. Not for a click, not for a
+  // marquee, not for a drop to land on, not for the wheel to measure its zoom
+  // against, and not for Orbit at cursor to turn about. A roof you have hidden
+  // and can still catch the camera on is a roof you have not hidden. It also
+  // leaves the selection, because a selection you cannot see is a gizmo
+  // floating in mid-air over nothing.
 
   /** Hide, or show, every object the Boundaries pack owns. */
   setHideBoundaries(on) {
     const next = !!on;
     if (next === this.hideBoundaries) return;
     this.hideBoundaries = next;
+    this._refreshVisibility();
+  }
+
+  /**
+   * Put these objects away, or bring them back.
+   *
+   * Per object rather than per kind, and by hand rather than by rule, which is
+   * the whole difference from the boundaries switch: what is in the way is
+   * whatever happens to be in the way of the thing you are building now.
+   */
+  setHidden(meshes, hidden) {
+    for (const m of meshes) m.userData.hidden = !!hidden;
+    this._refreshVisibility();
+  }
+
+  /**
+   * Bring every hand-hidden object back into view for as long as this is on.
+   *
+   * Not the same as unhiding them: they come back **faded**, still marked as
+   * put away, and turning the switch off puts them back where they were. That
+   * is what makes it a way of finding them — a roof drawn exactly like every
+   * other object is a roof you cannot pick out of the map to bring back.
+   */
+  setShowHidden(on) {
+    const next = !!on;
+    if (next === this.showHidden) return;
+    this.showHidden = next;
+    this._refreshVisibility();
+  }
+
+  /** How many objects are put away by hand. */
+  hiddenCount() {
+    return this.objects.reduce((n, m) => n + (m.userData.hidden ? 1 : 0), 0);
+  }
+
+  /**
+   * Re-apply both switches across the map, and drop anything that has just gone
+   * out of sight from the selection.
+   */
+  _refreshVisibility() {
     let dropped = false;
     for (const mesh of this.objects) {
       this.applyVisibility(mesh);
@@ -1699,12 +1980,63 @@ export class Viewport extends EventTarget {
 
   /** Whether one object is drawn at all, given the switches above. */
   applyVisibility(mesh) {
-    mesh.visible = !(this.hideBoundaries && isBoundary(mesh.userData.def));
+    const away = !!mesh.userData.hidden;
+    mesh.visible = !(this.hideBoundaries && isBoundary(mesh.userData.def))
+      && !(away && !this.showHidden);
+    this._applyFade(mesh);
   }
 
-  /** Objects a click, a marquee or a drop is allowed to find. */
+  /**
+   * Objects a click, a marquee, a drop, the wheel or Orbit at cursor is allowed
+   * to find. Everything drawn, and nothing else.
+   */
   pickable() {
-    return this.hideBoundaries ? this.objects.filter((m) => m.visible) : this.objects;
+    return this.objects.filter((m) => m.visible);
+  }
+
+  // -- drawing a hidden object as hidden ---------------------------------------
+  // With Show hidden on, a put-away object has to look put away. Faded rather
+  // than tinted, so it still reads as the piece it is — you are looking for a
+  // particular roof, not for "something that was hidden".
+  //
+  // Materials are shared between every object of a kind, so the fade cannot be
+  // a property of the material the object already has: turning one crate down
+  // would turn every crate down. So each material gets one faded twin, made on
+  // demand and cached against the original, and the object is pointed at the
+  // twin. `_setMaterial` is the only place that assigns `mesh.material`, which
+  // is what keeps the two in step when the geometry is swapped underneath.
+
+  /** Point an object at a material, remembering it as the solid one. */
+  _setMaterial(mesh, material) {
+    mesh.userData.solidMaterial = material;
+    this._applyFade(mesh);
+  }
+
+  _applyFade(mesh) {
+    const solid = mesh.userData.solidMaterial;
+    if (!solid) return;
+    const faded = !!mesh.userData.hidden && this.showHidden;
+    mesh.material = faded ? this._fadedOf(solid) : solid;
+  }
+
+  /** The faded twin of a material, or of a whole array of them. */
+  _fadedOf(material) {
+    if (Array.isArray(material)) {
+      if (!this._faded.has(material)) {
+        this._faded.set(material, material.map((m) => this._fadedOf(m)));
+      }
+      return this._faded.get(material);
+    }
+    if (!this._faded.has(material)) {
+      const twin = material.clone();
+      twin.transparent = true;
+      twin.opacity = (material.opacity ?? 1) * 0.22;
+      // Off, so a faded roof does not stop you seeing the floor through it —
+      // which is the entire reason the roof was put away in the first place.
+      twin.depthWrite = false;
+      this._faded.set(material, twin);
+    }
+    return this._faded.get(material);
   }
 
   /** Cancel the parent's scale on every fixed part, once per frame. */
@@ -1801,6 +2133,140 @@ export class Viewport extends EventTarget {
     if (!entry) return;
     entry.child?.removeFromParent();
     this._figures.delete(mesh);
+  }
+
+  // -- the weapon over a spawner ---------------------------------------------
+  // A weapon spawner is a crate 45 cm across. What it actually puts in the room
+  // is a gun a metre and a bit long, hovering at chest height and lying *across*
+  // the crate rather than along it — so a spawner backed neatly against a wall
+  // spawns an RPG with half its tube inside the wall, and nothing about the
+  // crate on screen says so. A badge of icons does not say so either. The gun
+  // itself does.
+  //
+  // The prefab drawn is the game's own `<Weapon>Preview` — the thing it floats
+  // over a spawner — at the height its own `Preview` node sits at, unrotated,
+  // which is where the game puts it. A child of the object, like the enemy
+  // figure and for the same reasons: it changes whenever the weapon list is
+  // reticked, and it must not join the crate's outline or its picking geometry.
+
+  /**
+   * The weapon out of a weapon's prefab: the thing a player picks up, and none
+   * of the kit around it.
+   *
+   * Every weapon prefab has the same shape. `Visuals` holds the real, textured
+   * model; a sibling called `VFX…` holds a second copy of the same meshes
+   * wearing the spawn shader's empty material, which is what the game dissolves
+   * into being over a spawner. Taking the first and leaving the second is the
+   * whole of the first line — and it is also what stopped the revolver being
+   * drawn twice, since the spawn copy sat twelve centimetres in front of the
+   * real one.
+   *
+   * What is left to exclude is the kit `Visuals` also carries, and every one of
+   * these is something the spawner's own copy does without:
+   *
+   *   attachments   a laser sight and a scope mount, fitted rather than part of
+   *                 the weapon
+   *   LOD1 and up   the same gun again, coarser. `RPGModelLODs` is the same
+   *                 idea under a name the general rule misses
+   *   spare magazines and rockets, parked ready for the reload animation.
+   *                 `TommyMagazineReload` is one of these under a name the
+   *                 general rule misses, and it is why the Tommy gun wore two
+   *                 drum magazines: the spare hangs twenty-two centimetres
+   *                 below the fitted one, where the hand meets it
+   *   `SpeedLoader…`  the revolver's version of the same thing, and it needs
+   *                 its own name because the branch is called `Magazine (1)`.
+   *                 Six rounds in a carrier sitting four centimetres behind the
+   *                 cylinder, inside the frame — a handful of ammunition held
+   *                 ready, drawn as though it were part of the gun. The rounds
+   *                 in the chambers are not this: `Bullet_1` to `Bullet_6` sit
+   *                 in the cylinder itself and are kept
+   *   a bare `Mesh`  the shotgun alone carries one directly under `Visuals`,
+   *                 wearing the empty `DefaultMaterial` and boxing the whole
+   *                 barrel — a working shape left in the prefab rather than
+   *                 anything a player sees. Anchored to the node's own name, so
+   *                 the riot shield's `RiotShieldMesh` is not caught by it
+   *   highlights, health counters and reload instructions — interface, drawn
+   *                 for the player holding it and meaningless on a plinth
+   *
+   * `isFurniture` covers the rest: colliders, hitboxes, manipulators, and the
+   * `PowerupVFX…` branch, which is caught by the `vfx` it is named for.
+   */
+  static _weaponPart(node, path) {
+    return /(^|\/)Visuals(\/|$)/i.test(path)
+      && !isFurniture(node)
+      && !WEAPON_KIT.test(path);
+  }
+
+  /** Build or replace the weapon hanging over one spawner. */
+  _refreshWeapon(mesh) {
+    const def = mesh.userData.def;
+    if (!def?.weapon) {
+      this._dropWeapon(mesh);
+      return;
+    }
+    const chosen = longestWeapon(parseWeapons(mesh.userData.props?.specificWeapon));
+    const model = chosen && WEAPON_MODELS[chosen]?.model;
+    const current = this._weapons.get(mesh);
+    if (current?.model === model) return;
+    this._dropWeapon(mesh);
+    if (!model) return;
+
+    const token = {};
+    this._weapons.set(mesh, { model, token, child: null });
+    this._loadWeapon(model).then((built) => {
+      const entry = this._weapons.get(mesh);
+      if (!built || entry?.token !== token || !mesh.parent) return;
+      const child = new THREE.Mesh(built.geometry, built.materials);
+      child.castShadow = true;
+      child.position.y = WEAPON_HOVER;
+      mesh.add(child);
+      entry.child = child;
+      this.emit('change');
+    });
+  }
+
+  /**
+   * One merged geometry per weapon prefab, in the prefab's own space.
+   *
+   * Not seated on the floor, unlike every other prefab this module loads: a
+   * weapon does not stand on anything. Its own origin is where the game holds
+   * it, and `WEAPON_HOVER` is the height it holds it at.
+   *
+   * Tinted, but only where the art runs out. The `Visuals` branch these come
+   * from is properly textured — six of the nine weapons entirely so, the rest
+   * bar a part or two — and the tint is not forced, so `displayMaterial`
+   * colours only the meshes that arrived white and leaves every real texture
+   * alone. What it catches is the odd trigger or ammunition counter whose
+   * material the export left empty, which would otherwise sit on a textured gun
+   * as a bright white patch.
+   */
+  async _loadWeapon(model) {
+    if (!this._weaponCache.has(model)) {
+      this._weaponCache.set(model, (async () => {
+        const url = modelUrl({ model });
+        try {
+          const parts = await this._prefabParts(url, Viewport._weaponPart);
+          if (!parts.length) return null;
+          const built = mergeForDisplay(parts, WEAPON_TINT, 1, false, false);
+          built.geometry.computeBoundingBox();
+          return built;
+        } catch (err) {
+          if (!warnedModels.has(model)) {
+            warnedModels.add(model);
+            console.warn(`No weapon at ${url}, drawing the spawner bare.`, err.message ?? err);
+          }
+          return null;
+        }
+      })());
+    }
+    return this._weaponCache.get(model);
+  }
+
+  _dropWeapon(mesh) {
+    const entry = this._weapons.get(mesh);
+    if (!entry) return;
+    entry.child?.removeFromParent();
+    this._weapons.delete(mesh);
   }
 
   // -- edges -----------------------------------------------------------------
@@ -1989,17 +2455,24 @@ export class Viewport extends EventTarget {
    * lower LODs. Including them makes every primitive 1.25 m. See
    * tools/measure-prefabs.mjs, which filters identically.
    */
-  async _prefabParts(url) {
+  async _prefabParts(url, wanted = null) {
     const gltf = await this._gltf.loadAsync(url);
     const found = [];
     gltf.scene.updateWorldMatrix(true, true);
     gltf.scene.traverse((n) => {
-      if (!n.isMesh || isFurniture(n) || lowerLod(n)) return;
-      const geometry = n.geometry.clone();
-      geometry.applyMatrix4(n.matrixWorld);
+      if (!n.isMesh || lowerLod(n)) return;
       const path = [];
       for (let p = n; p; p = p.parent) path.unshift(p.name || '');
-      found.push({ geometry, material: n.material, path: path.join('/') });
+      const joined = path.join('/');
+      // `wanted` replaces the furniture test rather than narrowing it, and is
+      // handed the node as well as its path because the one caller that passes
+      // it has a question the path cannot answer. The weapon previews hang
+      // their whole tree off a node called `VFXWeaponSpawn…` — furniture by the
+      // general rule, and the weapon by any reading of what is in it.
+      if (wanted ? !wanted(n, joined) : isFurniture(n)) return;
+      const geometry = n.geometry.clone();
+      geometry.applyMatrix4(n.matrixWorld);
+      found.push({ geometry, material: n.material, path: joined });
     });
     return found;
   }
@@ -2037,7 +2510,9 @@ export class Viewport extends EventTarget {
         this._modelCache.set(cacheKey, model);
       }
       mesh.geometry = model.geometry;
-      mesh.material = model.materials;
+      this._setMaterial(mesh, model.materials);
+      this._reskinOutside(mesh);
+      this._refreshField(mesh);
       this._attachFixedPart(mesh, def, model.fixed, model.dropY);
       this._refreshScreen(mesh);
       this._refreshEdges(mesh);
@@ -2059,6 +2534,9 @@ export class Viewport extends EventTarget {
       this._dropBadge(m);
       this._dropFixedPart(m);
       this._dropFigure(m);
+      this._dropWeapon(m);
+      this._dropOutside(m);
+      this._dropField(m);
       this._dropScreen(m);
       this._dropEdges(m);
       this._dropText(m);
@@ -2083,6 +2561,9 @@ export class Viewport extends EventTarget {
       this._dropBadge(m);
       this._dropFixedPart(m);
       this._dropFigure(m);
+      this._dropWeapon(m);
+      this._dropOutside(m);
+      this._dropField(m);
       this._dropScreen(m);
       this._dropEdges(m);
       this._dropText(m);
@@ -2141,13 +2622,17 @@ export class Viewport extends EventTarget {
     if (def !== mesh.userData.def) {
       mesh.userData.def = def;
       mesh.geometry = geometryFor(def);
-      mesh.material = this.materialFor(def);
+      this._setMaterial(mesh, this.materialFor(def));
+      this._reskinOutside(mesh);
       if (def.model) this._swapInModel(mesh, def);
     }
     this._refreshBadge(mesh);
     this._refreshFigure(mesh);
+    this._refreshWeapon(mesh);
     this._refreshScreen(mesh);
     this._refreshEdges(mesh);
+    // A damage box's style is a prop, and the three styles are three colours.
+    this._refreshField(mesh);
     // The message's own words are a prop, so this is what redraws them.
     this._refreshText(mesh);
     this.markDirty(mesh);
@@ -2215,19 +2700,152 @@ export class Viewport extends EventTarget {
   }
 
   /**
-   * Does mirroring this object across `axis` need a scale sign flipped, or will
-   * the mirrored rotation alone do it?
+   * What mirroring this object across `axis` has to do to it beyond moving and
+   * turning it: `'none'`, `'turn'` (an extra half turn about its own Y) or
+   * `'scale'` (a negative scale on its own `axis`).
    *
-   * Asked of the placeholder rather than of whatever mesh is on screen. The
-   * placeholders are the traced silhouette built out of boxes and cylinders, so
-   * a symmetric piece is symmetric to the last decimal and the answer is clean.
-   * The real prefabs are not: an artist's crate is symmetric to look at and off
-   * by a millimetre here and there in fact, which makes every object in the map
-   * read as chiral and puts a negative scale on all of them. Same shape, better
-   * evidence.
+   * The reflection itself is fixed — position flipped, rotation reflected — and
+   * what is left over is the piece being turned inside out, which no rotation
+   * can do. Except that very often one can. Flipping a piece's local Z is the
+   * same transform as turning it half a turn about Y and *then* flipping its
+   * local X:
+   *
+   *   diag(1, 1, -1)  =  Ry(180) · diag(-1, 1, 1)
+   *
+   * so a piece that is its own reflection left to right needs no negative scale
+   * to mirror front to back — a half turn does it exactly. That is most of the
+   * catalog: a spawn zone, an explosive barrel, a sofa, the truck. Only a piece
+   * with no mirror symmetry at all, like a corner barrier, is left needing the
+   * scale.
+   *
+   * Which matters because a negative scale is a value the game has never been
+   * seen to write, and one that does not survive being read back: three.js can
+   * only ever park a negative on X, so a mirrored piece that is then replaced
+   * or exported comes back with the sign moved from Z to X and a different
+   * rotation making up the difference. Spending the scale only where nothing
+   * else will do keeps that out of every map that does not genuinely need it.
+   *
+   * Symmetry is asked of the placeholder rather than of whatever mesh is on
+   * screen. The placeholders are the traced silhouette built out of boxes and
+   * cylinders, so a symmetric piece is symmetric to the last decimal and the
+   * answer is clean. The real prefabs are not: an artist's crate is symmetric to
+   * look at and off by a millimetre here and there in fact, which makes every
+   * object in the map read as chiral and puts a negative scale on all of them.
+   * Same shape, better evidence. Where the placeholder cannot know — a screen
+   * painted on one face of a symmetric frame — the catalog says so with
+   * `facing`.
    */
-  needsMirrorFlip(mesh, axis) {
-    return !isMirrorSymmetric(geometryFor(mesh.userData.def), axis);
+  mirrorFlipFor(mesh, axis) {
+    const def = mesh.userData.def;
+    if (mirrorSymmetric(def, axis)) return 'none';
+    return mirrorSymmetric(def, axis === 'x' ? 'z' : 'x') ? 'turn' : 'scale';
+  }
+
+  /**
+   * Where a reflection puts one object: across the plane perpendicular to
+   * `axis` standing at `at` metres along it.
+   *
+   * `at` is 0 for the Mirror tool, whose plane is the middle of the arena, and
+   * the selection's own middle for Flip, which turns a piece round where it
+   * stands. Same three things either way — the position reflects, the rotation
+   * reflects, and the piece is turned inside out by whichever of the three ways
+   * `mirrorFlipFor` says is cheapest.
+   *
+   * The world transform is what comes back, ready for `compose`. Nothing is
+   * moved here: the tool, its ghosts and Flip all want the answer before they
+   * want the act.
+   */
+  reflectedPlacement(mesh, axis, at = 0) {
+    mesh.updateWorldMatrix(true, false);
+    const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+    mesh.matrixWorld.decompose(p, q, s);
+
+    const flip = this.mirrorFlipFor(mesh, axis);
+    if (flip === 'scale') s[axis] = -s[axis];
+    // Under a reflection a rotation about an axis becomes one about the
+    // mirrored axis, which for the quaternion is negating the two components
+    // perpendicular to the plane.
+    const turn = axis === 'x' ? [1, -1, -1] : [-1, -1, 1];
+    const quaternion = new THREE.Quaternion(q.x * turn[0], q.y * turn[1], q.z * turn[2], q.w);
+    // Local, so it goes on the right: the half turn is the piece turning about
+    // its own axis, not the map turning about the world's.
+    if (flip === 'turn') quaternion.multiply(HALF_TURN_Y);
+
+    const position = p.clone();
+    position[axis] = 2 * at - p[axis];
+    return { position, quaternion, scale: s, flip };
+  }
+
+  /**
+   * Where a flip across `axis` would put each of `meshes`, without moving
+   * anything: `[[mesh, placement]]`, worked out against the plane through their
+   * own middle.
+   *
+   * Split out so the act and its preview are the same arithmetic, the way
+   * `dropPlan` is split from `dropGhosts`. Every object's answer is computed
+   * before any of them moves, because the plane is the selection's own middle
+   * and moving the first object would move it.
+   */
+  flipPlan(meshes, axis) {
+    const list = meshes.filter((m) => !m.userData.locked);
+    if (!list.length) return [];
+    const box = new THREE.Box3();
+    for (const m of list) {
+      m.updateWorldMatrix(true, false);
+      box.expandByObject(m);
+    }
+    if (box.isEmpty()) return [];
+    const at = box.getCenter(new THREE.Vector3())[axis];
+    return list.map((m) => [m, this.reflectedPlacement(m, axis, at)]);
+  }
+
+  /** Ghost entries for what a flip would do. Shape for `setGhosts`. */
+  flipGhosts(meshes, axis) {
+    return this.flipPlan(meshes, axis).map(([m, { position, quaternion, scale }]) => ({
+      source: m,
+      matrix: new THREE.Matrix4().compose(position, quaternion, scale),
+    }));
+  }
+
+  /**
+   * Turn the selection round where it stands, across `axis`.
+   *
+   * The Mirror tool's reflection with the plane moved from the middle of the
+   * arena to the middle of the selection, and the copies left out: a doorway
+   * facing the wrong way is turned to face the right one, and a run of pieces
+   * with a left and a right comes out as the run you would have built starting
+   * from the other end.
+   *
+   * The selection is kept, because the objects are the same objects — this is
+   * an edit, not a duplication, and the next thing anyone does after flipping a
+   * piece is nudge it.
+   */
+  flipSelection(axis, meshes = null) {
+    const placements = this.flipPlan(meshes ?? [...this.selection], axis);
+    if (!placements.length) return 0;
+    const list = placements.map(([m]) => m);
+
+    const world = new THREE.Matrix4();
+    const toLocal = new THREE.Matrix4();
+    for (const [m, { position, quaternion, scale }] of placements) {
+      world.compose(position, quaternion, scale);
+      // A selected object hangs off the pivot rather than off the scene, and
+      // the placement is in world space. The pivot never carries a scale, so
+      // this is a rotation and a translation to undo and nothing worse.
+      if (m.parent && m.parent !== this.scene) {
+        toLocal.copy(m.parent.matrixWorld).invert().multiply(world);
+        toLocal.decompose(m.position, m.quaternion, m.scale);
+      } else {
+        world.decompose(m.position, m.quaternion, m.scale);
+      }
+      this.markDirty(m);
+    }
+
+    this.refreshOutside(list);
+    this.rebuildPivot();
+    this.emit('transform');
+    this.emit('commit-end');
+    return list.length;
   }
 
   // -- gizmo ----------------------------------------------------------------
@@ -2332,6 +2950,7 @@ export class Viewport extends EventTarget {
   }
 
   _constrainDuringDrag() {
+    this._holdGroundOnly();
     if (this._activeMode() === 'scale') {
       const force = this.uniformScale || !this._perAxisExact;
       if (force && this._dragStartScale) {
@@ -2570,6 +3189,8 @@ export class Viewport extends EventTarget {
       }
     }
     if (!moved) return 0;
+    // Under ground would bury a spawner that is not allowed to leave the floor.
+    this.settle();
     // The gizmo hangs off the pivot, and the pivot does not follow a child that
     // moves underneath it — so without this the gizmo stayed in the air above
     // whatever had just been dropped until the object was selected again.
@@ -2599,16 +3220,8 @@ export class Viewport extends EventTarget {
       ? this.pickable().filter((m) => !this.selection.has(m))
       : [];
 
-    // What falls together: one entry per group, and one per loose object.
-    const bodies = new Map();
-    for (const m of targets) {
-      const key = m.userData.group ? `g:${m.userData.group}` : `m:${m.id}`;
-      if (!bodies.has(key)) bodies.set(key, []);
-      bodies.get(key).push(m);
-    }
-
     const plan = [];
-    for (const body of bodies.values()) {
+    for (const body of this._fallingBodies(targets)) {
       const box = new THREE.Box3();
       for (const m of body) {
         m.updateWorldMatrix(true, false);
@@ -2629,6 +3242,77 @@ export class Viewport extends EventTarget {
   }
 
   /**
+   * What falls together, out of a selection.
+   *
+   * A landing moves a *body* rather than an object, and the question is which
+   * objects make up one. Being in a group is one answer and used to be the only
+   * one, which flattened every stack that had not been formally grouped: select
+   * three crates piled on each other, press To floor, and all three landed on
+   * the floor inside one another. Nobody groups a pile of crates before
+   * levelling it, and nobody means "put all of these at height zero" by it.
+   *
+   * So the other answer is standing on each other, which is what a stack is:
+   * footprints overlapping, and the gap between them small enough to be contact
+   * rather than clearance. Both answers union — a group falls as one whether or
+   * not its pieces touch, and a stack falls as one whether or not it is a
+   * group — and a body is a connected component of the two together.
+   *
+   * That leaves the case the old rule was right about intact: a dozen crates
+   * scattered around the arena at a dozen heights touch nothing, so they are a
+   * dozen bodies and every one of them lands on the floor.
+   */
+  _fallingBodies(meshes) {
+    // Union-find over the selection, with path halving. A stack is a chain —
+    // each crate touches only the one below it — so the components have to be
+    // transitive, and comparing pairs alone would not make them so.
+    const parent = new Map(meshes.map((m) => [m, m]));
+    const find = (x) => {
+      while (parent.get(x) !== x) {
+        parent.set(x, parent.get(parent.get(x)));
+        x = parent.get(x);
+      }
+      return x;
+    };
+    const union = (a, b) => {
+      const ra = find(a), rb = find(b);
+      if (ra !== rb) parent.set(ra, rb);
+    };
+
+    const boxes = new Map();
+    for (const m of meshes) {
+      m.updateWorldMatrix(true, false);
+      boxes.set(m, new THREE.Box3().expandByObject(m));
+    }
+
+    // Grouped first, and cheaply: one representative per group id.
+    const firstOfGroup = new Map();
+    for (const m of meshes) {
+      const g = m.userData.group;
+      if (!g) continue;
+      if (firstOfGroup.has(g)) union(m, firstOfGroup.get(g));
+      else firstOfGroup.set(g, m);
+    }
+
+    // Then everything resting on everything else. Quadratic in the selection,
+    // which for the sizes involved is a few hundred microseconds — the boxes
+    // above are the expensive half and they are computed once.
+    for (let i = 0; i < meshes.length; i++) {
+      for (let j = i + 1; j < meshes.length; j++) {
+        if (find(meshes[i]) === find(meshes[j])) continue;
+        if (stacked(boxes.get(meshes[i]), boxes.get(meshes[j]))) union(meshes[i], meshes[j]);
+      }
+    }
+
+    const bodies = new Map();
+    for (const m of meshes) {
+      const root = find(m);
+      if (!bodies.has(root)) bodies.set(root, []);
+      bodies.get(root).push(m);
+    }
+    return [...bodies.values()];
+  }
+
+  /**
    * Ghost entries for what a landing would do — one per object that moves,
    * drawn at the height it would end up at. Shape for `setGhosts`.
    */
@@ -2640,7 +3324,12 @@ export class Viewport extends EventTarget {
         const matrix = m.matrixWorld.clone();
         const e = m.matrixWorld.elements;
         matrix.setPosition(e[12], e[13] - drop, e[14]);
-        out.push({ source: m, matrix });
+        // Anything that ends up below the floor is drawn through whatever is
+        // in front of it — the ground, and the object it is about to move out
+        // of. Asked of the result rather than of which button was pressed, so
+        // a piece dropped onto a surface that happens to be in a pit gets the
+        // same treatment.
+        out.push({ source: m, matrix, through: e[13] - drop < 0 });
       }
     }
     return out;
@@ -2718,7 +3407,58 @@ export class Viewport extends EventTarget {
     for (const m of this.selection) this.markDirty(m);
     this.rebuildPivot();
     this.emit('transform');
+    this.settle();
     return true;
+  }
+
+  /**
+   * Where each copy of an array goes, relative to the original.
+   *
+   * Shared by the tool and by the ghosts that preview it, so what you are shown
+   * and what you get cannot drift apart. The steps are taken along the pivot's
+   * axes rather than the world's, so a rotated piece arrays along its own
+   * length instead of skewing off it. The original occupies cell 0,0,0 and is
+   * not in the list.
+   *
+   * All three axes come off the pivot, including up. Up used to be world up, on
+   * the reasoning that up should stay up whatever the piece is doing, and for a
+   * piece turned about Y — which is nearly all of them — the two are the same
+   * vector and the distinction never showed. Roll a box a quarter turn about Z
+   * and it does: the pivot's own X now points at the sky, so "across" and "up"
+   * became the same direction and a row of copies stacked into a column with
+   * the wrong spacing. The spacings are measured in the pivot's frame by
+   * `selectionExtent`, so the steps have to be taken in it too — measuring a
+   * piece along one set of axes and moving it along another is the whole bug.
+   *
+   * It lives here rather than in the panel that reads the six boxes because
+   * what it is about is the pivot, and the pivot is the viewport's.
+   */
+  arraySteps({ nx, ny, nz, dx, dy, dz }) {
+    this.pivot.updateMatrixWorld(true);
+    const q = this.pivot.quaternion;
+    const basis = {
+      x: new THREE.Vector3(1, 0, 0).applyQuaternion(q),
+      y: new THREE.Vector3(0, 1, 0).applyQuaternion(q),
+      z: new THREE.Vector3(0, 0, 1).applyQuaternion(q),
+    };
+    const out = [];
+    for (let ix = 0; ix < nx; ix++) {
+      for (let iy = 0; iy < ny; iy++) {
+        for (let iz = 0; iz < nz; iz++) {
+          if (!ix && !iy && !iz) continue;
+          out.push({
+            // Each cell of the array gets its own group id, so the copies can
+            // be moved apart later without dragging the whole wall.
+            cell: `${ix},${iy},${iz}`,
+            step: new THREE.Vector3()
+              .addScaledVector(basis.x, ix * dx)
+              .addScaledVector(basis.y, iy * dy)
+              .addScaledVector(basis.z, iz * dz),
+          });
+        }
+      }
+    }
+    return out;
   }
 
   // -- ghosts ----------------------------------------------------------------
@@ -2734,8 +3474,10 @@ export class Viewport extends EventTarget {
    */
   setGhosts(entries) {
     this.ghostGroup.clear();
-    for (const { source, matrix } of entries) {
-      const ghost = new THREE.Mesh(source.geometry, this.ghostMaterial);
+    for (const { source, matrix, through } of entries) {
+      const ghost = new THREE.Mesh(source.geometry,
+        through ? this.ghostThroughMaterial : this.ghostMaterial);
+      if (through) ghost.renderOrder = 4;
       matrix.decompose(ghost.position, ghost.quaternion, ghost.scale);
       this.ghostGroup.add(ghost);
     }
@@ -2784,7 +3526,218 @@ export class Viewport extends EventTarget {
     return best;
   }
 
+  // -- the electric field inside a damage box ---------------------------------
+  // A damage box is not a box. What the headset shows is a volume of crackling
+  // electricity you can see straight through and straight into — and what the
+  // editor showed was a solid-ish coloured slab that hid whatever was standing
+  // inside the very region it was marking.
+  //
+  // The game's own effect cannot be borrowed. `DamageBox.glb` carries the frame
+  // and a particle system called `PDamageBoxRed` whose `Spikes`, `Glows` and
+  // `ElectricSource` are Unity components rather than meshes, so the exported
+  // prefab holds no geometry and no texture for any of it. There is nothing to
+  // copy, which leaves drawing one — the same position this module is in for
+  // every placeholder shape, and the same rule applies: reproduce what the
+  // thing *is*, and be honest that it is a rendition rather than the art.
+  //
+  // So: two scrolling noise fields, and the filaments are where they cross.
+  // Thin, bright, moving, and mostly transparent between, with the box's own
+  // edges picked out so its extent stays readable when the arcs are quiet.
+
+  /** Build or replace the field filling one damage box, and drop it if it has none. */
+  _refreshField(mesh) {
+    this._dropField(mesh);
+    const def = mesh.userData.def;
+    if (!def?.field) return;
+    if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+    const box = mesh.geometry.boundingBox;
+    const size = box.getSize(new THREE.Vector3());
+    const centre = box.getCenter(new THREE.Vector3());
+    const child = new THREE.Mesh(UNIT_BOX, this._fieldMaterial(def.color));
+    child.scale.copy(size);
+    child.position.copy(centre);
+    child.renderOrder = 2;
+    mesh.add(child);
+    this._fields.set(mesh, child);
+  }
+
+  _dropField(mesh) {
+    const child = this._fields.get(mesh);
+    if (!child) return;
+    child.removeFromParent();
+    this._fields.delete(mesh);
+  }
+
+  /**
+   * One field material per colour, shared by every box wearing it — the same
+   * bargain `materialFor` makes, and for the same reason. The clock is a
+   * uniform on each, wound on once a frame by `_frame`.
+   */
+  _fieldMaterial(colour) {
+    if (!this._fieldMaterials.has(colour)) {
+      this._fieldMaterials.set(colour, new THREE.ShaderMaterial({
+        uniforms: {
+          uTime: { value: 0 },
+          uColour: { value: new THREE.Color(colour) },
+        },
+        vertexShader: FIELD_VERTEX,
+        fragmentShader: FIELD_FRAGMENT,
+        transparent: true,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        blending: THREE.AdditiveBlending,
+      }));
+    }
+    return this._fieldMaterials.get(colour);
+  }
+
+  // -- objects outside the playable square ------------------------------------
+  // An object placed entirely beyond the 60 m square does not appear in the
+  // headset. It is not dropped from the file and nothing about it is wrong on
+  // screen — it is simply not there when the map is played, which is the worst
+  // kind of mistake to make: the editor shows a finished arena and the game
+  // shows a hole in it.
+  //
+  // So the ones outside are painted. A flat red skin over the object, sharing
+  // its geometry and riding its transform, drawn just proud of the surface so
+  // it does not fight it for pixels. Not a tint of the object's own material —
+  // materials are shared between every object of a type, and colouring one
+  // would colour all of them.
+
+  /** Is this object's whole footprint outside the square the headset draws? */
+  isOutside(mesh) {
+    mesh.updateWorldMatrix(true, false);
+    const box = new THREE.Box3().expandByObject(mesh);
+    if (box.isEmpty()) return false;
+    return box.min.x > PLAYABLE_HALF || box.max.x < -PLAYABLE_HALF
+      || box.min.z > PLAYABLE_HALF || box.max.z < -PLAYABLE_HALF;
+  }
+
+  /** How many objects on the map are out there. */
+  outsideCount() {
+    return this.objects.reduce((n, m) => n + (this._outside.has(m) ? 1 : 0), 0);
+  }
+
+  /**
+   * Paint or unpaint one object, and say whether it has just gone outside.
+   *
+   * The answer is what raises the warning, so it is deliberately the *change*
+   * rather than the state: an object that was already outside and has been
+   * nudged further out is not news.
+   */
+  _refreshOutside(mesh) {
+    const was = this._outside.has(mesh);
+    const now = this.isOutside(mesh);
+    if (was === now) return false;
+    if (!now) {
+      this._outside.get(mesh)?.removeFromParent();
+      this._outside.delete(mesh);
+      return false;
+    }
+    const skin = new THREE.Mesh(mesh.geometry, this._alarmMaterial);
+    skin.userData.skin = true;
+    mesh.add(skin);
+    this._outside.set(mesh, skin);
+    return true;
+  }
+
+  /**
+   * Repaint a list of objects — or the whole map, which is the cheap and
+   * reliable answer after any edit at all. Returns how many newly went outside.
+   *
+   * `quiet` paints without saying anything, for the two moments where "newly"
+   * is not true of anything: a map being opened, whose objects are wherever its
+   * author left them, and an undo, which is putting back a state this session
+   * has already seen. Both build their objects at the origin and move them
+   * afterwards, so both need the sweep and neither needs the warning.
+   */
+  refreshOutside(meshes = this.objects, quiet = false) {
+    let fresh = 0;
+    for (const m of meshes) if (this._refreshOutside(m)) fresh++;
+    if (fresh && !quiet) this.emit('outside', { fresh, total: this.outsideCount() });
+    return fresh;
+  }
+
+  /**
+   * The red skin borrows the object's geometry, and `_swapInModel` and the
+   * stand-ins switch both change that geometry underneath it.
+   */
+  _reskinOutside(mesh) {
+    const skin = this._outside.get(mesh);
+    if (skin) skin.geometry = mesh.geometry;
+  }
+
+  _dropOutside(mesh) {
+    this._outside.get(mesh)?.removeFromParent();
+    this._outside.delete(mesh);
+  }
+
+  // -- pieces that may not leave the floor ------------------------------------
+  // The enemy spawner, and so far only the enemy spawner. The game spawns its
+  // bots on the ground under the pad rather than on the pad, so a spawner lifted
+  // onto a crate does not put enemies on the crate — it puts them inside it, or
+  // inside whatever else happens to be standing there, which is a map that looks
+  // right in the editor and breaks in the headset.
+  //
+  // Held rather than refused: the gizmo still moves, the piece still follows the
+  // pointer across the floor, and only the height is taken back. A drag that
+  // fought the pointer would read as a bug.
+
+  /**
+   * Put every ground-only piece in the selection back on the floor, and
+   * remember that it had to be done. Returns how many were moved.
+   *
+   * The same measurement To floor makes — the object's own box resting on
+   * y = 0 — so holding a piece down and dropping it agree about where the
+   * ground is.
+   */
+  _holdGroundOnly() {
+    let held = 0;
+    for (const m of this.selection) {
+      if (!m.userData.def?.groundOnly) continue;
+      m.updateWorldMatrix(true, false);
+      const box = new THREE.Box3().expandByObject(m);
+      if (box.isEmpty() || Math.abs(box.min.y) < 1e-6) continue;
+      const world = new THREE.Vector3();
+      m.getWorldPosition(world);
+      world.y -= box.min.y;
+      m.position.copy(m.parent === this.pivot ? this.pivot.worldToLocal(world.clone()) : world);
+      held++;
+    }
+    if (held) this._groundHeld = true;
+    return held;
+  }
+
+  /**
+   * The selection has just been moved. Tidy up after it.
+   *
+   * One call rather than three at every site that moves something: put back
+   * whatever may not have left the floor, say so if anything did, and repaint
+   * the pieces that have crossed in or out of the playable square. Every
+   * gesture that moves an object ends here — the gizmo, the arrow keys, the
+   * landing buttons, the inspector's boxes and placement.
+   */
+  settle() {
+    this._holdGroundOnly();
+    this._reportGroundHeld();
+    this.refreshOutside([...this.selection]);
+  }
+
+  /**
+   * Say once, at the end of a gesture, that something was held down.
+   *
+   * At the end rather than during: a drag calls `_holdGroundOnly` on every
+   * frame, and whatever listens to this puts a dialog on the screen. One
+   * dialog, when the pointer is let go.
+   */
+  _reportGroundHeld() {
+    if (!this._groundHeld) return;
+    this._groundHeld = false;
+    this.emit('ground-held');
+  }
+
   _endDrag() {
+    this.settle();
     this._scaleAnchor = null;
     for (const m of this.selection) this.markDirty(m);
     this.rebuildPivot();
@@ -3053,6 +4006,8 @@ export class Viewport extends EventTarget {
     this.canvas.style.cursor = '';
     if (committed) {
       for (const m of meshes) this.markDirty(m);
+      this.settle();
+      this.refreshOutside(meshes);
       this.rebuildPivot();
     }
     this.emit('placement-end', { committed, meshes });
@@ -3347,28 +4302,38 @@ export class Viewport extends EventTarget {
    * itself is a plain WebGL frame with nothing to draw text into.
    */
   captureMapImage(w = 1280, h = 720) {
-    const box = this._viewBox();
-    const center = box.isEmpty() ? new THREE.Vector3(0, 0.75, 0) : box.getCenter(new THREE.Vector3());
-    const size = box.isEmpty() ? new THREE.Vector3(20, 10, 20) : box.getSize(new THREE.Vector3());
-    const height = (box.isEmpty() ? 10 : size.y) + Math.max(size.x, size.z, 6) + 5;
-
     const canvas = document.createElement('canvas');
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
     renderer.setSize(w, h, false);
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-    const aspect = w / h;
-    const halfX = Math.max(size.x / 2, (size.z / 2) * aspect, 3) * 1.1;
-    const halfZ = halfX / aspect;
-    const camera = new THREE.OrthographicCamera(-halfX, halfX, halfZ, -halfZ, 0.05, height * 2 + 500);
-    // The same tiny forward nudge `setView('top')` uses — straight down is
-    // degenerate for `lookAt`, since the camera's up vector and view
-    // direction would fall on the same line.
-    camera.position.set(center.x, center.y + height, center.z + 0.001);
-    camera.lookAt(center);
+    // The shot is the view. Whoever is about to publish has spent the last hour
+    // moving this camera around and has already decided what the map looks like
+    // from — a fixed plan view of it was a picture nobody chose, and one that
+    // makes every map in the library look like every other one. Frame it, then
+    // publish it.
+    //
+    // A clone rather than the camera itself: the thumbnail is 16:9 and the
+    // viewport is whatever shape the window is, and reaching into the live
+    // camera's projection would leave the editor looking through it.
+    const camera = this.camera.clone();
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld(true);
 
-    renderer.render(this.scene, camera);
+    // Out of shot: the things that belong to editing rather than to the map.
+    // The gizmo is the loud one — a metre of coloured arrows across the middle
+    // of the picture — and a tool's ghosts are a proposal that was never
+    // accepted. The grid and the arena box stay, because they are what the view
+    // looks like and this is a picture of the view.
+    const hidden = [this.gizmo, this.ghostGroup].filter((o) => o?.visible);
+    for (const o of hidden) o.visible = false;
+    try {
+      renderer.render(this.scene, camera);
+    } finally {
+      for (const o of hidden) o.visible = true;
+    }
 
     const out = document.createElement('canvas');
     out.width = w;
@@ -3810,6 +4775,8 @@ export class Viewport extends EventTarget {
       this._placeBadges();
     }
     this._holdFixedParts();
+    // The damage boxes' clock. One number per colour, whatever the map holds.
+    for (const m of this._fieldMaterials.values()) m.uniforms.uTime.value = now;
     this.composer.render();
   }
 }

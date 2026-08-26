@@ -33,9 +33,48 @@ button,input,select{font:inherit;color:inherit}
 #app{display:grid;grid-template-rows:46px 1fr 24px;grid-template-columns:252px 1fr 304px;height:100%}
 #topbar{grid-column:1/-1;position:relative;display:flex;align-items:center;gap:14px;padding:0 12px;
   background:var(--panel);border-bottom:1px solid var(--line)}
-#statusbar{grid-column:1/-1;display:flex;align-items:center;gap:16px;padding:0 12px;
+#statusbar{grid-column:1/-1;position:relative;display:flex;align-items:center;gap:16px;padding:0 12px;
   background:var(--panel);border-top:1px solid var(--line);
   font-family:var(--mono);font-size:10.5px;color:var(--dim);letter-spacing:.02em}
+/* An empty status field would still take its share of the gap, leaving a hole
+   in the bar where nothing is being said. */
+#statusbar span:empty{display:none}
+/* ---------- object budget ---------- */
+/* A map the headset cannot draw at a decent frame rate is not a better map for
+   having more in it, and the point at which that starts is a number rather than
+   a feeling: about 700 objects. The bar is that number made visible while the
+   map is being built, rather than a surprise at the end of it.
+
+   The colour is a slide rather than three steps — green through amber to red as
+   the bar fills — because the useful question is not "am I over?" but "how much
+   room is left?", and a bar that stays green until it suddenly is not answers
+   the wrong one. `refreshBudget` computes the exact colour; the classes here
+   only cover the two states that are not on the slide: past the line, and
+   overridden. An overridden limit stops shouting, because somebody has decided
+   to ignore it and repeating themselves at them is not information. */
+/* Centred on the bar itself rather than on whatever text happens to sit to its
+   left, so the bar does not shift as the status text changes length. */
+#budget{position:absolute;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:8px}
+#budget-count{min-width:5.5em;text-align:right;color:var(--dim);
+  font-variant-numeric:tabular-nums;transition:color .2s linear}
+#budget-count b{font-weight:600;color:var(--text)}
+#budget.over #budget-count b{color:var(--danger)}
+#budget.free #budget-count b{color:var(--faint)}
+#budget-track{position:relative;display:block;width:260px;height:9px;border-radius:5px;
+  background:#0C141A;box-shadow:inset 0 0 0 1px var(--line),inset 0 1px 2px rgba(0,0,0,.5);
+  overflow:hidden}
+/* Quarter marks, so the bar reads as a scale rather than as a blob. They sit
+   over the fill at low contrast and vanish under it as it passes. */
+#budget-track::after{content:"";position:absolute;inset:0;pointer-events:none;
+  background:repeating-linear-gradient(to right,
+    transparent 0 calc(25% - 1px), var(--line) calc(25% - 1px) 25%);
+  opacity:.9}
+#budget-fill{display:block;height:100%;width:0;border-radius:5px;background:var(--green);
+  box-shadow:0 0 6px currentColor;transition:width .12s linear,background-color .25s linear}
+#budget.over #budget-fill{animation:budgetpulse 1.6s ease-in-out infinite}
+@keyframes budgetpulse{0%,100%{opacity:1}50%{opacity:.55}}
+#budget.free #budget-fill{background:var(--faint);animation:none;box-shadow:none}
+
 aside{background:var(--panel);overflow:hidden;display:flex;flex-direction:column;min-height:0}
 #library{border-right:1px solid var(--line)}
 #inspector{border-left:1px solid var(--line)}
@@ -47,7 +86,12 @@ canvas{display:block;width:100%;height:100%;outline:none}
 /* The wordmark fills the bar rather than sitting in it: at 30px the caps of
    Barlow Condensed run nearly the full 46px of the header, which is what makes
    it read as the application's name and not as another label. */
-.brand{display:flex;align-items:center;padding-right:14px;border-right:1px solid var(--line);height:100%}
+/* `user-select` so that clicking it repeatedly does not highlight the letters.
+   The wordmark answers to a run of five clicks and is deliberately not dressed
+   as anything that would — no cursor, no hover, no pressed state — and a blue
+   selection block would give the whole thing away. */
+.brand{display:flex;align-items:center;padding-right:14px;border-right:1px solid var(--line);
+  height:100%;user-select:none}
 .brand b{font-family:var(--hud);font-weight:700;font-size:30px;letter-spacing:.05em;
   text-transform:uppercase;line-height:46px;white-space:nowrap}
 .brand b i{font-style:normal;color:var(--accent)}
@@ -69,6 +113,12 @@ select,input[type=text],input[type=number],input[type=password],textarea{
   padding:4px 6px;font-family:var(--mono);font-size:11.5px;width:100%}
 input[type=number]{-moz-appearance:textfield}
 input[type=number]::-webkit-outer-spin-button,input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+/* A switch with nothing to switch: Show hidden means nothing until something
+   has been hidden, so it dims rather than inviting a click that does nothing. */
+label.sw.idle{opacity:.45;cursor:default}
+label.sw .cnt{font-family:var(--mono);font-size:9.5px;color:var(--accent);
+  background:var(--panel2);border-radius:6px;padding:0 4px;line-height:14px}
+label.sw .cnt:empty{display:none}
 label.sw{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;
   font-family:var(--hud);font-size:12.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--dim)}
 label.sw input{accent-color:var(--accent);width:13px;height:13px}
@@ -76,6 +126,9 @@ label.sw:has(input:checked){color:var(--text)}
 
 /* ---------- mouse/trackpad switch ---------- */
 .pswitch{display:flex;align-items:center;gap:7px;cursor:pointer;user-select:none;outline:none}
+/* Room to breathe when a tick sits beside it, or "Orbit at cursor" and "Mouse"
+   read as one four-word label rather than as two controls. */
+label.sw + .pswitch{margin-left:9px}
 .pswitch-lbl{font-family:var(--hud);font-size:12.5px;letter-spacing:.07em;text-transform:uppercase;
   color:var(--faint);transition:color .15s ease}
 .pswitch[data-mode=mouse] .pswitch-mouse,
@@ -149,6 +202,16 @@ label.sw:has(input:checked){color:var(--text)}
   text-transform:uppercase;color:var(--faint)}
 .itab:hover{color:var(--dim);background:var(--panel2)}
 .itab.on{color:var(--accent);border-bottom-color:var(--accent)}
+/* A tab that has just been opened for you rather than by you. The export
+   reminder can send someone to Rules, and a panel that changes under the
+   pointer with no other movement on screen is a panel nobody notices has
+   changed — so the tab says where you have been put, once, and stops. */
+.itab.calling{animation:tabcall 1.9s ease-out 2}
+@keyframes tabcall{
+  0%,100%{background:transparent;box-shadow:none}
+  18%{background:rgba(232,197,71,.22);box-shadow:inset 0 -2px 0 var(--accent)}
+  60%{background:rgba(232,197,71,.05)}
+}
 #inspector .pane[hidden]{display:none}
 
 /* ---------- array tool ---------- */
@@ -180,6 +243,11 @@ label.sw:has(input:checked){color:var(--text)}
 /* Still on the map, just not being drawn — see the Hide boundaries switch. */
 .row.unseen .t{color:var(--faint)}
 .row.unseen .dot{opacity:.25}
+/* Put away by hand, which is a different thing from a boundary switched off:
+   this one names an object somebody chose, so the row says so even while Show
+   hidden has it back in view. */
+.row.away .t{font-style:italic}
+.row.away .t::after{content:" · hidden";font-style:normal;color:var(--faint);font-size:10px}
 .lockbtn{background:none;border:0;padding:0 2px;cursor:pointer;font-size:10px;line-height:1;
   opacity:0;flex:none;filter:grayscale(1)}
 .row:hover .lockbtn{opacity:.75}
@@ -437,7 +505,7 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
 <div id="app">
 
   <header id="topbar">
-    <div class="brand" title="OpsForge — a map editor for Spatial Ops"><b>Ops<i>Forge</i></b></div>
+    <div class="brand" id="brand" title="OpsForge — a map editor for Spatial Ops"><b>Ops<i>Forge</i></b></div>
 
     <div class="grp">
       <button class="btn" id="b-new" title="Start again with an empty arena. Anything unexported is lost, so a checkpoint is taken first.">New</button>
@@ -455,10 +523,16 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
 
     <div class="grp">
       <label class="sw" title="Take the invisible walls out of the view. They are placed around the real furniture in the room, so they stand exactly where you want to look. Hidden ones cannot be clicked or dragged over either, and nothing about the map changes"><input type="checkbox" id="hide-boundaries">Hide boundaries</label>
-      <label class="sw" title="Turn the view about whatever is under the pointer when the drag starts, rather than about the middle of the view. Off, the camera orbits the world."><input type="checkbox" id="orbit-cursor">Orbit at cursor</label>
+      <label class="sw" title="Bring back everything hidden with the right-click menu, drawn faded so you can pick out the one you want. Right-click a faded object and choose Show to bring it back for good."><input type="checkbox" id="show-hidden">Show hidden<span class="cnt" id="hidden-count"></span></label>
     </div>
 
     <div class="grp">
+      <!-- Both of these are settings of how the camera behaves, which is why
+           they are here together rather than with the two visibility switches
+           the orbit one used to sit with. The tick comes first and the switch
+           second: the switch is the wider control and reads as the end of the
+           group. -->
+      <label class="sw" title="Turn the view about whatever is under the pointer when the drag starts, rather than about the middle of the view. Off, the camera orbits the world."><input type="checkbox" id="orbit-cursor">Orbit at cursor</label>
       <div class="pswitch" id="b-pointer" data-mode="mouse" role="switch" aria-checked="false" tabindex="0"
         title="What you are driving the view with — click to switch. MOUSE: middle drag orbits, right drag pans, the wheel zooms. TRACKPAD: two fingers on the pad orbit, Shift and two fingers pan, Ctrl or the OS key and two fingers zoom, and a two-finger tap is a right click. TRACKPAD INVERTED: the same, with orbit and pan reversed — zoom is unchanged.">
         <span class="pswitch-lbl pswitch-mouse">Mouse</span>
@@ -539,7 +613,7 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
             <select id="mirror-axis" title="Which way to mirror">
               <option value="x">Across X</option><option value="z">Across Z</option>
             </select>
-            <select id="mirror-pack" title="Draw the mirrored copy from another theme">
+            <select id="mirror-pack" title="Draw the mirrored copy as something else — another theme for a wall, the other team for a spawn zone, a flag or a damage box">
               <option value="">Same pack</option>
             </select>
           </div>
@@ -548,7 +622,9 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
           <p class="hint" style="margin-top:7px">Copies the selection across the middle of the arena,
             reflected rather than just moved: a piece that has a left and a right comes out the other
             way round, so the two halves match. Pick another theme to make the far half a different colour.
-            Point at this panel and the view shows where the copies will land.</p>
+            Point at this panel and the view shows where the copies will land. With spawn zones,
+            capture flags or damage boxes selected, the second box offers the teams instead of the
+            themes &mdash; a team is not a theme, and no themed pack holds any of the three.</p>
         </div>
       </div>
 
@@ -735,8 +811,15 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
 
   <footer id="statusbar">
     <span id="st-file">No map loaded</span>
-    <span id="st-mode"></span>
     <span id="st-sel"></span>
+    <span id="st-mode"></span>
+    <!-- How full the map is. A frame rate is not something the editor can
+         measure for a headset it is not running on, so this measures the one
+         number that predicts it. -->
+    <div id="budget" title="Objects on the map, against the 700 a headset comfortably draws">
+      <span id="budget-count"><b>0</b> / 700</span>
+      <span id="budget-track"><i id="budget-fill"></i></span>
+    </div>
     <span style="margin-left:auto" id="st-msg"></span>
   </footer>
 </div>
@@ -746,6 +829,7 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
 <div id="toast"></div>
 <input type="file" id="filepick" style="display:none">
 <input type="file" id="prefabpick" accept=".opsprefab,.json,application/json" style="display:none">
+<input type="file" id="logopick" accept="image/*" style="display:none">
 
 <script type="importmap">
 { "imports": {

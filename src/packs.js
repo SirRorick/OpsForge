@@ -26,6 +26,11 @@
 //                 npm run trace-prefabs.
 //   rotationAxes  'y' yaw only, 'xyz' free
 //   floor         the piece is expected to rest on the ground
+//   groundOnly    the piece may not leave the ground, and the editor holds it
+//                 there. Only the enemy spawner, and it is not a tidiness rule:
+//                 the game spawns its bots on the floor under the pad wherever
+//                 the pad is put, so a spawner on a rooftop delivers enemies
+//                 into whatever stands beneath it
 //   color         placeholder tint. Normally set once on the **pack** and used
 //                 by everything in it, which is what makes a theme read as a
 //                 theme when the real art is absent. An entry may override it,
@@ -59,6 +64,15 @@
 //                 and drawn at `opacity` so you can see what stands inside
 //   figure        draw a model of what the object produces on top of it;
 //                 "enemy" reads the ENEMIES table above
+//   weapon        hang the weapon the spawner offers over it, at WEAPON_HOVER
+//                 metres, from the WEAPON_MODELS table above. The `figure` of
+//                 the weapon spawners, kept separate because what it reads is
+//                 `specificWeapon` rather than `enemyTypes` and because the
+//                 longest weapon wins rather than the first
+//   field         the object is a volume the game fills with a crackling
+//                 electric field rather than anything solid. Drawn as a
+//                 near-transparent shell with arcs running over it — see
+//                 fieldMaterial in scene.js
 //   screen        { image, inset } — paint `image` across the front face,
 //                 `inset` metres in from every edge, for a prefab whose display
 //                 the game draws as a UI canvas and the prefab therefore
@@ -72,6 +86,22 @@
 //                 see through — the damage boxes mark a region, not a solid
 //   uncertain     `size` is an estimate, not a confirmed mesh dimension
 //   hidden        loads and exports normally but is not offered in the library
+//   facing        'x' or 'z' — the object reads differently along that local
+//                 axis and is its own reflection across the other one, whatever
+//                 its silhouette says. For the pieces whose front is painted on
+//                 rather than built in: a jumbotron is a symmetric frame with a
+//                 screen on one face, a message pane is a symmetric card with
+//                 text on one face, and a weapon spawner is a symmetric crate
+//                 with a gun lying across it. Mirroring asks the geometry which
+//                 way round a piece is (see isMirrorSymmetric in scene.js), and
+//                 the geometry answers "either way" for all three
+//   team          which side the piece belongs to: 'Blue', 'Orange', or
+//                 'Neutral' for the one that belongs to nobody
+//   teamFamily    id shared by the entries that are the same piece in different
+//                 team colours. Mirroring an arena's blue half into its orange
+//                 half needs to swap the spawn zone with everything else, and a
+//                 team is not a theme — the themed packs are a different axis
+//                 entirely and hold none of these pieces
 //
 // `model`, `texture` and `icon` are resolved by tools/match-assets.mjs and are
 // pointers into the gitignored game assets, so the editor still runs
@@ -164,6 +194,63 @@ export const WEAPON_ICONS = {
   Healthpack: 'Icon_healthpack_silhouette',
 };
 
+/**
+ * The weapon itself, hanging over the spawner, and how far it reaches.
+ *
+ * A weapon spawner is a crate less than half a metre across, and what actually
+ * has to fit is the gun above it — an RPG is a metre long and lies *across* the
+ * crate's long side, so a spawner set flush against a wall spawns a launcher
+ * with its tube through the wall. Nothing about the crate says so, which is why
+ * the gun is drawn.
+ *
+ * `model` is the weapon's own prefab, and `_weaponPart` in scene.js takes the
+ * `Visuals` branch out of it — the weapon as a player picks it up, textures and
+ * all.
+ *
+ * **Not the `<Weapon>Preview` prefab, which is the obvious candidate and the
+ * wrong one.** That is the very thing the game floats over a spawner, so it was
+ * used first; but every mesh in it wears a material called `MATWeaponSpawn`,
+ * and that material is empty — no texture, no colour, not even a base colour
+ * factor, because all it ever was is the Unity shader that dissolves a weapon
+ * into being, and shaders do not survive an export. The guns came out white.
+ *
+ * The full prefab carries both: the textured weapon under `Visuals`, and that
+ * same untextured copy under a `VFX…/SpawnModel` beside it. They occupy the
+ * same space to the millimetre for six of the nine and within three centimetres
+ * for the rest, so taking the textured one changes what the gun looks like and
+ * not where it is.
+ *
+ * `reach` is the mesh's own extent along Z in metres, measured off the prefab,
+ * and it is what picks which weapon to draw when a spawner offers several: the
+ * longest one is the one whose clearance is in question.
+ *
+ * The names happen to match `WEAPONS` one for one — unlike the icons, which
+ * spell the grenade "granade" — but they are written out rather than derived,
+ * because a game update is free to rename a prefab without renaming a weapon.
+ */
+export const WEAPON_MODELS = {
+  Handgun: { model: 'Handgun', reach: 0.245 },
+  SMG: { model: 'SMG', reach: 0.796 },
+  Shotgun: { model: 'Shotgun', reach: 0.506 },
+  Sniper: { model: 'Sniper', reach: 0.967 },
+  RPG: { model: 'RPG', reach: 1.058 },
+  Grenade: { model: 'Grenade', reach: 0.116 },
+  Flashbang: { model: 'Flashbang', reach: 0.138 },
+  RiotShield: { model: 'RiotShield', reach: 0.215 },
+  Healthpack: { model: 'Healthpack', reach: 0.122 },
+};
+
+/**
+ * How high above its own base the spawner holds a weapon, in metres.
+ *
+ * The `Preview` node inside `WeaponSpawnPoint.glb` sits at exactly this height,
+ * and so does the node called `WeaponSpawnPoint` beside it — the anchor the
+ * real weapon is spawned on. Neither is rotated, which is the other half of the
+ * story: the crate's own `Visual` is turned a quarter turn about Y and the
+ * weapon is not, so the gun lies across the crate rather than along it.
+ */
+export const WEAPON_HOVER = 1.127;
+
 /** The game's own shorthand for "any of them", and what it writes for it. */
 export const WEAPON_ANY = 'All';
 
@@ -194,6 +281,27 @@ export function formatWeapons(list) {
   if (!chosen.length) return WEAPON_ANY;
   const coversAll = WEAPONS.every((w) => chosen.includes(w)) && chosen.length === WEAPONS.length;
   return coversAll ? WEAPON_ANY : chosen.join(LIST_SEPARATOR);
+}
+
+/**
+ * Which of the weapons a spawner offers to draw over it.
+ *
+ * The one that reaches furthest, not the first in the list, and the difference
+ * matters: a spawner left at `All` can produce an RPG, and drawing the handgun
+ * that heads the list would say a spawner clears a wall it does not. The
+ * enemy spawners pick the first of their list instead, because a bot is a bot
+ * — nothing about which one spawns changes where it fits.
+ *
+ * Names this build has never heard of are skipped rather than guessed at, so a
+ * weapon added by a game update draws nothing instead of the wrong thing.
+ */
+export function longestWeapon(list) {
+  let best = null;
+  for (const w of list) {
+    const entry = WEAPON_MODELS[w];
+    if (entry && (!best || entry.reach > WEAPON_MODELS[best].reach)) best = w;
+  }
+  return best;
 }
 
 // ---------------------------------------------------------------------------
@@ -1121,22 +1229,24 @@ export const BUILTIN_PACKS = [
     { type: "WeaponSpawnPoint", objectType: "WeaponSpawnPoint",
       props: { specificWeapon: "All" }, label: "Weapon Spawn", category: "Weapon Spawns",
       shape: "spawnAll", size: [0.449, 0.344, 0.222], pivot: "base", rotationAxes: "y",
-      floor: true, color: "#E8C547", defaultScale: [1, 1, 1], model: "WeaponSpawnPoint",
+      floor: true, facing: "z", color: "#E8C547", defaultScale: [1, 1, 1], model: "WeaponSpawnPoint",
+      weapon: true,
       texture: "initialShadingGroup_Diffuse.png", icon: "icon_weapons_Shotgunspawner" },
     { type: "DamageBox", objectType: "DamageBox", props: { style: "Red" }, label: "Damage Box",
       category: "Hazards", shape: "damageBox", size: [1, 1, 1], pivot: "center",
       rotationAxes: "xyz", floor: false, color: "#E0574B", defaultScale: [1, 1, 1],
-      opacity: 0.25, model: "DamageBox", icon: "Icon_DamageBox" },
+      opacity: 0.12, model: "DamageBox", icon: "Icon_DamageBox",
+      team: "Neutral", teamFamily: "damageBox", field: true },
     { type: "DamageBoxTeam1", objectType: "DamageBox", props: { style: "Blue" },
       label: "Damage Box Blue Team", category: "Hazards", shape: "damageBox", size: [1, 1, 1],
       pivot: "center", rotationAxes: "xyz", floor: false, color: "#4A90D9",
-      defaultScale: [1, 1, 1], opacity: 0.25, model: "DamageBoxTeam1",
-      icon: "Icon_DamageBoxTeam1" },
+      defaultScale: [1, 1, 1], opacity: 0.12, model: "DamageBoxTeam1",
+      icon: "Icon_DamageBoxTeam1", team: "Blue", teamFamily: "damageBox", field: true },
     { type: "DamageBoxTeam2", objectType: "DamageBox", props: { style: "Orange" },
       label: "Damage Box Orange Team", category: "Hazards", shape: "damageBox", size: [1, 1, 1],
       pivot: "center", rotationAxes: "xyz", floor: false, color: "#E08A3C",
-      defaultScale: [1, 1, 1], opacity: 0.25, model: "DamageBoxTeam2",
-      icon: "Icon_DamageBoxTeam2" },
+      defaultScale: [1, 1, 1], opacity: 0.12, model: "DamageBoxTeam2",
+      icon: "Icon_DamageBoxTeam2", team: "Orange", teamFamily: "damageBox", field: true },
     { type: "ExplosiveBarrel", label: "Explosive Barrel", category: "Hazards",
       shape: "explosiveBarrel", size: [0.61, 0.81, 0.61], pivot: "base", rotationAxes: "y",
       floor: true, color: "#C4452F", defaultScale: [1, 1, 1], model: "ExplosiveBarrel",
@@ -1148,7 +1258,7 @@ export const BUILTIN_PACKS = [
     // opening. See `_refreshScreen` in scene.js and DERIVED_ICONS in
     // tools/stage-assets.mjs.
     { type: "Jumbotron", label: "Jumbotron", category: "Emplacements", shape: "jumbotron",
-      size: [1.4, 1, 0.057], pivot: "center", rotationAxes: "xyz", floor: false,
+      size: [1.4, 1, 0.057], pivot: "center", rotationAxes: "xyz", floor: false, facing: "z",
       color: "#3A4C5A", defaultScale: [1, 1, 1], model: "Jumbotron",
       screen: { image: "Image_JumbotronScreen", inset: 0.065 },
       icon: "Icon_JumbotronSingleScreen" },
@@ -1174,7 +1284,7 @@ export const BUILTIN_PACKS = [
     { type: "CustomMessage", objectType: "CustomMessage",
       props: { content: "New message", showInGame: true },
       label: "Custom Text Message", category: "Emplacements", shape: "messagePane",
-      size: [1, 1, 0.01], pivot: "center", rotationAxes: "xyz", floor: false,
+      size: [1, 1, 0.01], pivot: "center", rotationAxes: "xyz", floor: false, facing: "z",
       color: "#8FA6B8", defaultScale: [1, 1, 1], model: "CustomMessage",
       text: { prop: "content", inset: 0.06 }, icon: "icon_text_obj" },
     ],
@@ -1185,15 +1295,17 @@ export const BUILTIN_PACKS = [
     { type: "PlayerSpawnZoneTeam1", label: "Player Spawn Zone Blue Team", category: "Spawn Zones",
       shape: "spawnZone", size: [1.202, 2.363, 1.392], pivot: "base", anchor: [0.5, 0.432], rotationAxes: "y", floor: true,
       color: "#4A90D9", defaultScale: [1, 1, 1],
-      model: "PlayerSpawnZoneTeam1", texture: "TPgradientVerticalConcave00 1.png", tintModel: true, fixedParts: "Radio|SpawnPointMachine", area: SPAWN_ZONE_AREA, icon: "Icon_SpawnZoneTeam1" },
+      model: "PlayerSpawnZoneTeam1", texture: "TPgradientVerticalConcave00 1.png", tintModel: true, fixedParts: "Radio|SpawnPointMachine", area: SPAWN_ZONE_AREA, icon: "Icon_SpawnZoneTeam1",
+      team: "Blue", teamFamily: "playerSpawnZone" },
     { type: "PlayerSpawnZoneTeam2", label: "Player Spawn Zone Orange Team", category: "Spawn Zones",
       shape: "spawnZone", size: [1.202, 2.399, 1.392], pivot: "base", anchor: [0.5, 0.432], rotationAxes: "y", floor: true,
       color: "#E08A3C", defaultScale: [1, 1, 1],
-      model: "PlayerSpawnZoneTeam2", texture: "TPgradientVerticalConcave00 1.png", tintModel: true, fixedParts: "Radio|SpawnPointMachine", area: SPAWN_ZONE_AREA, icon: "Icon_SpawnZoneTeam2" },
+      model: "PlayerSpawnZoneTeam2", texture: "TPgradientVerticalConcave00 1.png", tintModel: true, fixedParts: "Radio|SpawnPointMachine", area: SPAWN_ZONE_AREA, icon: "Icon_SpawnZoneTeam2",
+      team: "Orange", teamFamily: "playerSpawnZone" },
     { type: "EnemySpawnPoint", objectType: "EnemySpawnPoint",
       props: { enemyTypes: "All", behaviour: "Default" }, label: "Enemy Spawn",
       category: "Enemy Spawns", shape: "enemySpawn", size: [1.061, 0.289, 1.059], pivot: "base",
-      rotationAxes: "y", floor: true, color: "#C0553F", defaultScale: [1, 1, 1],
+      rotationAxes: "y", floor: true, groundOnly: true, color: "#C0553F", defaultScale: [1, 1, 1],
       figure: "enemy", model: "EnemySpawnPoint", texture: "EnemySpawner_Diffuse.png",
       icon: "Icon_Enemy_Spawner" },
     { type: "DominationZoneA", label: "Domination Zone A", category: "Domination",
@@ -1230,11 +1342,13 @@ export const BUILTIN_PACKS = [
     { type: "CaptureFlagSpawnTeam1", label: "Capture Flag Blue Team",
       category: "Capture The Flag", shape: "flagSpawn", size: [0.637, 2.15, 0.2], pivot: "base",
       anchor: [0.157, 0.5], rotationAxes: "y", floor: true, color: "#4A90D9", hover: true,
-      defaultScale: [1, 1, 1], model: "CaptureFlagSpawnPointTeam1", icon: "Icon_PurpleTeamFlag" },
+      defaultScale: [1, 1, 1], model: "CaptureFlagSpawnPointTeam1", icon: "Icon_PurpleTeamFlag",
+      team: "Blue", teamFamily: "captureFlag" },
     { type: "CaptureFlagSpawnTeam2", label: "Capture Flag Orange Team",
       category: "Capture The Flag", shape: "flagSpawn", size: [0.637, 2.15, 0.2], pivot: "base",
       anchor: [0.157, 0.5], rotationAxes: "y", floor: true, color: "#E08A3C", hover: true,
-      defaultScale: [1, 1, 1], model: "CaptureFlagSpawnPointTeam2", icon: "Icon_OrangeTeamFlag" },
+      defaultScale: [1, 1, 1], model: "CaptureFlagSpawnPointTeam2", icon: "Icon_OrangeTeamFlag",
+      team: "Orange", teamFamily: "captureFlag" },
     ],
   },
 ];

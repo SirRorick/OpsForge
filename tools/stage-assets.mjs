@@ -41,7 +41,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { decodePng, encodePng } from './slice-icons.mjs';
 import { parseGlb, serialiseGlb, repack, viewBytes } from './glb.mjs';
-import { BUILTIN_PACKS, WEAPON_ICONS, ENEMY_ICONS, ENEMY_MODELS } from '../src/packs.js';
+import { BUILTIN_PACKS, WEAPON_ICONS, WEAPON_MODELS, ENEMY_ICONS, ENEMY_MODELS } from '../src/packs.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SOURCE = join(ROOT, 'reference/GameAssets');
@@ -94,6 +94,7 @@ export function requiredAssets() {
   for (const v of Object.values(WEAPON_ICONS ?? {})) icons.add(v);
   for (const v of Object.values(ENEMY_ICONS ?? {})) icons.add(v);
   for (const v of Object.values(ENEMY_MODELS ?? {})) models.add(v);
+  for (const v of Object.values(WEAPON_MODELS ?? {})) models.add(v.model);
   return { icons: [...icons].sort(), models: [...models].sort(), derived: [...derived].sort() };
 }
 

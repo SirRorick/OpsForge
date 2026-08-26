@@ -62,6 +62,12 @@ export function registerPack(pack) {
       model: null,
       texture: null,
       opacity: 1,
+      // Which local axis the piece has a front on, when its silhouette does not
+      // say so, and which side it belongs to. Both are read by mirroring; see
+      // the field notes at the top of packs.js.
+      facing: null,
+      team: null,
+      teamFamily: null,
       // Where the object's origin sits in its own footprint, as a fraction of
       // the width and depth. Centred unless the pack says otherwise — see
       // geometryFor, and the corner barriers that need it.
@@ -214,6 +220,28 @@ export function equivalentIn(def, packId) {
 }
 
 /** Library entries of a pack, grouped by category, hidden ones left out. */
+/**
+ * The entries that are the same piece as `def` in another team's colours, in
+ * catalog order, or an empty list for a piece that has no such family.
+ *
+ * A team is not a theme, and this is not `equivalentIn` with a different
+ * argument. The themed packs are eleven ways of building the same wall; a team
+ * family is two or three objects the game treats as *different kinds of thing*
+ * — a blue spawn zone and an orange one are separate types with separate
+ * meanings, and no themed pack holds either. Mirroring an arena's blue half
+ * into its orange half needs this second axis, and the theme picker is no use
+ * for it.
+ */
+export function teamVariants(def) {
+  if (!def?.teamFamily) return [];
+  return [...byKey.values()].filter((d) => d.teamFamily === def.teamFamily);
+}
+
+/** The family entry for one team — `teamVariants` narrowed to a single side. */
+export function teamVariant(def, team) {
+  return teamVariants(def).find((d) => d.team === team) || null;
+}
+
 export function categoriesOf(pack) {
   const out = new Map();
   for (const def of pack.objects) {

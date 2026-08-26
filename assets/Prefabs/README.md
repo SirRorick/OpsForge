@@ -14,7 +14,7 @@ Delete any of them and that object falls back to its stand-in shape from
 `src/placeholders.js` — a partial folder is fine, and an empty one still runs.
 The **Stand-ins** switch in the toolbar flips between the two at any time.
 
-186 files:
+195 files:
 
 - BarrierCorner.glb
 - BarrierFull.glb
@@ -101,12 +101,15 @@ The **Stand-ins** switch in the toolbar flips between the two at any time.
 - ElectricityBoxPurple.glb
 - EnemySpawnPoint.glb
 - ExplosiveBarrel.glb
+- Flashbang.glb
 - GraffitiBoxSolid.glb
 - GraffitiBoxSolidGrounded.glb
 - GraffitiCylinderSolid.glb
 - GraffitiCylinderSolidGrounded.glb
 - GraffitiTunnel.glb
 - GraffitiWallSolid.glb
+- Grenade.glb
+- Handgun.glb
 - HandgunBotSpawner.glb
 - HandgunCorruptedBotSpawner.glb
 - HatCoBarrierCornerVisual.glb
@@ -123,6 +126,7 @@ The **Stand-ins** switch in the toolbar flips between the two at any time.
 - HatchetCorpCylinderSolidGrounded.glb
 - HatchetCorpTunnel.glb
 - HatchetCorpWallSolid.glb
+- Healthpack.glb
 - IndoorBarrierCornerVisual.glb
 - IndoorBarrierCrateVisual.glb
 - IndoorBarrierFullVisual.glb
@@ -167,16 +171,21 @@ The **Stand-ins** switch in the toolbar flips between the two at any time.
 - PurpleDestructibleCrate.glb
 - PurpleTunnel.glb
 - PurpleWallSolid.glb
+- RPG.glb
 - RPGBotSpawner.glb
 - RPGCorruptedBotSpawner.glb
 - Recuperator.glb
+- RiotShield.glb
+- SMG.glb
 - SMGBotSpawner.glb
 - SMGCorruptedBotSpawner.glb
 - SampleAnalysisMachineArena.glb
 - Server.glb
 - ShieldBotSpawner.glb
+- Shotgun.glb
 - ShotgunBotSpawner.glb
 - ShotgunCorruptedBotSpawner.glb
+- Sniper.glb
 - SniperBotSpawner.glb
 - SniperCorruptedBotSpawner.glb
 - StreetStyleBarrel.glb
