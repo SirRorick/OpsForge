@@ -9,7 +9,7 @@ import {
   buildNavMask, encodeNavCloud, MAP_VERSION,
 } from './format.js';
 import {
-  getPacks, getPack, registerPack, categoriesOf, packsInGroup, getByKey, iconUrl,
+  getPacks, categoriesOf, packsInGroup, getByKey, iconUrl,
   equivalentIn, teamVariants, teamVariant,
 } from './catalog.js';
 import {
@@ -59,7 +59,6 @@ let placingLabel = null;    // set while a library pick-up is following the curs
 (async function boot() {
   map = await newMap({ name: 'New Map' });
   applyMapMeta();
-  await tryLoadDiskPacks();
   buildLibrary();
   buildRules();
   wireToolbar();
@@ -144,24 +143,6 @@ function wirePreviewButton() {
         + 'three feet, and Escape puts you back where you were in the editor.');
     }
   });
-}
-
-/**
- * Extra packs sitting next to index.html, when the editor is served over http.
- * The packs the game ships with are built in; this is only for adding more.
- */
-async function tryLoadDiskPacks() {
-  try {
-    const res = await fetch('./packs/index.json', { cache: 'no-store' });
-    if (!res.ok) return;
-    const list = await res.json();
-    for (const file of list) {
-      try {
-        const p = await (await fetch(`./packs/${file}`, { cache: 'no-store' })).json();
-        registerPack(p);
-      } catch (e) { console.warn(`Pack ${file} failed to load`, e); }
-    }
-  } catch { /* file:// or no packs folder — the built-in packs are enough */ }
 }
 
 // ---------------------------------------------------------------------------

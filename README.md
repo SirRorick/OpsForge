@@ -74,7 +74,7 @@ npm run package    # dist/spatial-ops-map-editor/ and .zip — that plus the art
 ```
 
 The single file `npm run build` writes really is the whole editor, but it
-fetches `assets/` and `packs/` from wherever it is served, so on its own it has
+fetches `assets/` from wherever it is served, so on its own it has
 no artwork. `npm run package` puts the two together and produces the same zip
 the releases carry. `dist/` is a build output and is not committed.
 
@@ -265,8 +265,8 @@ the server until something asks for them.
 
 ## More
 
-- [packs/README.md](packs/README.md) — add your own objects with a JSON file in
-  `packs/`, no code changes.
+- [packs/README.md](packs/README.md) — why the object catalog is built in, and
+  where to add to it.
 - [docs/FORMAT.md](docs/FORMAT.md) — the map file format as it is currently
   understood, including which parts are confirmed and which are still
   inference.

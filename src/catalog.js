@@ -45,7 +45,27 @@ const packs = new Map();
 const byKey = new Map();
 const byType = new Map();   // type -> defs sharing it, in registration order
 
-export function registerPack(pack) {
+/**
+ * Take one pack into the registry. Called once per built-in pack at the foot of
+ * this file, and from nowhere else.
+ *
+ * Not exported, and that is the change. The editor used to fetch extra packs
+ * from a `packs/` folder beside index.html at boot, and `packs/README.md`
+ * promised that "registering a pack whose id already exists replaces it". It
+ * did not: `byKey` overwrote but `byType` *appended*, so `defFor` — which is
+ * how every object in a map file finds its definition — kept resolving to the
+ * entry registered first. The library panel showed the new definitions and the
+ * map on screen was built out of the old ones, silently.
+ *
+ * The fix is not to make replacement work. What the editor ships with is what
+ * it has: the game's own 173 objects, measured off its own prefabs, matched to
+ * its own icons. A pack the game does not have is a pack the game cannot load,
+ * so a map built with one is a map that does not open in the headset — which
+ * makes the whole facility a way of building something that cannot be played.
+ * Adding an object still means adding data and nothing else; it means adding it
+ * to `packs.js`, where the other 173 live.
+ */
+function registerPack(pack) {
   if (!pack || !pack.id || !Array.isArray(pack.objects)) {
     throw new Error('A pack needs an id and an objects array.');
   }

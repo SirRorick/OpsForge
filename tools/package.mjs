@@ -78,7 +78,7 @@ Unzip anywhere, then serve this folder over HTTP and open the address it prints:
     npx serve .            # or: python -m http.server
 
 **It has to be served, not opened from disk.** Browsers refuse to let a
-\`file://\` page fetch the thumbnails, models and packs, so double-clicking
+\`file://\` page fetch the thumbnails and models, so double-clicking
 \`index.html\` gives you an editor with no artwork. Any static web server will
 do — \`npx serve\` needs [Node.js](https://nodejs.org) 18 or newer, and if you
 already run a web server, point it at this folder instead.
@@ -92,7 +92,6 @@ is local.
     index.html        the whole editor, one file
     assets/Icons/     library thumbnails
     assets/Prefabs/   the game's models
-    packs/            object packs, loaded at runtime
 
 Delete anything from \`assets/Prefabs/\` and those objects fall back to the
 editor's own stand-in shapes; the **Stand-ins** switch at the foot of the
@@ -127,9 +126,6 @@ export function packageRelease({ out, zip = true } = {}) {
   }
   cpSync(assets, join(dest, 'assets'), { recursive: true });
 
-  const packs = join(ROOT, 'packs');
-  if (existsSync(packs)) cpSync(packs, join(dest, 'packs'), { recursive: true });
-
   // LICENSE.md travels with every copy — section 3.2 requires it.
   for (const f of ['README.md', 'LICENSE.md']) {
     if (existsSync(join(ROOT, f))) cpSync(join(ROOT, f), join(dest, f));
@@ -149,7 +145,7 @@ function main() {
 
   const total = dirSize(made.dest);
   console.log(`Packaged ${made.dest}`);
-  for (const part of ['assets/Icons', 'assets/Prefabs', 'packs']) {
+  for (const part of ['assets/Icons', 'assets/Prefabs']) {
     const s = dirSize(join(made.dest, part));
     if (s.files) console.log(`  ${part.padEnd(16)} ${String(s.files).padStart(4)} files  ${mb(s.total).padStart(9)}`);
   }
