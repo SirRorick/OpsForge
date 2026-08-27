@@ -1010,6 +1010,75 @@ function stacked(a, b) {
   return Math.max(a.min.y - b.max.y, b.min.y - a.max.y) <= STACK_GAP;
 }
 
+// -- how big a thing is -------------------------------------------------------
+// Several objects carry children that are the editor talking rather than the
+// object: the weapon a spawner would produce, hovering at chest height; the bot
+// standing on an enemy pad; the crackling field inside a damage box; the
+// wireframe over a boundary; the picture across a jumbotron; the words on a
+// sign; the red skin over a piece that has left the playable square.
+//
+// `Box3.expandByObject` walks all of them, and that is wrong for every question
+// the editor asks of an object's size. A weapon spawner is a crate 45 cm tall
+// carrying a gun a metre above it, so its bounding box was 1.2 m and:
+//
+//   Under ground     buried the crate three quarters of a metre too deep,
+//                    because it lands the box's *top* face on y = 0
+//   Drop             landed the next crate on top of the floating gun, since
+//                    `_surfaceUnder` raycasts and the gun answered first
+//   the badge        floated above the gun rather than above the crate
+//   stacking         bound anything within a metre above a spawner into the
+//                    same falling body
+//
+// So `decor` marks those children and this walk skips them. It is not the same
+// question as "can you click it" — the gun and the bot must stay pickable, and
+// `_clickSelect` says why — so it cannot be done with `raycast`, which is what
+// the edges and the message text use for their own narrower version of this.
+//
+// A prefab part that is genuinely the object stays in: the machine standing at
+// the corner of a player spawn zone is drawn in the headset and belongs to the
+// size of the thing, whatever `_attachFixedPart` does to its scale.
+
+const _extentBox = new THREE.Box3();
+
+function unionMapGeometry(box, node) {
+  if (node.userData?.decor) return;
+  if (node.isMesh && node.geometry) {
+    if (!node.geometry.boundingBox) node.geometry.computeBoundingBox();
+    box.union(_extentBox.copy(node.geometry.boundingBox).applyMatrix4(node.matrixWorld));
+  }
+  for (const child of node.children) unionMapGeometry(box, child);
+}
+
+/**
+ * Grow `box` by what `mesh` actually is. `Box3.expandByObject` with the
+ * editor's own drawing left out — see the note above.
+ */
+function expandByMapExtent(box, mesh) {
+  mesh.updateWorldMatrix(true, true);
+  unionMapGeometry(box, mesh);
+  return box;
+}
+
+/**
+ * Empty a group, handing back the buffers it was holding.
+ *
+ * `Object3D.clear` unparents and nothing more, which is right for a child that
+ * is going to be used again and wrong for one built to be thrown away. Two
+ * groups here are rebuilt outright rather than edited — the arena box on every
+ * map open and every undo, and the bot-grid overlay on every dab of the brush,
+ * which is once per pointer move — and neither of them shares anything with
+ * anything, so what `clear` alone left behind was a fresh geometry and material
+ * abandoned on the GPU each time. A long brush stroke leaked hundreds.
+ */
+function disposeChildren(group) {
+  for (const child of group.children) {
+    child.geometry?.dispose();
+    if (Array.isArray(child.material)) for (const m of child.material) m.dispose();
+    else child.material?.dispose();
+  }
+  group.clear();
+}
+
 /**
  * A picture of somebody's own, badged and sized like a captured one.
  *
@@ -2090,6 +2159,9 @@ export class Viewport extends EventTarget {
       const child = new THREE.Mesh(built.geometry, built.materials);
       child.castShadow = true;
       child.receiveShadow = true;
+      // The editor's illustration of what this pad produces, not the pad — so
+      // it stays out of every measurement of how big the pad is.
+      child.userData.decor = true;
       // On top of the pad, in the object's own unscaled space.
       mesh.geometry.computeBoundingBox();
       child.position.y = mesh.geometry.boundingBox.max.y;
@@ -2218,6 +2290,8 @@ export class Viewport extends EventTarget {
       if (!built || entry?.token !== token || !mesh.parent) return;
       const child = new THREE.Mesh(built.geometry, built.materials);
       child.castShadow = true;
+      // A metre of gun hanging over a 45 cm crate, and none of it is the crate.
+      child.userData.decor = true;
       child.position.y = WEAPON_HOVER;
       mesh.add(child);
       entry.child = child;
@@ -2300,6 +2374,7 @@ export class Viewport extends EventTarget {
     // object a metre away from it — and `_surfaceUnder` takes the first thing
     // its ray meets, so Drop would land a crate on nothing.
     child.raycast = () => {};
+    child.userData.decor = true;
     mesh.add(child);
     this._edges.set(mesh, child);
   }
@@ -2362,6 +2437,7 @@ export class Viewport extends EventTarget {
     // through. A plane faces +Z, so it is turned to face out.
     child.position.set((b.min.x + b.max.x) / 2, (b.min.y + b.max.y) / 2, b.min.z);
     child.rotation.y = Math.PI;
+    child.userData.decor = true;
     mesh.add(child);
     this._screens.set(mesh, child);
   }
@@ -2414,6 +2490,7 @@ export class Viewport extends EventTarget {
     child.position.set((b.min.x + b.max.x) / 2, (b.min.y + b.max.y) / 2, b.min.z);
     child.rotation.y = Math.PI;
     child.raycast = () => {};
+    child.userData.decor = true;
     mesh.add(child);
     this._texts.set(mesh, child);
   }
@@ -2509,6 +2586,15 @@ export class Viewport extends EventTarget {
         model = { ...whole, fixed, dropY: after - before };
         this._modelCache.set(cacheKey, model);
       }
+      // The .glb was fetched while all this waited, and in that time the mesh
+      // may have been deleted, or the map cleared and rebuilt by an undo, or
+      // the object re-skinned into something else by `setProp`. Answering for
+      // it now would not just draw on a dead mesh: `_refreshField` and the four
+      // below file it in maps keyed by mesh that nothing sweeps, so the mesh
+      // would be held alive and its buffers with it. Same token the figure and
+      // weapon loaders keep, written the way they were not: those two have an
+      // entry to compare, and this has the object's own definition.
+      if (!mesh.parent || mesh.userData.def !== def) return;
       mesh.geometry = model.geometry;
       this._setMaterial(mesh, model.materials);
       this._reskinOutside(mesh);
@@ -2686,16 +2772,49 @@ export class Viewport extends EventTarget {
     return this._ownerOf(hits.find((h) => h.object.isMesh)?.object) || null;
   }
 
-  /** Expand a click to its whole group, unless the user is overriding. */
+  /**
+   * Expand a click to its whole group, unless the user is overriding.
+   *
+   * Every member, drawn or not. That is what the outliner and its right-click
+   * menu want: the list shows a hidden object precisely so it can be reached,
+   * and the menu is the only way to bring one back, so filtering here would
+   * make Hide a one-way door. Anything happening in the *viewport* wants
+   * `pickGroup` instead.
+   */
   expandGroup(mesh, override = false) {
     const g = mesh.userData.group;
     if (!g || override) return [mesh];
     return this.objects.filter((o) => o.userData.group === g);
   }
 
+  /**
+   * The same, for a gesture that happened in the view: anything not drawn is
+   * left behind.
+   *
+   * A group is one thing everywhere else in the editor, and that is right — but
+   * a group with a hidden member is a group you can only partly see, and
+   * expanding a click to the whole of it put an invisible object under the
+   * gizmo. It then moved with the arrow keys, scaled with the handles and went
+   * with a Delete, none of it on screen. Hide a roof, click the wall it was
+   * grouped with, and the roof came too.
+   *
+   * `pickable` already keeps hidden objects out of what a click can *hit*; this
+   * is the other half of the same rule, because the expansion goes on to fetch
+   * objects the raycast never touched. It is the reason `_marqueeSelect` looked
+   * safe and was not: it only ever considers what is drawn, and then reached
+   * past that through the group.
+   *
+   * Visibility rather than the `hidden` flag, so it covers the boundaries switch
+   * as well — and so **Show hidden** puts these members back within reach, which
+   * is the whole point of that switch.
+   */
+  pickGroup(mesh, override = false) {
+    return this.expandGroup(mesh, override).filter((o) => o.visible);
+  }
+
   selectionBounds() {
     const box = new THREE.Box3();
-    for (const m of this.selection) box.expandByObject(m);
+    for (const m of this.selection) expandByMapExtent(box, m);
     return box;
   }
 
@@ -2790,10 +2909,7 @@ export class Viewport extends EventTarget {
     const list = meshes.filter((m) => !m.userData.locked);
     if (!list.length) return [];
     const box = new THREE.Box3();
-    for (const m of list) {
-      m.updateWorldMatrix(true, false);
-      box.expandByObject(m);
-    }
+    for (const m of list) expandByMapExtent(box, m);
     if (box.isEmpty()) return [];
     const at = box.getCenter(new THREE.Vector3())[axis];
     return list.map((m) => [m, this.reflectedPlacement(m, axis, at)]);
@@ -3223,10 +3339,7 @@ export class Viewport extends EventTarget {
     const plan = [];
     for (const body of this._fallingBodies(targets)) {
       const box = new THREE.Box3();
-      for (const m of body) {
-        m.updateWorldMatrix(true, false);
-        box.expandByObject(m);
-      }
+      for (const m of body) expandByMapExtent(box, m);
       if (box.isEmpty()) continue;
       // The whole body's footprint decides what it lands on, and its lowest
       // point decides how far it goes — so the piece at the bottom of a stack
@@ -3279,10 +3392,7 @@ export class Viewport extends EventTarget {
     };
 
     const boxes = new Map();
-    for (const m of meshes) {
-      m.updateWorldMatrix(true, false);
-      boxes.set(m, new THREE.Box3().expandByObject(m));
-    }
+    for (const m of meshes) boxes.set(m, expandByMapExtent(new THREE.Box3(), m));
 
     // Grouped first, and cheaply: one representative per group id.
     const firstOfGroup = new Map();
@@ -3517,6 +3627,9 @@ export class Viewport extends EventTarget {
       for (const z of zs) {
         ray.ray.origin.set(x, box.max.y + 0.05, z);
         for (const hit of ray.intersectObjects(others, true)) {
+          // The gun hovering over a spawner and the bot standing on one are
+          // drawn, and so are hit — but they are not surfaces anything lands on.
+          if (hit.object.userData?.decor) continue;
           if (hit.point.y > ceiling) continue;   // an overhang, not a shelf
           if (hit.point.y > best) best = hit.point.y;
           break;                                  // hits are sorted, so this is the top
@@ -3557,6 +3670,7 @@ export class Viewport extends EventTarget {
     child.scale.copy(size);
     child.position.copy(centre);
     child.renderOrder = 2;
+    child.userData.decor = true;
     mesh.add(child);
     this._fields.set(mesh, child);
   }
@@ -3606,8 +3720,7 @@ export class Viewport extends EventTarget {
 
   /** Is this object's whole footprint outside the square the headset draws? */
   isOutside(mesh) {
-    mesh.updateWorldMatrix(true, false);
-    const box = new THREE.Box3().expandByObject(mesh);
+    const box = expandByMapExtent(new THREE.Box3(), mesh);
     if (box.isEmpty()) return false;
     return box.min.x > PLAYABLE_HALF || box.max.x < -PLAYABLE_HALF
       || box.min.z > PLAYABLE_HALF || box.max.z < -PLAYABLE_HALF;
@@ -3636,6 +3749,7 @@ export class Viewport extends EventTarget {
     }
     const skin = new THREE.Mesh(mesh.geometry, this._alarmMaterial);
     skin.userData.skin = true;
+    skin.userData.decor = true;
     mesh.add(skin);
     this._outside.set(mesh, skin);
     return true;
@@ -3695,8 +3809,7 @@ export class Viewport extends EventTarget {
     let held = 0;
     for (const m of this.selection) {
       if (!m.userData.def?.groundOnly) continue;
-      m.updateWorldMatrix(true, false);
-      const box = new THREE.Box3().expandByObject(m);
+      const box = expandByMapExtent(new THREE.Box3(), m);
       if (box.isEmpty() || Math.abs(box.min.y) < 1e-6) continue;
       const world = new THREE.Vector3();
       m.getWorldPosition(world);
@@ -3863,7 +3976,7 @@ export class Viewport extends EventTarget {
       if (!mods.shift && !mods.ctrl) this.setSelection([]);
       return;
     }
-    const picked = this.expandGroup(hit, mods.shift);
+    const picked = this.pickGroup(hit, mods.shift);
     if (mods.ctrl) {
       const next = new Set(this.selection);
       const allIn = picked.every((m) => next.has(m));
@@ -3886,9 +3999,14 @@ export class Viewport extends EventTarget {
       // Dragged over rather than clicked, but a lock is a lock: the box does
       // not see it. Filtering these out here rather than leaving it to
       // `setSelection` also keeps a locked piece from dragging its unlocked
-      // group-mates in through `expandGroup` below.
+      // group-mates in through `pickGroup` below.
       if (m.userData.locked) continue;
       m.updateWorldMatrix(true, false);
+      // Everything drawn, decoration included, and the one place that is right.
+      // A marquee is about what you can see: the gun over a spawner and the bot
+      // on a pad are on the screen, so a box dragged around one of them has
+      // plainly been dragged around its spawner. Every *other* question about
+      // an object's extent is about the object — see `expandByMapExtent`.
       const bb = new THREE.Box3().setFromObject(m);
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, visible = false;
       for (let i = 0; i < 8; i++) {
@@ -3909,7 +4027,7 @@ export class Viewport extends EventTarget {
 
     const expanded = new Set();
     for (const m of inside) {
-      for (const g of this.expandGroup(m, mods.shift)) if (!g.userData.locked) expanded.add(g);
+      for (const g of this.pickGroup(m, mods.shift)) if (!g.userData.locked) expanded.add(g);
     }
 
     if (mods.ctrl) {
@@ -4024,7 +4142,7 @@ export class Viewport extends EventTarget {
   // -- arena and play space -------------------------------------------------
 
   setBounds(size) {
-    this.boundsGroup.clear();
+    disposeChildren(this.boundsGroup);
     this.boundsSize = { ...size };
     const { x, y, z } = size;
     const geo = new THREE.BoxGeometry(x, y, z);
@@ -4089,7 +4207,7 @@ export class Viewport extends EventTarget {
    * turned stays exactly that way instead of snapping to the world origin.
    */
   async setNavCloud(navCloud) {
-    this.navGroup.clear();
+    disposeChildren(this.navGroup);
     this.navGroup.position.set(0, 0, 0);
     this.navGroup.rotation.set(0, 0, 0);
     this.navMask = null;
@@ -4125,7 +4243,7 @@ export class Viewport extends EventTarget {
 
   /** Redraw the outline from whatever `navMask` currently says. */
   _renderNavMask() {
-    this.navGroup.clear();
+    disposeChildren(this.navGroup);
     const bytes = this.navMask;
     if (!bytes || !this.navGrid) return;
     const { N, M, spacingX, spacingZ } = this.navGrid;
@@ -4229,7 +4347,7 @@ export class Viewport extends EventTarget {
   /** The footprint of every placed object, regardless of selection. */
   allBounds() {
     const box = new THREE.Box3();
-    for (const m of this.objects) box.expandByObject(m);
+    for (const m of this.objects) expandByMapExtent(box, m);
     return box;
   }
 
@@ -4301,6 +4419,83 @@ export class Viewport extends EventTarget {
    * else's screen. Composited on a 2D canvas afterward, since the render
    * itself is a plain WebGL frame with nothing to draw text into.
    */
+  /**
+   * Everything in the scene that is the editor talking rather than the map.
+   *
+   * A picture of a map should be a picture of the map. All of this is drawn
+   * *about* the objects rather than being any of them: none of it is exported,
+   * none of it is in the headset, and every piece of it says "this is a thing
+   * being worked on" to anyone browsing a library of finished ones.
+   *
+   *   the grid and its halfway cross   a drawing on the floor, and the floor is
+   *                                    not part of the map either
+   *   the walkable overlay             a map of where the bots may go, painted
+   *                                    over the map it is about
+   *   badges                           the icons naming what a spawner holds —
+   *                                    interface, and the one thing here that
+   *                                    is drawn flat at the camera rather than
+   *                                    standing in the world
+   *   the gizmo                        a metre of coloured arrows across the
+   *                                    middle of the picture
+   *   ghosts                           a proposal that was never accepted
+   *
+   * The weapon a crate would produce and the bot a pad would **stay**. They are
+   * drawn where the game itself puts them, at the height and angle it holds
+   * them, so they are a picture of what the map does rather than a note about
+   * it — a spawner is a crate until you can see the RPG it hands out, and the
+   * clearance that gun needs is the whole reason it is drawn at all.
+   *
+   * The arena box stays. It is the edge of the thing being photographed rather
+   * than a note about it, and a map floating in an unbounded grey is harder to
+   * read at thumbnail size than one sitting in its own frame.
+   *
+   * Returns only what is visible right now, so putting them back afterwards
+   * restores exactly the state that was found — a nav overlay that was already
+   * switched off does not come back switched on.
+   */
+  _editorFurniture() {
+    return [
+      this.grid, this.centreLines, this.navGroup, this.ghostGroup, this.gizmo,
+      ...this._objectFurniture(),
+    ].filter((o) => o?.visible);
+  }
+
+  /**
+   * The half of that which hangs off the objects rather than off the scene.
+   *
+   * Split out because the walkaround wants exactly this list and none of the
+   * rest: the grid stays there on purpose, and the arena box, the overlay and
+   * the gizmo are switched off by name because their old state has to be put
+   * back afterwards.
+   *
+   * **Only the interface.** The badge over a spawner is an icon drawn flat at
+   * the camera, at a fixed size on screen, naming a setting — it is a label on
+   * a thing rather than the thing, it does not belong in a photograph of a map
+   * and it certainly does not belong hanging in the air in front of somebody
+   * walking around one.
+   *
+   * The weapon and the bot are the opposite case and they stay in both. They
+   * stand in the world at the height and angle the game itself uses, they are
+   * to scale, and they are the answer to the question the preview exists to
+   * ask: an RPG is a metre long, and whether a spawner set against a wall has
+   * the clearance to hand one out is something you find out by standing next to
+   * it. A picture of a map with its weapons in it is a better picture of that
+   * map.
+   *
+   * The red skin over a piece outside the playable square goes as well. It is a
+   * warning to whoever is building, drawn *as* the object rather than beside
+   * it, and a headset would show neither the red nor the object.
+   *
+   * Everything is returned whether or not it is visible; both callers filter to
+   * what is showing so that putting them back restores what they found.
+   */
+  _objectFurniture() {
+    const out = [];
+    for (const badge of this._badges.values()) out.push(badge.sprite);
+    for (const skin of this._outside.values()) out.push(skin);
+    return out;
+  }
+
   captureMapImage(w = 1280, h = 720) {
     const canvas = document.createElement('canvas');
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
@@ -4322,12 +4517,7 @@ export class Viewport extends EventTarget {
     camera.updateProjectionMatrix();
     camera.updateMatrixWorld(true);
 
-    // Out of shot: the things that belong to editing rather than to the map.
-    // The gizmo is the loud one — a metre of coloured arrows across the middle
-    // of the picture — and a tool's ghosts are a proposal that was never
-    // accepted. The grid and the arena box stay, because they are what the view
-    // looks like and this is a picture of the view.
-    const hidden = [this.gizmo, this.ghostGroup].filter((o) => o?.visible);
+    const hidden = this._editorFurniture();
     for (const o of hidden) o.visible = false;
     try {
       renderer.render(this.scene, camera);
@@ -4373,10 +4563,19 @@ export class Viewport extends EventTarget {
    * the player at the origin instead would mean walking back to the part of the
    * map you were working on every single time.
    *
-   * The editor's own furniture goes: the grid, the arena box, the walkable
-   * overlay, the gizmo, the selection stroke, the spawner labels. None of it
-   * exists for the player, and a preview that shows it is answering a question
-   * nobody asked.
+   * The editor's own furniture goes: the arena box, the walkable overlay, the
+   * gizmo, the selection stroke, the spawner badges and the red skin over a
+   * piece outside the playable square. None of it exists for the player, and a
+   * preview that shows it is answering a question nobody asked.
+   * `_objectFurniture` is the same list `captureMapImage` keeps out of a
+   * published thumbnail, for the same reason.
+   *
+   * What stays is everything that stands in the world at its own size: the
+   * weapon a crate would hand out and the bot a pad would put on the floor. A
+   * walkaround is for finding out whether a doorway is a squeeze and whether a
+   * crate is cover, and the gun a spawner produces is the same kind of
+   * question — you cannot judge the clearance an RPG needs from a crate with
+   * nothing on it.
    */
   enterPreview() {
     if (this.preview) return;
@@ -4394,6 +4593,10 @@ export class Viewport extends EventTarget {
       bounds: this.boundsGroup.visible,
       nav: this.navGroup.visible,
       ghosts: this.ghostGroup.visible,
+      // Whatever of the per-object furniture is showing right now, so that
+      // leaving puts back exactly what was found rather than switching the lot
+      // on — a badge already hidden for some other reason stays hidden.
+      furniture: this._objectFurniture().filter((o) => o.visible),
     };
 
     // Where the editor was looking, on the floor. The heading is the camera's
@@ -4414,7 +4617,7 @@ export class Viewport extends EventTarget {
     this.ghostGroup.visible = false;
     this.gizmo.detach();
     this.outline.selectedObjects = [];
-    for (const badge of this._badges.values()) badge.sprite.visible = false;
+    for (const o of restore.furniture) o.visible = false;
 
     this.orbit.enabled = false;
     camera.rotation.order = 'YXZ';
@@ -4487,7 +4690,7 @@ export class Viewport extends EventTarget {
     this.boundsGroup.visible = p.restore.bounds;
     this.navGroup.visible = p.restore.nav;
     this.ghostGroup.visible = p.restore.ghosts;
-    for (const badge of this._badges.values()) badge.sprite.visible = true;
+    for (const o of p.restore.furniture) o.visible = true;
     this._syncOutline();
     this.rebuildPivot();
 
@@ -4749,7 +4952,7 @@ export class Viewport extends EventTarget {
     if (!this._badges.size) return;
     const box = new THREE.Box3();
     for (const [mesh, badge] of this._badges) {
-      box.setFromObject(mesh);
+      expandByMapExtent(box.makeEmpty(), mesh);
       if (box.isEmpty()) continue;
       badge.sprite.position.set(
         (box.min.x + box.max.x) / 2,

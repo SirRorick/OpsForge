@@ -33,12 +33,43 @@ button,input,select{font:inherit;color:inherit}
 #app{display:grid;grid-template-rows:46px 1fr 24px;grid-template-columns:252px 1fr 304px;height:100%}
 #topbar{grid-column:1/-1;position:relative;display:flex;align-items:center;gap:14px;padding:0 12px;
   background:var(--panel);border-bottom:1px solid var(--line)}
-#statusbar{grid-column:1/-1;position:relative;display:flex;align-items:center;gap:16px;padding:0 12px;
+/* Three regions, and a grid rather than a flex row so the middle one is centred
+   on the *bar* rather than on whatever happens to be either side of it. The
+   budget used to be absolutely positioned to get that, which took it out of the
+   flow — so the message on the right, which has no bound on its length, grew
+   left until it ran underneath the budget bar and the two were printed on top of
+   each other. Equal `1fr` tracks centre the budget exactly as the absolute
+   positioning did, and this way the side columns have a width the message can be
+   told to live within. */
+/* `minmax(0,1fr)` and not a bare `1fr`, which means `minmax(auto,1fr)` and so
+   refuses to shrink a track below the widest thing in it. With a long message on
+   one side that pushed the whole bar out past the window and took the budget off
+   the middle of it — the exact fault this layout is here to fix. */
+#statusbar{grid-column:1/-1;position:relative;display:grid;
+  grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:16px;padding:0 12px;
   background:var(--panel);border-top:1px solid var(--line);
   font-family:var(--mono);font-size:10.5px;color:var(--dim);letter-spacing:.02em}
+#st-left{display:flex;align-items:center;gap:16px;min-width:0;overflow:hidden;white-space:nowrap}
 /* An empty status field would still take its share of the gap, leaving a hole
    in the bar where nothing is being said. */
 #statusbar span:empty{display:none}
+/* The message scrolls rather than being cut off or ellipsised: a toast is gone
+   in five seconds and this is the copy that stays, so all of it has to be
+   reachable. `margin-left:auto` on the span rather than `justify-content` on the
+   box, because an auto margin collapses to nothing once the content is too wide
+   — which leaves the overflow on the right where it can be scrolled to, instead
+   of on the left where no browser will let you reach it. */
+/* `height:100%` so the scrollbar is inside the bar rather than under it: a
+   scrolling box is as tall as its text *plus* its scrollbar, which is two pixels
+   more than the bar and left the thumb hanging past the bottom edge. */
+#st-msg-scroll{min-width:0;height:100%;display:flex;align-items:center;
+  overflow-x:auto;overflow-y:hidden;
+  scrollbar-width:thin;scrollbar-color:var(--line) transparent;overscroll-behavior-x:contain}
+#st-msg-scroll::-webkit-scrollbar{height:4px}
+#st-msg-scroll::-webkit-scrollbar-track{background:transparent}
+#st-msg-scroll::-webkit-scrollbar-thumb{background:var(--line);border-radius:2px}
+#st-msg-scroll:hover::-webkit-scrollbar-thumb{background:var(--dim)}
+#st-msg{white-space:nowrap;margin-left:auto}
 /* ---------- object budget ---------- */
 /* A map the headset cannot draw at a decent frame rate is not a better map for
    having more in it, and the point at which that starts is a number rather than
@@ -54,7 +85,7 @@ button,input,select{font:inherit;color:inherit}
    to ignore it and repeating themselves at them is not information. */
 /* Centred on the bar itself rather than on whatever text happens to sit to its
    left, so the bar does not shift as the status text changes length. */
-#budget{position:absolute;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:8px}
+#budget{display:flex;align-items:center;gap:8px}
 #budget-count{min-width:5.5em;text-align:right;color:var(--dim);
   font-variant-numeric:tabular-nums;transition:color .2s linear}
 #budget-count b{font-weight:600;color:var(--text)}
@@ -810,9 +841,11 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
   </aside>
 
   <footer id="statusbar">
-    <span id="st-file">No map loaded</span>
-    <span id="st-sel"></span>
-    <span id="st-mode"></span>
+    <div id="st-left">
+      <span id="st-file">No map loaded</span>
+      <span id="st-sel"></span>
+      <span id="st-mode"></span>
+    </div>
     <!-- How full the map is. A frame rate is not something the editor can
          measure for a headset it is not running on, so this measures the one
          number that predicts it. -->
@@ -820,7 +853,9 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
       <span id="budget-count"><b>0</b> / 700</span>
       <span id="budget-track"><i id="budget-fill"></i></span>
     </div>
-    <span style="margin-left:auto" id="st-msg"></span>
+    <!-- The last thing that happened. It is the only field with no bound on its
+         length, so it is the only one that needs somewhere to put the overflow. -->
+    <div id="st-msg-scroll"><span id="st-msg"></span></div>
   </footer>
 </div>
 

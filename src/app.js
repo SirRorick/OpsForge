@@ -750,9 +750,12 @@ function flipSelection(meshes, axis) {
   const targets = meshes.filter((m) => !m.userData.locked);
   if (!targets.length) return toast('Nothing to flip.');
   vp.setSelection(targets);
+  // No `commit()` here: `flipSelection` ends by emitting 'commit-end', which is
+  // already wired to it. Calling it a second time pushed the *result* onto the
+  // undo stack as well as the state before it, so the first Ctrl+Z restored the
+  // flip over itself and looked as though undo had stopped working.
   const n = vp.flipSelection(axis);
   if (!n) return toast('Nothing to flip.');
-  commit();
   toast(`Flipped ${n} object${n === 1 ? '' : 's'} across ${axis.toUpperCase()}.`);
   tip('flip',
     'Flip turns the selection round where it stands, the way Mirror turns a copy round on the far '
@@ -848,9 +851,10 @@ const PREFAB_EXT = 'opsprefab';
 /** The selection as a prefab document, ready to serialise. */
 function prefabFromSelection(name) {
   const list = [...vp.selection];
-  const box = new THREE.Box3();
-  for (const m of list) box.expandByObject(m);
-  const centre = box.getCenter(new THREE.Vector3());
+  // The viewport's own measurement of the selection, which leaves out what the
+  // editor draws about an object: a spawner near the edge of a prefab used to
+  // push the whole thing off centre by the length of the gun hanging over it.
+  const centre = vp.selectionBounds().getCenter(new THREE.Vector3());
   return {
     format: PREFAB_FORMAT,
     version: PREFAB_VERSION,
@@ -2840,23 +2844,30 @@ function showThemeMenu(x, y, meshes) {
   el.style.left = `${x}px`;
   el.style.top = `${y}px`;
 
+  const options = themeOptions(targets);
+  // A spawn zone is offered the other side rather than eleven themes, so the
+  // heading has to say which question is being asked.
+  const noun = options[0]?.option.team ? 'team' : 'theme';
+
   const head = document.createElement('div');
   head.className = 'ctxhead';
-  head.textContent = targets.length > 1 ? `Swap ${targets.length} objects to…` : 'Swap theme to…';
+  head.textContent = targets.length > 1
+    ? `Swap ${targets.length} objects to…`
+    : `Swap ${noun} to…`;
   el.appendChild(head);
 
-  for (const { pack, hits, already } of themeOptions(targets)) {
+  for (const { option, hits, already } of options) {
     const b = document.createElement('button');
     b.type = 'button';
     b.disabled = !hits;
-    b.innerHTML = `<span>${escapeHtml(pack.name)}</span>`
+    b.innerHTML = `<span>${escapeHtml(option.name)}</span>`
       + `<kbd>${hits ? `${hits}/${targets.length}` : already ? '✓' : '—'}</kbd>`;
     b.title = hits
-      ? `${hits} of ${targets.length} would become ${pack.name} pieces`
+      ? `${hits} of ${targets.length} would become ${option.name}${option.team ? '' : ' pieces'}`
       : already
-        ? `Already ${pack.name}`
-        : `Nothing in the selection has a ${pack.name} equivalent`;
-    b.onclick = () => { hideContextMenu(); swapTheme(pack.id, targets); };
+        ? `Already ${option.name}`
+        : `Nothing in the selection has a ${option.name} equivalent`;
+    b.onclick = () => { hideContextMenu(); swapTheme(option, targets); };
     el.appendChild(b);
   }
 
@@ -3009,30 +3020,76 @@ function swapInPlace(pairs) {
 // U barrier and Hatchet Corp has no low one, so half a wall really can have
 // nowhere to go.
 
-/** The virtual packs a selection could be swapped into, and what each would do. */
+/**
+ * The team families Swap theme offers as a choice of side rather than a theme.
+ *
+ * A player spawn zone is blue or it is orange, and that is the whole of what it
+ * is — no themed pack holds one, so the theme list was twelve greyed rows over a
+ * piece whose only real alternative was the other colour. The Mirror panel has
+ * offered the sides for exactly this reason since it could mirror into a second
+ * theme; this is the same idea in the menu the pointer is already on.
+ *
+ * A set rather than "anything with a `teamFamily`", because the other two
+ * families — the capture flags and the damage boxes — are the same shape of
+ * thing and have not been confirmed as wanting it. Adding either is one word
+ * here.
+ */
+const TEAM_SWAP_FAMILIES = new Set(['playerSpawnZone']);
+
+/**
+ * What a selection could be swapped into: eleven themes, or — for a piece whose
+ * identity is a side rather than a material — the sides.
+ *
+ * Each option is a name and a `pick`, which is handed one catalog entry and
+ * returns what to build in its place, or null for a piece that has no
+ * equivalent. That is the same shape `mirrorTargets` uses, and for the same
+ * reason: the two menus are asking one question with two answers behind it.
+ *
+ * The team list appears only when the whole selection is one family, since that
+ * is when the answer is unambiguous — a mixed bag of walls and spawn zones is a
+ * question about themes again, and the zones go across as themselves.
+ */
+function swapTargets(targets) {
+  const family = targets.length && targets[0].userData.def.teamFamily;
+  if (family && TEAM_SWAP_FAMILIES.has(family)
+      && targets.every((m) => m.userData.def.teamFamily === family)) {
+    return teamVariants(targets[0].userData.def).map((d) => ({
+      // The damage boxes have a third member belonging to nobody, and "Neutral
+      // Team" is not a thing anybody says.
+      name: d.team === 'Neutral' ? 'No team' : `${d.team} Team`,
+      team: true,
+      pick: (def) => teamVariant(def, d.team),
+    }));
+  }
+  return packsInGroup('virtual').map((p) => ({
+    name: p.name, team: false, pick: (def) => equivalentIn(def, p.id),
+  }));
+}
+
+/** ...and how much of the selection each of them would take. */
 function themeOptions(targets) {
-  return packsInGroup('virtual').map((pack) => {
+  return swapTargets(targets).map((option) => {
     let hits = 0, already = 0;
     for (const m of targets) {
-      const to = equivalentIn(m.userData.def, pack.id);
+      const to = option.pick(m.userData.def);
       if (!to) continue;
       if (to === m.userData.def) already++;
       else hits++;
     }
-    return { pack, hits, already };
+    return { option, hits, already };
   });
 }
 
-function swapTheme(packId, targets) {
+function swapTheme(option, targets) {
   const live = targets.filter((m) => !m.userData.locked && vp.objects.includes(m));
   const pairs = [];
   let missing = 0;
   for (const m of live) {
-    const to = equivalentIn(m.userData.def, packId);
+    const to = option.pick(m.userData.def);
     if (!to) { missing++; continue; }
     if (to !== m.userData.def) pairs.push([m, to]);
   }
-  const name = getPack(packId)?.name ?? packId;
+  const name = option.name;
   if (!pairs.length) {
     return toast(missing
       ? `Nothing in the selection has a ${name} equivalent.`
@@ -3041,9 +3098,11 @@ function swapTheme(packId, targets) {
   const swapped = swapInPlace(pairs);
   const left = missing ? `, ${missing} left alone with no ${name} equivalent` : '';
   toast(`Swapped ${swapped} object${swapped === 1 ? '' : 's'} to ${name}${left}.`);
-  tip('swaptheme',
-    'A theme swap keeps every position, rotation and scale, so it is the same arena in different '
-    + 'materials. Pieces the target theme does not have are left where they are.');
+  if (!option.team) {
+    tip('swaptheme',
+      'A theme swap keeps every position, rotation and scale, so it is the same arena in different '
+      + 'materials. Pieces the target theme does not have are left where they are.');
+  }
 }
 
 // -- putting things out of the way -------------------------------------------
@@ -3292,9 +3351,13 @@ function wireViewport() {
     if (!hit) return hideContextMenu();
     // A click inside the current selection acts on all of it; outside, on the
     // thing clicked and its group.
+    // `pickGroup`, not `expandGroup`: this menu was opened by pointing at
+    // something in the view, so it acts on what is in the view. The outliner's
+    // own menu uses the unfiltered one, which is what keeps a hidden object
+    // reachable at all.
     const meshes = vp.selection.has(hit) && vp.selection.size > 1
       ? [...vp.selection]
-      : vp.expandGroup(hit, e.shiftKey);
+      : vp.pickGroup(hit, e.shiftKey);
     showContextMenu(e.clientX, e.clientY, meshes);
   });
   addEventListener('pointerdown', (e) => {
@@ -4792,6 +4855,16 @@ function toast(msg, bad = false) {
   el.textContent = msg;
   el.className = 'show' + (bad ? ' bad' : '');
   $('st-msg').textContent = msg;
+  // The toast is gone in five seconds and the status bar keeps the copy, so a
+  // message longer than the bar has to be readable rather than merely present.
+  // It scrolls; this puts a new one back at its own beginning, since the box may
+  // still be scrolled to the end of the last one. The title is the whole of it
+  // in one go, for anyone who would rather hover than drag.
+  const scroll = $('st-msg-scroll');
+  if (scroll) {
+    scroll.scrollLeft = 0;
+    scroll.title = msg;
+  }
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { el.className = ''; }, 5200);
 }

@@ -88,6 +88,27 @@ function capScale(s) {
   return Math.min(HARD_CAP, SOFT_CAP * (s / SOFT_CAP) ** CAP_EXPONENT);
 }
 
+/**
+ * How far `q` turns about `axis`, ignoring however far it leans off it.
+ *
+ * The twist half of a swing-twist split. Any rotation is exactly a turn about
+ * a chosen axis followed by a lean away from it, and the two are independent —
+ * so this is the one number a control that turns about a fixed world axis is
+ * entitled to round. The twist quaternion is the part of `q` that points along
+ * `axis`, which for a unit axis is the dot product, so the angle comes straight
+ * off an atan2 with no decomposition to build and throw away.
+ *
+ * `q` and `-q` are the same rotation and would give angles a full turn apart,
+ * so the sign is taken off `w` first and the result lands in (-180, 180].
+ * Degenerate at a half turn about anything perpendicular to `axis`, where the
+ * twist is genuinely undefined; atan2(0, 0) returns 0, which is the honest
+ * answer and the harmless one.
+ */
+function twistAngle(q, axis) {
+  const s = q.w < 0 ? -1 : 1;
+  return 2 * Math.atan2((q.x * axis.x + q.y * axis.y + q.z * axis.z) * s, q.w * s);
+}
+
 function lineMaterial(colour, width = 2) {
   return new THREE.LineBasicMaterial({
     color: colour, transparent: true, depthTest: false, depthWrite: false, linewidth: width,
@@ -573,21 +594,48 @@ export class ComboGizmo extends THREE.Object3D {
    * turn after the snap comes on lands on 45, and the piece is square with
    * everything else built at 15.
    *
-   * 'YXZ' is the order the map file composes its own euler angles in, and
-   * scene.js hands this the pivot in that frame — so a component read here is
-   * the number the inspector shows and the file stores, and rounding it to the
-   * step is what puts that number on the step.
+   * The angle in question is the turn about the **world axis whose circle was
+   * grabbed**, because that is the only thing the control claims to do. It is
+   * measured with a swing-twist split: any orientation is a turn about that
+   * axis followed by a lean off it, the two are independent, and the twist half
+   * is the number this rounds. The correction is then applied as one more
+   * rotation about the same world axis, which by construction cannot disturb
+   * the lean.
    *
-   * Only the axis being dragged is touched. A piece deliberately tipped to a
-   * free angle about X has no business being straightened because someone
-   * turned it about Y.
+   * This used to decompose into a 'YXZ' euler and round the one component named
+   * after the axis, on the reasoning that the euler is what the inspector shows
+   * and the file stores. It is — but only Y survives the trip. 'YXZ' composes
+   * as Ry·Rx·Rz, so Y is the outermost factor and a world-Y turn does land
+   * exactly on `e.y`; `e.x` is an intermediate axis and `e.z` is the object's
+   * *own* Z after the other two have been applied. Rounding either of those on
+   * a piece that already carried some rotation moved it off the circle being
+   * dragged — measured against the three-axis Box in `reference/Issues`, a
+   * 20 degree pull on the Z circle turned it 20.11 degrees about Z *and* tilted
+   * it 1.35 degrees about the other two, and landed on no multiple of anything.
+   * A piece already at an angle could never be squared up by dragging at all.
+   *
+   * Rounding the arrived-at angle rather than the applied one is kept, and is
+   * still the whole point: a barrier left at a free 43 degrees goes to 45 on
+   * the first turn after the snap comes on, rather than to 58, 73, 88.
+   *
+   * What is given up is tidy *euler* numbers on a compound rotation, and there
+   * was never anything to give: a world-axis turn applied to a piece already
+   * leaning has no tidy euler, and the old code's tidy `e.x` was a number that
+   * did not describe what had happened. The number that matters — the total
+   * turn about the axis you dragged — is exactly on the step.
+   *
+   * Only that axis is touched. A piece deliberately tipped to a free angle
+   * about X has no business being straightened because someone turned it
+   * about Y.
    */
-  _snapTurn(q) {
+  _snapTurn(q, axisWorld) {
     const step = this.rotationSnap;
-    if (!step || !this.axis || this.axis === 'view') return q;
-    const e = new THREE.Euler().setFromQuaternion(q, 'YXZ');
-    e[this.axis] = Math.round(e[this.axis] / step) * step;
-    return new THREE.Quaternion().setFromEuler(e);
+    if (!step || !this.axis || this.axis === 'view' || !axisWorld) return q;
+    const now = twistAngle(q, axisWorld);
+    const wanted = Math.round(now / step) * step;
+    const correction = wanted - now;
+    if (Math.abs(correction) < 1e-12) return q;
+    return new THREE.Quaternion().setFromAxisAngle(axisWorld, correction).multiply(q);
   }
 
   /** Where the pointer ray meets a plane, as an offset from `origin`. */
@@ -652,7 +700,7 @@ export class ComboGizmo extends THREE.Object3D {
         s.from.dot(now)
       );
       const q = new THREE.Quaternion().setFromAxisAngle(s.axisWorld, angle).multiply(s.quaternion);
-      this.object.quaternion.copy(this._snapTurn(q));
+      this.object.quaternion.copy(this._snapTurn(q, s.axisWorld));
     } else if (this.activeMode === 'scale') {
       const reach = this._axisPoint(s.centre, s.axisWorld);
       let ratio = reach / (s.offset || (s.offset = 1e-4));

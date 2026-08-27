@@ -237,7 +237,12 @@ the server until something asks for them.
   map library, and **Export** offers a choice between writing a file and
   publishing to it. Browsing the library needs no sign-in.
 - The thumbnail is the view as you left it, so framing the map before pressing
-  Export is how you choose the picture. OpsForge is badged in the corner.
+  Export is how you choose the picture. The editor's own interface stays out of
+  it — the grid, the icon badges over the spawners, the gizmo — so the shot is
+  the map rather than the map being worked on. What each spawner is holding
+  stays in: the weapon and the bot stand in the arena at their own size, the
+  way the game puts them there, so they are part of the map rather than a note
+  about it. OpsForge is badged in the corner.
 - Publishing needs a mod.io sign-in: enter your email in the Export dialog,
   mod.io sends a 5-digit code, and entering that code back signs you in. This
   is the same sign-in the game itself uses in-headset — not a personal access
@@ -258,10 +263,13 @@ the server until something asks for them.
 | Wheel | Zoom towards the pointer |
 | Two fingers | Orbit, with the top bar switched to **Trackpad** &middot; <kbd>Shift</kbd> pans &middot; <kbd>Ctrl</kbd> zooms &middot; a two-finger tap is a right click |
 | Arrow keys | Nudge the selection, the way the view faces &middot; <kbd>Shift</kbd> for up and down |
-| <kbd>Shift</kbd> / <kbd>Ctrl</kbd> + click | Add to the selection / pick one out of a group |
+| <kbd>Ctrl</kbd> + click | Add to the selection, or take something back out of it |
+| <kbd>Shift</kbd> + click | Pick one object out of a group, leaving the rest |
 | <kbd>G</kbd> / <kbd>Shift</kbd>+<kbd>G</kbd> | Group / ungroup |
+| <kbd>Ctrl</kbd>+<kbd>A</kbd> | Select everything on screen |
 | <kbd>Ctrl</kbd>+<kbd>D</kbd> / <kbd>C</kbd> / <kbd>V</kbd> | Duplicate / copy / paste |
-| <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> | Undo / redo |
+| <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> | Undo / redo &middot; <kbd>Ctrl</kbd>+<kbd>Y</kbd> also redoes |
+| <kbd>Ctrl</kbd>+<kbd>S</kbd> | Export |
 | <kbd>F</kbd> | Frame the selection |
 | <kbd>End</kbd> / <kbd>Shift</kbd>+<kbd>End</kbd> | To the floor / onto whatever is underneath |
 | <kbd>Ctrl</kbd>+<kbd>End</kbd> | Under the ground, top face on y = 0 |
