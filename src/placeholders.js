@@ -523,7 +523,7 @@ const builders = {
   // HatCoBarrierSlopeVisual, 1.028 x 1.198 x 0.262. A ramp: solid to y 0.72,
   // then the left edge marches right in even steps to x -0.10 at the top, so
   // the slope falls away to the left.
-  barrierSlope: () =>
+  barrierLowSlope: () =>
     merge([
       box(1, 0.6, 0.7, 0, 0.3, 0),
       place(prism([[-0.5, 0], [0.5, 0], [0.5, 0.4]], 0.7), { y: 0.6 }),
@@ -631,10 +631,17 @@ const builders = {
       box(1.04, 0.08, 1.04, 0, 0.96, 0),
     ]),
 
+  // GraffitiCrate, 0.522 x 0.519 x 1.028 — the same plain crate, twice as deep.
+  // Every builder is authored at unit height and then scaled to the entry's own
+  // size, so the shape is the crate's and only the proportions differ; it needs
+  // its own id purely because `longCrate` is a family of its own and a shape id
+  // has to name a builder.
+  longCrate: () => builders.crate(),
+
   // CamoCrateBig, 1.187 x 0.556 x 0.55. Feet in the bottom 0.05 m, a body that
   // bulges to 0.59 half-width at mid height, and two latches on the lid at
   // x -0.28..-0.21 and 0.21..0.28.
-  crateBig: () =>
+  longCrateSkids: () =>
     merge([
       box(0.09, 0.09, 0.85, -0.39, 0.045, 0),
       box(0.09, 0.09, 0.85, 0.39, 0.045, 0),
@@ -679,7 +686,7 @@ const builders = {
   // IndoorCover1x1, 0.5 x 0.51 x 0.5. A square pouffe on four short feet at
   // x -0.20..-0.15 and 0.15..0.20 — square in plan, not the cylinder it used
   // to be drawn as.
-  ottoman: () => {
+  crateOttoman: () => {
     const parts = [box(0.96, 0.82, 0.96, 0, 0.55, 0), box(1, 0.14, 1, 0, 0.93, 0)];
     for (const x of [-0.35, 0.35]) {
       for (const z of [-0.35, 0.35]) parts.push(box(0.1, 0.18, 0.1, x, 0.09, z));
@@ -711,6 +718,20 @@ const builders = {
       cyl(0.5, 0.09, 0.955, 20),
       ring(0.49, 0.02, 0, 0.32, 0, 20),
       ring(0.49, 0.02, 0, 0.68, 0, 20),
+    ]),
+
+  // PaintBallCrateVisual, 0.518 x 0.597 x 0.518. Round in plan at every height,
+  // whatever its name says. A foot that flares from 0.454 to the body's 0.483,
+  // three ribs standing proud at the full 0.5 centred on y 0.20, 0.47 and 0.74,
+  // and a lid over the top quarter, narrower than the body it sits on.
+  drum: () =>
+    merge([
+      cyl(0.454, 0.097, 0.048, 20, 0.483),
+      cyl(0.483, 0.779, 0.487, 20),
+      cyl(0.5, 0.026, 0.197, 20),
+      cyl(0.5, 0.026, 0.471, 20),
+      cyl(0.5, 0.026, 0.744, 20),
+      cyl(0.473, 0.124, 0.938, 20, 0.48),
     ]),
 
   // WildWestCacti, 0.84 x 1.544 x 0.629. A trunk with two arms that rise

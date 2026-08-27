@@ -575,6 +575,22 @@ and the editor places at exactly that: `1, 1, 1` for most things, `1, 2, 1` for
 faithfully; if they turn out to be player edits after all, the fix is one
 `defaultScale` per entry.
 
+### Default placement rotation
+
+Everything is placed square to the grid, with one exception. Camo's `CamoCrateBig`
+and Graffiti's `GraffitiCrate` are the same long box — 1.187 × 0.556 × 0.55 and
+0.522 × 0.519 × 1.028, which is that box a quarter turn round — but the game
+models the first down X and the second down Z. Left alone, the two lie across
+each other on the floor, and swapping a map between the two themes turns every
+one of them.
+
+`src/packs.js` records the difference as `shapeYaw: 90` on the Graffiti entry,
+which is a fact about the mesh rather than about the map. The editor places that
+crate at 90° so it lies like its opposite number, and a Replace, a theme swap or
+a themed mirror between the two adds the difference to the rotation rather than
+copying it — so the crate keeps its footprint and comes back to its original
+angle if it is swapped back. Nothing else in the catalog carries the field.
+
 ## `navCloud`
 
 **This is the player's physical room, not a navmesh built from map geometry.**

@@ -76,6 +76,11 @@ function registerPack(pack) {
       props: null,
       pivot: 'base',
       rotationAxes: 'y',
+      // Degrees this entry's mesh is turned from the way the rest of its shape
+      // family is modelled — nothing at all for all but one of them. See
+      // `shapeYaw` in packs.js, and `alignShapeYaw` in app.js for what a swap
+      // does with it.
+      shapeYaw: 0,
       floor: true,
       defaultScale: [1, 1, 1],
       icon: null,

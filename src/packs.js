@@ -25,6 +25,11 @@
 //                 game draws the same object. Measured, like `size`, by
 //                 npm run trace-prefabs.
 //   rotationAxes  'y' yaw only, 'xyz' free
+//   shapeYaw      degrees this mesh is turned from the way the rest of its
+//                 shape family is modelled. Only Graffiti's Big Crate carries
+//                 one: it is Camo's Crate Big lying the other way round, so it
+//                 is placed a quarter turn over and a swap between the two
+//                 carries the difference, leaving the crate lying as it lay
 //   floor         the piece is expected to rest on the ground
 //   groundOnly    the piece may not leave the ground, and the editor holds it
 //                 there. Only the enemy spawner, and it is not a tidiness rule:
@@ -806,7 +811,12 @@ export const BUILTIN_PACKS = [
       size: [0.59, 0.506, 0.55], pivot: "base", rotationAxes: "y", floor: true,
       defaultScale: [1, 1, 1], model: "CamoCrate", texture: "CamoCrateCombined_Diffuse.png",
       icon: "icon_MilitaryCrate" },
-    { type: "CamoCrateBig", label: "Crate Big", category: "Objects", shape: "crateBig",
+    // Not a crate. `longCrate` is its own family, deliberately not named with a
+    // `crate` prefix, because anything beginning `crate` would be swallowed into
+    // the crate family and go on standing in for a 0.5 m cube. This is a metre
+    // and a bit long; the only other piece like it is Graffiti's crate, and the
+    // two now swap with each other and with nothing else.
+    { type: "CamoCrateBig", label: "Crate Big", category: "Objects", shape: "longCrateSkids",
       size: [1.187, 0.556, 0.55], pivot: "base", rotationAxes: "y", floor: true,
       defaultScale: [1, 1, 1], model: "CamoCrateBig", texture: "CamoCrateCombined_Diffuse.png",
       icon: "icon_MilitaryCrateBig" },
@@ -870,7 +880,20 @@ export const BUILTIN_PACKS = [
       size: [1.002, 0.174, 0.502], pivot: "base", rotationAxes: "y", floor: true,
       defaultScale: [1, 1, 1], model: "IndoorBarrierCrateVisual",
       texture: "MikeaPillow_Diffuse.png", icon: "Image_MYKEA_crate_icon" },
-    { type: "MYKEAOttoman", label: "Ottoman", category: "Objects", shape: "ottoman",
+    // `crateOttoman` rather than `ottoman`, and the name is the whole of it:
+    // shape ids are a family plus a variant, so this is Mykea's crate the way
+    // `barrierUCouch` is Mykea's barrier U. It measures 0.5 x 0.51 x 0.5 against
+    // the standard crate's 0.5 cubed, on the same base pivot and the same
+    // yaw-only axis — the same box doing the same job in a sitting room — so a
+    // theme swap should carry a crate to it and back.
+    //
+    // Naming it as a variant rather than the family is what keeps it clear of
+    // the *destructible* crate: `crateOttoman` and `crateDestructible` are two
+    // variants, and `sameShapeFamily` deliberately relates a family to its
+    // variants and never two variants to each other. Swapping a destructible
+    // crate to Mykea therefore finds nothing and leaves the piece alone, which
+    // is right — an ottoman does not come apart when it is shot.
+    { type: "MYKEAOttoman", label: "Ottoman", category: "Objects", shape: "crateOttoman",
       size: [0.5, 0.51, 0.5], pivot: "base", rotationAxes: "y", floor: true,
       defaultScale: [1, 1, 1], model: "IndoorCover1x1", texture: "MikeaPillow_Diffuse.png",
       icon: "Image_MYKEA_cover_icon" },
@@ -925,7 +948,17 @@ export const BUILTIN_PACKS = [
     { type: "GraffitiTunnel", label: "Tunnel", category: "Objects", shape: "tunnel",
       size: [1, 1, 1], pivot: "center", rotationAxes: "y", floor: true, defaultScale: [1, 2, 1],
       model: "GraffitiTunnel", texture: "Graffiti_Diffuse.png", icon: "icon_Grafitti_Tunel" },
-    { type: "GraffitiCrate", label: "Crate", category: "Objects", shape: "crate",
+    // The game calls it a crate and it is shaped like one, but at 1.028 m it is
+    // twice the standard crate deep — the same box as Camo's Crate Big, which
+    // is why the two share the `longCrate` family and neither reaches an
+    // ordinary crate. "Big Crate" here, so the library says which of the two
+    // crates in this pack is which.
+    //
+    // `shapeYaw` because the long axis is Z on this mesh and X on Camo's: one
+    // crate, modelled a quarter turn apart. Without it the two lie across each
+    // other on the floor and a theme swap turns every one of them.
+    { type: "GraffitiCrate", label: "Big Crate", category: "Objects", shape: "longCrate",
+      shapeYaw: 90,
       size: [0.522, 0.519, 1.028], pivot: "base", rotationAxes: "y", floor: true,
       defaultScale: [1, 1, 1], model: "StreetStyleCrate",
       texture: "StreetStyleBarrelCrate_Diffuse.png", icon: "icon_Grafitti_Crate" },
@@ -993,7 +1026,17 @@ export const BUILTIN_PACKS = [
       size: [1, 1, 1], pivot: "center", rotationAxes: "y", floor: true, defaultScale: [1, 2, 1],
       model: "PaintBallTunnel", texture: "Chipboard_basecolor.png",
       icon: "icon_PaintBallSolidTunel" },
-    { type: "PaintballCrate", label: "Crate", category: "Objects", shape: "crate",
+    // The game calls it a crate and models it as `PaintBallCrateVisual`, but it
+    // is a barrel: round in plan at every height, with three raised ribs and a
+    // lid. So it is called one here, and it stands in for nothing.
+    //
+    // `drum` rather than a variant of `barrel` is the whole of that last part.
+    // Any id beginning `barrel` would be read as part of that family and go on
+    // swapping with the Graffiti and Wild West barrels, and this is not their
+    // size: 0.518 x 0.597 against 0.522 x 0.671 and 0.545 x 0.696 is seven to
+    // ten centimetres shorter than either. Those two are within three
+    // centimetres of each other and go on swapping between themselves.
+    { type: "PaintballCrate", label: "Barrel", category: "Objects", shape: "drum",
       size: [0.518, 0.597, 0.518], pivot: "base", rotationAxes: "y", floor: true,
       defaultScale: [1, 1, 1], model: "PaintBallCrateVisual",
       texture: "PaintBallCover1x1_Diffuse.png", icon: "icon_PaintBallCrate" },
@@ -1106,8 +1149,14 @@ export const BUILTIN_PACKS = [
       shape: "barrierDoorway", size: [1.053, 1.998, 0.262], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], model: "HatCoBarrierDoorwayVisual",
       texture: "HatCoBarriersTextureUpdated_Diffuse.png", icon: "icon_HatCoBarrierDoorway" },
+    // `barrierLowSlope`, so a theme swap treats it as Hatchet Corp's low
+    // barrier — which it is. 1.028 x 1.198 x 0.262 against the standard low
+    // barrier's 1.012 x 1.206 x 0.258 is a match to within eight millimetres on
+    // every axis, and Hatchet Corp is the only themed pack with no low barrier
+    // under that name. A variant rather than the family, so it reaches the
+    // plain `barrierLow` and not Camo's or Mykea's slab.
     { type: "HatchetCorpBarrierSlope", label: "Barrier Slope", category: "Objects",
-      shape: "barrierSlope", size: [1.028, 1.198, 0.262], pivot: "base", rotationAxes: "y",
+      shape: "barrierLowSlope", size: [1.028, 1.198, 0.262], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], model: "HatCoBarrierSlopeVisual",
       texture: "HatCoBarriersTextureUpdated_Diffuse.png", icon: "icon_HatCoBarrierSlope" },
     { type: "HatchetCorpTunnel", label: "Tunnel", category: "Objects", shape: "tunnel",

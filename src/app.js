@@ -448,12 +448,16 @@ function newObject(def, worldPoint) {
   // is 1 x 2 x 1.
   const [sx, sy, sz] = def.defaultScale;
   const y = def.pivot === 'center' ? (def.size[1] * sy) / 2 : 0;
+  // Square to the grid, unless the mesh itself is not: Graffiti's Big Crate is
+  // modelled down Z where the rest of its family runs along X, so it is placed
+  // the quarter turn over that makes it lie like the others. See `shapeYaw` in
+  // packs.js.
   return vp.addObject({
     $type: def.objectType,
     type: def.type,
     props: def.props ? { ...def.props } : undefined,
     position: { x: round(worldPoint.x), y, z: round(-worldPoint.z) },
-    rotation: { x: 0, y: 0, z: 0 },
+    rotation: { x: 0, y: def.shapeYaw, z: 0 },
     scale: { x: sx, y: sy, z: sz },
     dirty: true,
   });
@@ -712,6 +716,7 @@ function mirrorSelection(axis, into = null) {
     });
     copy.position.copy(placement.position);
     copy.quaternion.copy(placement.quaternion);
+    if (target) alignShapeYaw(copy.quaternion, m.userData.def, target);
     copy.scale.copy(placement.scale);
     if (placement.flip !== 'none') flipped++;
     if (m.userData.group) {
@@ -2972,6 +2977,29 @@ function replaceWith(def, targets) {
 }
 
 /**
+ * Turn `q` from the way `from`'s mesh lies to the way `to`'s does, and return
+ * it. A no-op for the 172 entries that agree, which is nearly all of them.
+ *
+ * Two pieces in one shape family can be modelled a quarter turn apart —
+ * Graffiti's Big Crate runs down Z where Camo's Crate Big runs along X — and
+ * `shapeYaw` is where the catalog says so. Without this a swap between the two
+ * keeps the rotation it finds, which keeps the *number* and turns the crate;
+ * with it the number moves and the crate stays lying where it lay, which is
+ * what a theme swap promises.
+ *
+ * Applied on the right, about the object's own up axis, for the same reason
+ * `MODEL_YAW` is: it is a fact about the mesh, not about where the piece
+ * stands. So a piece tilted off the floor turns about its own vertical rather
+ * than the world's, and comes back to itself if it is swapped back.
+ */
+function alignShapeYaw(q, from, to) {
+  const deg = to.shapeYaw - from.shapeYaw;
+  if (!deg) return q;
+  return q.multiply(new THREE.Quaternion()
+    .setFromAxisAngle(new THREE.Vector3(0, 1, 0), (deg * Math.PI) / 180));
+}
+
+/**
  * Stand a new object where an old one was, for each `[mesh, def]` pair, and
  * take the old ones away. Returns how many were swapped.
  *
@@ -2996,7 +3024,7 @@ function swapInPlace(pairs) {
       dirty: true,
     });
     next.position.copy(p);
-    next.quaternion.copy(q);
+    alignShapeYaw(next.quaternion.copy(q), m.userData.def, def);
     next.scale.copy(s);
     next.userData.group = m.userData.group;
     made.push(next);
