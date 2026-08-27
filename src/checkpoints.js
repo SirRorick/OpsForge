@@ -21,8 +21,18 @@
 // the index is read on every page load to draw the list, and it has no business
 // dragging a megabyte of map text along with it.
 //
-//   spatialops.checkpoints        the index, newest first
-//   spatialops.checkpoint.<id>    one map's serialised text
+//   spatialops.checkpoints          the index, newest first
+//   spatialops.checkpoint.<id>      one map's serialised text
+//   spatialops.checkpoint.<id>.ed   the editor state that has no home in it
+//
+// **The sidecar.** Grouping, locking and what has been put away with Hide are
+// the editor's, not the map's: the game's format has no room for any of them,
+// so a checkpoint that is only the exported text brings a map back with every
+// group dissolved. Which is precisely the wrong moment for it — nobody restores
+// a checkpoint on a good day, and an afternoon's arena arrives as four hundred
+// loose objects. So those three travel in a second key beside the text, sparse
+// and indexed by position in `mapObjects`, and a checkpoint written before this
+// existed simply has none and restores the way it always did.
 //
 // Every name here is prefixed or compounded on purpose. `build.mjs` flattens
 // the modules into one scope, so a bare `list` or `save` would collide with
@@ -31,6 +41,7 @@
 
 const CHECKPOINT_INDEX_KEY = 'spatialops.checkpoints';
 const CHECKPOINT_PREFIX = 'spatialops.checkpoint.';
+const CHECKPOINT_EDITOR_SUFFIX = '.ed';
 const CHECKPOINT_LIMIT = 12;
 
 /**
@@ -70,7 +81,9 @@ function writeCheckpointIndex(s, entries) {
 }
 
 function dropCheckpoint(s, entry) {
-  if (entry) s.removeItem(CHECKPOINT_PREFIX + entry.id);
+  if (!entry) return;
+  s.removeItem(CHECKPOINT_PREFIX + entry.id);
+  s.removeItem(CHECKPOINT_PREFIX + entry.id + CHECKPOINT_EDITOR_SUFFIX);
 }
 
 /** Every checkpoint, newest first. Metadata only — the map text stays put. */
@@ -91,6 +104,25 @@ export function checkpointText(id) {
 }
 
 /**
+ * The grouping, locks and hidden flags stored beside a checkpoint, or null.
+ *
+ * Null for a checkpoint written before the sidecar existed, for one whose
+ * sidecar was evicted on its own, and for a map that had none of the three to
+ * record — all of which mean the same thing to the caller and none of which is
+ * an error.
+ */
+export function checkpointEditorState(id) {
+  const s = checkpointStore();
+  if (!s) return null;
+  try {
+    const raw = s.getItem(CHECKPOINT_PREFIX + id + CHECKPOINT_EDITOR_SUFFIX);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Add a checkpoint, evicting the oldest to stay under the limit and under
  * whatever quota this browser hands out.
  *
@@ -98,7 +130,7 @@ export function checkpointText(id) {
  * one — an idle timer firing over an untouched map must not push twelve
  * identical copies through the ring and throw away the history that mattered.
  */
-export function saveCheckpoint({ text, name, author, guid, objects, reason = 'auto' }) {
+export function saveCheckpoint({ text, editor, name, author, guid, objects, reason = 'auto' }) {
   const s = checkpointStore();
   if (!s) return null;
 
@@ -126,6 +158,14 @@ export function saveCheckpoint({ text, name, author, guid, objects, reason = 'au
     try {
       s.setItem(CHECKPOINT_PREFIX + entry.id, text);
       writeCheckpointIndex(s, next);
+      // Last and separately: the map text is the checkpoint and the sidecar is
+      // a convenience, so a quota that will take one and not the other must
+      // keep the one that matters. Restoring simply finds no grouping.
+      if (editor) {
+        try {
+          s.setItem(CHECKPOINT_PREFIX + entry.id + CHECKPOINT_EDITOR_SUFFIX, JSON.stringify(editor));
+        } catch { /* the map is stored; the grouping is not. */ }
+      }
       return entry;
     } catch {
       if (next.length <= 1) {
@@ -142,7 +182,7 @@ export function removeCheckpoint(id) {
   const s = checkpointStore();
   if (!s) return;
   writeCheckpointIndex(s, readCheckpointIndex(s).filter((e) => e.id !== id));
-  s.removeItem(CHECKPOINT_PREFIX + id);
+  dropCheckpoint(s, { id });
 }
 
 export function clearCheckpoints() {

@@ -27,8 +27,8 @@ import {
 } from './rules.js';
 import { geometryFor } from './placeholders.js';
 import {
-  checkpointsAvailable, checkpointList, checkpointText, saveCheckpoint,
-  removeCheckpoint, clearCheckpoints, checkpointBytes, timeAgo,
+  checkpointsAvailable, checkpointList, checkpointText, checkpointEditorState,
+  saveCheckpoint, removeCheckpoint, clearCheckpoints, checkpointBytes, timeAgo,
 } from './checkpoints.js';
 import { zipWrite } from './zip.js';
 import {
@@ -4524,6 +4524,71 @@ function wireAutosave() {
 }
 
 /**
+ * The three things about the map that the map file cannot say.
+ *
+ * Grouping, locking and Hide are the editor's own, and the game's format has no
+ * field for any of them — so a checkpoint that is only `currentMapText()` comes
+ * back with every group dissolved, which is a poor way to greet somebody who
+ * has just lost a tab. They ride alongside instead; see the note at the top of
+ * checkpoints.js.
+ *
+ * Addressed by position, because position is the one name these objects have:
+ * `currentMapText` writes `mapObjects` straight off `vp.objects`, and
+ * `loadMapText` builds them back in file order, so index *i* is the same object
+ * either way. Sparse, because on most maps almost nothing carries any of the
+ * three, and null when nothing does — there is no sense storing a second key
+ * to say "no groups".
+ */
+function editorState() {
+  const objects = {};
+  vp.objects.forEach((m, i) => {
+    const rec = {};
+    if (m.userData.group) rec.g = m.userData.group;
+    if (m.userData.locked) rec.l = 1;
+    if (m.userData.hidden) rec.h = 1;
+    if (Object.keys(rec).length) objects[i] = rec;
+  });
+  return Object.keys(objects).length ? { v: 1, objects } : null;
+}
+
+/**
+ * Put that state back over a map that has just been loaded. Returns how many
+ * objects it touched, so the caller can tell whether anything happened.
+ *
+ * Locks and hidden flags go through the viewport rather than being written onto
+ * `userData` here, because both have consequences — a hidden object leaves the
+ * selection and stops being pickable, a locked one cannot be selected at all —
+ * and those live behind `setHidden` and `setLocked`.
+ *
+ * The group counter is wound past whatever came back. Group ids are handed out
+ * from a counter that starts at 1 with each page, and a restore is the only
+ * thing in the editor that reintroduces ids it did not issue: without this, the
+ * next Group would hand out `g3` to a map that already had one, and two
+ * unrelated runs of objects would move as a single lump.
+ */
+function applyEditorState(state) {
+  if (!state || state.v !== 1 || !state.objects) return 0;
+  const hidden = [], locked = [];
+  let touched = 0, highest = 0;
+  for (const [key, rec] of Object.entries(state.objects)) {
+    const m = vp.objects[Number(key)];
+    if (!m) continue;
+    if (rec.g) {
+      m.userData.group = rec.g;
+      const seq = Number(String(rec.g).replace(/^g/, ''));
+      if (Number.isFinite(seq)) highest = Math.max(highest, seq);
+    }
+    if (rec.l) locked.push(m);
+    if (rec.h) hidden.push(m);
+    touched++;
+  }
+  if (hidden.length) vp.setHidden(hidden, true);
+  if (locked.length) vp.setLocked(locked, true);
+  groupSeq = Math.max(groupSeq, highest + 1);
+  return touched;
+}
+
+/**
  * Write a checkpoint if there is anything to write. `force` is for the button,
  * which should work whether or not the switch is on.
  */
@@ -4532,6 +4597,10 @@ function takeCheckpoint(reason, force = false) {
   try {
     const entry = saveCheckpoint({
       text: currentMapText(),
+      // Written after the text, and from the same objects in the same order —
+      // `currentMapText` builds `mapObjects` straight off `vp.objects`, so an
+      // index here is the same object on the way back in.
+      editor: editorState(),
       name: map.name,
       author: map.author,
       guid: map.guid,
@@ -4615,6 +4684,14 @@ function restoreCheckpoint(entry) {
   const go = async () => {
     try {
       await loadMapText(text, `${entry.name} (checkpoint)`);
+      // After the map, because it is addressed by position in it. `loadMapText`
+      // has already taken the baseline snapshot for undo, and that baseline was
+      // of a map with no grouping in it — so it is taken again here rather than
+      // leaving the first Ctrl+Z to quietly dissolve what was just restored.
+      if (applyEditorState(checkpointEditorState(entry.id))) {
+        current = snapshot();
+        refreshAll();
+      }
       refreshCheckpoints();
     } catch (err) {
       console.error(err);

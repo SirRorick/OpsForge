@@ -218,6 +218,10 @@ the server until something asks for them.
 - The editor takes a snapshot of the map every couple of minutes of actual
   editing, on export, and on the way out, keeping a rolling twelve in the
   browser. Restore one after a crash or a closed tab.
+- Grouping, locks and what you have hidden come back with it. None of the three
+  is anything the map file can carry — they are the editor's, not the game's —
+  so they are kept beside the checkpoint rather than in it, and an afternoon's
+  arena comes back as the arena rather than as four hundred loose objects.
 - Take one by hand at any time from the Checkpoints panel.
 
 **Exporting**
