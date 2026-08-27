@@ -45,6 +45,31 @@ export function quatFromEulerYXZ(x, y, z) {
   ];
 }
 
+/**
+ * How near the vertical the 'YXZ' decomposition gives up and folds the roll
+ * into the yaw.
+ *
+ * At exactly ±90 degrees of X the other two angles are the same degree of
+ * freedom — `Ry(a)·Rx(90)·Rz(b)` is `Ry(a-b)·Rx(90)` — so one of them has to be
+ * chosen arbitrarily and `ez = 0` is the choice. That is unavoidable. Doing it
+ * *near* 90 rather than at it is not: the information is still there and the
+ * atan2 can still read it.
+ *
+ * three.js ships 0.9999999, which is a quarter of a *tenth* of a degree off
+ * vertical — so a sign tipped to 89.99 degrees with 30 degrees of roll came
+ * back as 89.99 with no roll at all and 30 degrees of extra yaw. Same
+ * orientation to within a hundredth of a degree, and three completely different
+ * numbers in the inspector and in the exported file, arrived at without anyone
+ * touching the object.
+ *
+ * 1e-12 puts the give-up point at eight hundred-thousandths of a degree from
+ * vertical, which no hand and no snap ever lands on, and the worst the
+ * degenerate branch then costs is 2e-5 degrees of orientation. Below about
+ * 1e-14 the two terms of the atan2 start to be float noise rather than signal,
+ * which is the only reason this is not smaller still.
+ */
+const GIMBAL_LIMIT = 1 - 1e-12;
+
 /** Euler radians in 'YXZ' order from a normalised quaternion [x,y,z,w]. */
 export function eulerYXZFromQuat(q) {
   const [x, y, z, w] = q;
@@ -60,7 +85,7 @@ export function eulerYXZFromQuat(q) {
   const clamp = (v) => (v < -1 ? -1 : v > 1 ? 1 : v);
   const ex = Math.asin(-clamp(m23));
   let ey, ez;
-  if (Math.abs(m23) < 0.9999999) {
+  if (Math.abs(m23) < GIMBAL_LIMIT) {
     ey = Math.atan2(m13, m33);
     ez = Math.atan2(m21, m22);
   } else {

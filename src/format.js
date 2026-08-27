@@ -142,12 +142,30 @@ export const OBJECT_PROP_KEYS = {
 };
 
 /**
- * Extra keys for a `$type`, in file order. A subtype we have never seen falls
- * back to whatever the object itself carries, so a future game update adds
- * fields without this module needing to know about them.
+ * Extra keys for a `$type`, in file order: the ones this build knows, in the
+ * order the game writes them, then anything else the object turned up with.
+ *
+ * The second half is the part that matters and it used to be missing. A subtype
+ * nobody here has heard of already fell back to whatever the object carried —
+ * that was the documented promise, that "a field we have never seen still
+ * survives a round trip instead of being silently dropped on edit". But a
+ * subtype we *have* heard of returned only the list above, so if a game update
+ * gives `WeaponSpawnPoint` a second field, `parseMap` collects it, the object
+ * carries it, and the first edit to that object writes it out of existence.
+ * Untouched objects were safe — they go back as their own raw text — which is
+ * exactly what makes it the kind of loss nobody notices: the map survives being
+ * opened and re-exported, and loses the field the day somebody moves the crate.
+ *
+ * The known keys stay first and in their own order, because that order is what
+ * keeps an edited object byte-identical to the way the game would have written
+ * it. An unknown key has no known place, so it goes after them and before
+ * "type", which is where the extras live.
  */
 export function propKeysFor($type, props) {
-  return OBJECT_PROP_KEYS[$type] || Object.keys(props || {});
+  const known = OBJECT_PROP_KEYS[$type];
+  const carried = Object.keys(props || {});
+  if (!known) return carried;
+  return [...known, ...carried.filter((k) => !known.includes(k))];
 }
 
 // -- Serialise --------------------------------------------------------------
