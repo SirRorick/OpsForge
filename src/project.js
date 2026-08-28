@@ -341,6 +341,22 @@ export function navCloudCovers(navCloud, mask, point) {
 }
 
 /**
+ * How many cells of a play space were actually walked.
+ *
+ * Zero is a real and common answer, and it does not mean the room is empty --
+ * it means nobody recorded one. `emptyNavCloud` builds a full-sized grid with
+ * every cell clear, so a map that never had its boundary walked carries a
+ * perfectly valid play space containing nothing. Told apart from a boundary
+ * that was walked, because "nothing was measured" and "nothing is reachable"
+ * are opposite things to tell somebody.
+ */
+export function paintedCells(mask) {
+  let n = 0;
+  for (let i = 0; i < (mask?.length || 0); i++) if (mask[i] === 1) n++;
+  return n;
+}
+
+/**
  * Everything in one map that lands outside that map's own play space.
  *
  * Takes a whole map rather than a project and a layer, so the check runs over
@@ -349,12 +365,16 @@ export function navCloudCovers(navCloud, mask, point) {
  * it that room's play space. Checking anything else would be checking a
  * parallel calculation and hoping it agreed.
  *
- * `mask` is the decoded `encodedPoints`. With no mask there is nothing to
- * measure against and nothing is reported, which is the right answer for a
- * template whose boundary was never walked.
+ * `mask` is the decoded `encodedPoints`. With nothing painted in it there is
+ * nothing to measure against and nothing is reported -- `paintedCells` is how
+ * a caller tells that apart, and it is worth saying out loud rather than
+ * passing over in silence.
  */
 export function objectsOutsidePlaySpace(map, mask) {
-  if (!mask?.length) return [];
+  // An unwalked boundary is not a boundary every object has fallen outside of.
+  // Reporting one as the other means telling somebody all 257 of their objects
+  // are unreachable, when what is true is that nothing was measured.
+  if (paintedCells(mask) === 0) return [];
   return (map.mapObjects || []).filter((o) => !navCloudCovers(map.navCloud, mask, o.position));
 }
 

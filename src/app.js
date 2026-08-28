@@ -28,7 +28,7 @@ import {
 import {
   newProject, newLayer, projectVariants, venueMapName, duplicateName,
   writeProjectArchive, readProjectArchive, projectFileName, identifyObjects, nextObjectId,
-  objectsOutsidePlaySpace, PROJECT_EXT,
+  objectsOutsidePlaySpace, paintedCells, PROJECT_EXT,
 } from './project.js';
 import { geometryFor } from './placeholders.js';
 import {
@@ -4232,14 +4232,17 @@ async function openVenueExport() {
   // to write -- rather than over a second calculation that would have to be
   // trusted to agree with them. Primary first, then one per layer, which is
   // the order the rows below are built in.
-  const outside = [];
+  const spaces = [];
   for (const variant of projectVariants(project)) {
     try {
       const mask = await decodeNavCloud(variant.navCloud?.encodedPoints || '');
-      outside.push(objectsOutsidePlaySpace(variant, mask).length);
+      spaces.push({
+        painted: paintedCells(mask),
+        outside: objectsOutsidePlaySpace(variant, mask).length,
+      });
     } catch {
       // A play space that will not decode is one this cannot speak about.
-      outside.push(0);
+      spaces.push({ painted: 0, outside: 0 });
     }
   }
 
@@ -4250,7 +4253,7 @@ async function openVenueExport() {
       guid: map.guid,
       anchors: (map.anchors || []).length,
       placed: true,
-      outside: outside[0] || 0,
+      space: spaces[0] || {},
       apply: (n) => { map.name = n; },
     },
     ...project.layers.map((l, i) => ({
@@ -4259,7 +4262,7 @@ async function openVenueExport() {
       guid: l.guid,
       anchors: (l.template.anchors || []).length,
       placed: l.placed,
-      outside: outside[i + 1] || 0,
+      space: spaces[i + 1] || {},
       apply: (n) => { l.name = n; },
     })),
   ];
@@ -4318,12 +4321,20 @@ async function openVenueExport() {
         + 'venue, which is almost certainly not where you want it.';
       el.appendChild(note);
     }
-    if (row.outside) {
+    if (!row.space.painted) {
       const note = document.createElement('p');
       note.className = 'vnote';
-      note.textContent = `${row.outside} object${row.outside === 1 ? '' : 's'} outside the play `
-        + `space walked in this room. ${row.outside === 1 ? 'It is' : 'They are'} in the file, `
-        + 'and nobody can reach ' + (row.outside === 1 ? 'it.' : 'them.');
+      note.textContent = 'No play space recorded. Nobody walked a boundary in this room, so the '
+        + 'file carries an empty one — the game has nothing to hold a player inside, and there '
+        + 'is nothing here to check the map against.';
+      el.appendChild(note);
+    } else if (row.space.outside) {
+      const n = row.space.outside;
+      const note = document.createElement('p');
+      note.className = 'vnote';
+      note.textContent = `${n} object${n === 1 ? '' : 's'} outside the play space walked in this `
+        + `room. ${n === 1 ? 'It is' : 'They are'} in the file, and nobody can reach `
+        + (n === 1 ? 'it.' : 'them.');
       el.appendChild(note);
     }
 
