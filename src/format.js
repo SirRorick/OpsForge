@@ -123,6 +123,46 @@ function dict(o) {
   return `{${keys.map((k) => `${J(k)}:${JSON.stringify(o[k])}`).join(',')}}`;
 }
 
+/**
+ * One anchor, written back with the keys it arrived with, in the order it
+ * arrived with them.
+ *
+ * The editor never creates or edits an anchor — this is pure passthrough — but
+ * it cannot be a raw string copy, because the whole record has to survive an
+ * `editedTime` bump like everything else here. So the keys are walked instead
+ * of being listed, which is the same reasoning that keeps unknown fields on a
+ * map object subtype: what the game writes is not necessarily what we have
+ * seen it write.
+ *
+ * Listing them was wrong in two ways at once, and every reference export hid
+ * both, because all sixteen carry exactly one `MetaGroupSpatialAnchor` with
+ * exactly these five keys. `$type` names a class hierarchy:
+ *
+ * - `MetaSpatialAnchor` has **no** `groupGuid`, and 42 of 568 library maps
+ *   carry one. `J(undefined)` is the value `undefined`, not a string, so the
+ *   template wrote the bare word into the file and the export was not JSON.
+ *   A map saved in a headset carries this beside the group anchor, which put
+ *   it squarely on the path of anyone reusing an aligned map as a template.
+ * - `EditorSpatialAnchor` adds `position` and `rotation` — a pose, in map
+ *   space — and those were dropped on the floor.
+ *
+ * A vector gets the .NET float treatment, because all four keys that have ever
+ * been seen in here are vectors and every one of them is float. Anything else
+ * goes back as plain JSON, which is the same choice `dict` and the unknown
+ * object props make, and for the same reason: `f32` would have to know whether
+ * an unseen scalar was an int or a float, and on a key nothing has ever written
+ * there is nothing to know it from. Plain JSON at least gives back the number
+ * as it was written — a marker id stays `7` rather than becoming `7.0`.
+ */
+function anchor(a) {
+  const fields = Object.keys(a).map((k) => {
+    const v = a[k];
+    const json = v && typeof v === 'object' ? ('z' in v ? vec3(v) : vec2(v)) : J(v);
+    return `${J(k)}:${json}`;
+  });
+  return `{${fields.join(',')}}`;
+}
+
 // -- map object subtypes ----------------------------------------------------
 // Most objects are a bare `MapObject`, but four subtypes carry extra fields,
 // and the game writes them between "$type" and "type". Key order has to match
@@ -190,12 +230,7 @@ export function serializeMap(map) {
   );
   parts.push(`"ruleSets":[${rs.join(',')}]`);
 
-  const an = (map.anchors || []).map(
-    (a) =>
-      `{"$type":${J(a.$type ?? 'MetaGroupSpatialAnchor')},"guid":${J(a.guid)},` +
-      `"groupGuid":${J(a.groupGuid)},"positionOffset":${vec3(a.positionOffset)},` +
-      `"rotationOffset":${vec3(a.rotationOffset)}}`
-  );
+  const an = (map.anchors || []).map(anchor);
   parts.push(`"anchors":[${an.join(',')}]`);
 
   const mo = (map.mapObjects || []).map((o) => {

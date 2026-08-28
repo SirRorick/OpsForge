@@ -254,9 +254,47 @@ a map that looks correct everywhere else.
 {"$type":"MetaGroupSpatialAnchor","guid":"...","groupGuid":"...","positionOffset":{...},"rotationOffset":{...}}
 ```
 
-Meta shared spatial anchors — runtime headset data tying the map to a physical
-room. `$type` implies other anchor subclasses exist. The editor passes these
-through untouched; it does not invent them.
+Meta shared spatial anchors — headset data tying the map to a physical room.
+The editor passes these through untouched; it does not invent them.
+
+Every one of the sixteen reference exports carries exactly one
+`MetaGroupSpatialAnchor` with exactly those five keys, so they settle nothing
+about the rest of the hierarchy `$type` implies. Reading the `anchors` block of
+**569 maps out of the mod.io library** turns up three more shapes:
+
+| Shape | Maps | Notes |
+|---|---|---|
+| `MetaGroupSpatialAnchor` alone | 494 | The five keys above |
+| `MetaSpatialAnchor` + `MetaGroupSpatialAnchor` | 42 | The plain one has **no `groupGuid`** |
+| none — `"anchors":[]` | 31 | Loads and plays |
+| `EditorSpatialAnchor` | 2 | Adds `position` and `rotation` |
+
+Three things follow, and the first two are why the serialiser walks an anchor's
+own keys rather than listing them:
+
+- **`groupGuid` is not universal.** `MetaSpatialAnchor` omits it. A serialiser
+  that writes the key unconditionally emits the bare word `undefined` — not a
+  string, not JSON — and the export is a file the game cannot open. This is the
+  shape a map saved in a headset carries, so it sits squarely on the path of
+  anyone reusing an aligned map as a venue template.
+- **`EditorSpatialAnchor` carries a pose.** `position` and `rotation`, in map
+  space, on top of the two offsets:
+  `"position":{"x":0.0422855951,"y":0.0,"z":0.6855211},"rotation":{"x":0.0,"y":358.7198,"z":0.0}`.
+  Both maps holding one are Resolution's own (`author: EditorPlayer`). So the
+  format *can* carry an anchor pose in the file; nothing yet says the game reads
+  one back.
+- **The anchors are not required.** 31 maps have an empty array and play. What
+  they do not do is land without alignment — which is the other half of the
+  same fact: a map re-localises when it names an anchor the headset can still
+  resolve, and asks to be aligned when it does not. That is why a map returning
+  to the room it was built in "just works" and one downloaded from the library
+  never does.
+
+**`positionOffset` and `rotationOffset` are zero in all 569.** Nothing observed
+says what a non-zero value does. They are named exactly like the map's placement
+relative to its anchor, which makes them the cheapest experiment available for
+placing several maps at one venue — so they round-trip whatever is put in them
+rather than being flattened to the only value the library has ever shown.
 
 ## `mapObjects`
 
