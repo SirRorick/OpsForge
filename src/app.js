@@ -28,7 +28,7 @@ import {
 import {
   newProject, newLayer, projectVariants, venueMapName, duplicateName,
   writeProjectArchive, readProjectArchive, projectFileName, identifyObjects, nextObjectId,
-  objectsOutsidePlaySpace, paintedCells, PROJECT_EXT,
+  objectsOutsidePlaySpace, paintedCells, isBoundaryObject, PROJECT_EXT,
 } from './project.js';
 import { geometryFor } from './placeholders.js';
 import {
@@ -4241,6 +4241,12 @@ async function openVenueExport() {
   // to write -- rather than over a second calculation that would have to be
   // trusted to agree with them. Primary first, then one per layer, which is
   // the order the rows below are built in.
+  // Walls the design carries, which a venue supplies for itself and therefore
+  // leaves behind. Not expected to be any, and worth saying out loud when there
+  // are: an object in the map that is not in any venue's file is exactly the
+  // kind of thing somebody goes looking for later.
+  const strays = (map.mapObjects || []).filter(isBoundaryObject).length;
+
   const spaces = [];
   for (const variant of projectVariants(project)) {
     try {
@@ -4262,6 +4268,7 @@ async function openVenueExport() {
       guid: map.guid,
       anchors: (map.anchors || []).length,
       placed: true,
+      venue: false,
       space: spaces[0] || {},
       apply: (n) => { map.name = n; },
     },
@@ -4271,6 +4278,7 @@ async function openVenueExport() {
       guid: l.guid,
       anchors: (l.template.anchors || []).length,
       placed: l.placed,
+      venue: true,
       space: spaces[i + 1] || {},
       apply: (n) => { l.name = n; },
     })),
@@ -4328,6 +4336,14 @@ async function openVenueExport() {
       note.className = 'vnote';
       note.textContent = 'Never aligned. The map will sit wherever its own origin falls in this '
         + 'venue, which is almost certainly not where you want it.';
+      el.appendChild(note);
+    }
+    if (row.venue && strays) {
+      const note = document.createElement('p');
+      note.className = 'vnote';
+      note.textContent = `${strays} boundary object${strays === 1 ? '' : 's'} in the map `
+        + `${strays === 1 ? 'is' : 'are'} left out of this file. A venue is played inside the `
+        + 'walls of its own room, and those are the ones it carries.';
       el.appendChild(note);
     }
     if (!row.space.painted) {

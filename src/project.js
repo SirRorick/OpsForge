@@ -239,8 +239,8 @@ export function alignMapObject(mo, offset, yaw) {
 
 // -- The fan-out ------------------------------------------------------------
 
-/** A hall's own walls, which are boundary objects wherever they came from. */
-const isBoundaryObject = (o) => BOUNDARY_TYPES.includes(o.type);
+/** A wall, wherever it came from. Boundary objects are the game's own walls. */
+export const isBoundaryObject = (o) => BOUNDARY_TYPES.includes(o.type);
 
 /**
  * What one layer's file holds: the design it still inherits, its own, and the
@@ -264,12 +264,25 @@ const isBoundaryObject = (o) => BOUNDARY_TYPES.includes(o.type);
  * one is reference: it is there to align against and it stays in the editor.
  * The walls have to travel, because without them the game has nothing solid
  * where the room has something solid.
+ *
+ * **And they are the only walls in it.** A venue's walls are that room's walls,
+ * so any the design carries are dropped on the way into one rather than left to
+ * stand alongside. A design is not expected to have them at all, but a stray
+ * one would be a wall from somewhere else standing in this room, and there is
+ * no reading of that which is right. The map's own file keeps whatever it has;
+ * this is only what a venue plays.
+ *
+ * A wall put into a venue by hand is that venue's and stays -- it is in
+ * `layer.objects`, which is the record of what somebody meant to do in this
+ * hall and nowhere else.
  */
 export function layerMapObjects(project, layer) {
   const gone = new Set(layer.detached || []);
   const place = (o) => alignMapObject(o, layer.offset, layer.yaw);
   return [
-    ...(project.primary.mapObjects || []).filter((o) => !gone.has(o.id)).map(place),
+    ...(project.primary.mapObjects || [])
+      .filter((o) => !gone.has(o.id) && !isBoundaryObject(o))
+      .map(place),
     ...(layer.objects || []).map(place),
     ...(layer.template?.mapObjects || []).filter(isBoundaryObject),
   ];

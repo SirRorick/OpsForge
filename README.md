@@ -274,6 +274,12 @@ and a placement per venue, and generate the files.
    a room is — its play space and its anchors — and its boundary walls, since
    without them the game has nothing solid where the room has something solid.
    Everything else in a template stays in the editor, to align against.
+
+   A venue's walls are the only walls in its file. A design is not expected to
+   carry any, but a stray one would be a wall from another room standing in this
+   one, so the room's own replace them rather than stand beside them. The map's
+   own file keeps whatever it has, and the export screen says how many it left
+   behind.
 2. **Open → Map and venues.** One map, then a template per hall, each named for
    the map it will export as. The suggestion is `ARENA-01_[VEN1_HALL1]`, so a
    template called `VEN1_HALL1` in the headset arrives already named.
