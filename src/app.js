@@ -27,6 +27,8 @@ import {
 } from './rules.js';
 import {
   newProject, newLayer, projectVariants, venueMapName, duplicateName,
+  writeProjectArchive, readProjectArchive, projectFileName, identifyObjects, nextObjectId,
+  PROJECT_EXT,
 } from './project.js';
 import { geometryFor } from './placeholders.js';
 import {
@@ -1063,6 +1065,14 @@ function wireToolbar() {
   };
   $('b-open').onclick = () => openSourceChooser();
   $('filepick').onchange = (e) => { const f = e.target.files[0]; if (f) openFile(f); e.target.value = ''; };
+  $('projectpick').onchange = (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    // Straight to the project reader rather than through `openFile`: this
+    // picker was opened by asking for a project, so a file without the
+    // extension should be tried as one and refused with a reason.
+    if (f) importProjectFile(f);
+  };
   $('b-save').onclick = exportMap;
 
   const syncSnap = () => {
@@ -3506,14 +3516,42 @@ function wireViewport() {
 
 async function openFile(file) {
   // Both drop targets come through here, so a prefab dropped on the page is
-  // placed rather than tried as a map and rejected for not being one.
+  // placed rather than tried as a map and rejected for not being one -- and a
+  // project the same, which is also how one can simply be dropped on the page.
   if (looksLikePrefab(file)) return importPrefabFile(file);
-  try {
-    await loadMapText(await file.text(), file.name);
-  } catch (err) {
-    console.error(err);
-    toast(`Could not read that file: ${err.message}`, true);
-  }
+  if (looksLikeProject(file)) return importProjectFile(file);
+  confirmDroppingVenues(async () => {
+    try {
+      await loadMapText(await file.text(), file.name);
+    } catch (err) {
+      console.error(err);
+      toast(`Could not read that file: ${err.message}`, true);
+    }
+  });
+}
+
+/** True for a project file rather than a map, before reading it. */
+const looksLikeProject = (file) => (file.name || '').toLowerCase().endsWith(`.${PROJECT_EXT}`);
+
+/**
+ * Ask before a map replaces a set of venues, because that is the one thing in
+ * here nothing else can put back.
+ *
+ * A map is a file on disk and a checkpoint is in the browser, but twenty
+ * alignments live only in this tab until somebody writes the project out. So
+ * the way to keep them is named in the question rather than left to be known.
+ */
+function confirmDroppingVenues(then) {
+  const n = project?.layers.length || 0;
+  if (!n) return void then();
+  confirmDialog({
+    title: 'Open this over the venues?',
+    body: `${n} venue${n === 1 ? '' : 's'} ${n === 1 ? 'is' : 'are'} loaded, and a different map `
+      + 'is a different design for them to be alignments of, so they go with this one. If you want '
+      + 'them back, cancel and use Export project first — that is the only thing that keeps them.',
+    confirmLabel: 'Open anyway',
+    run: then,
+  });
 }
 
 /** `#b-open` — a file on this computer, or a map from the Spatial Ops library. */
@@ -3522,14 +3560,98 @@ function openSourceChooser() {
     title: 'Open a map',
     body: lbeOn()
       ? 'From a file the game or this editor wrote, or from the maps other players have '
-        + 'published. Map and venues opens one map together with the halls it will be played in.'
+        + 'published. Open a project picks up a set of venues where you left it; Map and venues '
+        + 'starts a new one from a map and the halls it will be played in.'
       : 'From a file the game or this editor wrote, or from the maps other players have published.',
     actions: [
       { label: 'From this computer', ghost: true, run: () => $('filepick').click() },
-      ...(lbeOn() ? [{ label: 'Map and venues', ghost: true, run: () => openVenueImport() }] : []),
+      ...(lbeOn() ? [
+        { label: 'Open a project', ghost: true, run: () => $('projectpick').click() },
+        { label: 'Map and venues', ghost: true, run: () => openVenueImport() },
+      ] : []),
       { label: 'Mod.io Library', run: () => openLibraryBrowser() },
     ],
   });
+}
+
+/**
+ * Open a project: the map, every venue, and every alignment, as they were left.
+ *
+ * The map goes through the same ingest every other map does, and the ids stored
+ * beside it are put back over the ones the viewport minted on the way in. That
+ * is the whole reason the file exists: a venue names the objects it has stopped
+ * inheriting, and those names have to still mean the same objects tomorrow.
+ */
+async function importProjectFile(file) {
+  try {
+    const { mapText, ids, editor, layers } = await readProjectArchive(await file.arrayBuffer());
+    await loadMapText(mapText, file.name);
+    applyProjectIds(ids);
+    applyEditorState(editor);
+    project.layers = layers;
+    // A baseline taken after all of that, so the first Ctrl+Z does not quietly
+    // undo the identities and the grouping that were just put back.
+    undoStack = []; redoStack = []; current = snapshot();
+    refreshAll();
+
+    const n = layers.length;
+    const unplaced = layers.filter((l) => !l.placed).length;
+    toast(`${map.name} — ${vp.objects.length} objects, ${n} venue${n === 1 ? '' : 's'}`
+      + (unplaced ? `, ${unplaced} still to be aligned` : ', all aligned')
+      + '. Changes to the map reach every one of them.', unplaced > 0);
+  } catch (err) {
+    console.error(err);
+    toast(`Could not read that project: ${err.message}`, true);
+  }
+}
+
+/**
+ * Put the stored ids back over the ones this session handed out.
+ *
+ * Both halves, because both are asked: the meshes are what an editing session
+ * talks to, and `map.mapObjects` is what an export reads. Then the counters on
+ * both sides are wound past whatever came in, since a project is the only thing
+ * that reintroduces ids the editor did not issue -- and without that the next
+ * object placed would be handed a number a venue is already using.
+ */
+function applyProjectIds(ids) {
+  if (!ids?.length) return;
+  const meshes = vp.designObjects();
+  ids.forEach((id, i) => {
+    if (!Number.isInteger(id)) return;
+    if (meshes[i]) meshes[i].userData.id = id;
+    if (map.mapObjects[i]) map.mapObjects[i].id = id;
+  });
+  identifyObjects(map.mapObjects);
+  vp.seedObjectIds(nextObjectId());
+}
+
+/** Write the whole project out: the map, every template, every alignment. */
+async function writeProjectFile() {
+  try {
+    readLayerFromScene(currentLayer());
+    // For its side effects, as in `writeVenueZip`: this is what refreshes
+    // `mapObjects` off the viewport and stamps `editedTime`.
+    currentMapText();
+
+    const blob = await writeProjectArchive(project, { editor: editorState() });
+    const name = projectFileName(map.name);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+
+    $('st-file').textContent = name;
+    takeCheckpoint('export');
+    const n = project.layers.length;
+    toast(`Saved ${name} — the map and ${n} venue${n === 1 ? '' : 's'}. Open it again to carry `
+      + 'on, and the venues keep the identities they already have on the headsets.');
+  } catch (err) {
+    console.error(err);
+    toast(`Could not write that project: ${err.message}`, true);
+  }
 }
 
 /**
@@ -4116,6 +4238,29 @@ function openVenueExport() {
     list.appendChild(el);
   }
 
+  /**
+   * Take the names off the screen, or say what is wrong with them.
+   *
+   * Shared by both buttons, because the names belong to the project as much as
+   * to the files: saving the project with one set and writing the maps with
+   * another is the one way this screen could lie.
+   */
+  const settleNames = (ui) => {
+    const named = rows.map((r) => r.name.trim());
+    if (named.some((n) => !n)) {
+      ui.status('Every map needs a name: it is what the game lists it under.', true);
+      return false;
+    }
+    const twice = duplicateName(named);
+    if (twice) {
+      ui.status(`Two of these are both called "${twice}". The name is the only thing that `
+        + 'tells one from another in the game’s map list.', true);
+      return false;
+    }
+    rows.forEach((r, i) => r.apply(named[i]));
+    return true;
+  };
+
   openDialog({
     title: 'Export every venue',
     body,
@@ -4123,22 +4268,15 @@ function openVenueExport() {
     actions: [
       { label: 'Cancel', ghost: true, run: () => {} },
       {
+        label: 'Export project',
+        ghost: true,
+        keepOpen: true,
+        run: (_v, ui) => { if (settleNames(ui)) { ui.close(); writeProjectFile(); } },
+      },
+      {
         label: `Export ${rows.length} files`,
         keepOpen: true,
-        run: (_v, ui) => {
-          const named = rows.map((r) => r.name.trim());
-          if (named.some((n) => !n)) {
-            return ui.status('Every map needs a name: it is what the game lists it under.', true);
-          }
-          const twice = duplicateName(named);
-          if (twice) {
-            return ui.status(`Two of these are both called "${twice}". The name is the only `
-              + 'thing that tells one from another in the game’s map list.', true);
-          }
-          rows.forEach((r, i) => r.apply(named[i]));
-          ui.close();
-          writeVenueZip();
-        },
+        run: (_v, ui) => { if (settleNames(ui)) { ui.close(); writeVenueZip(); } },
       },
     ],
   });
@@ -5283,7 +5421,11 @@ function restoreCheckpoint(entry) {
     title: 'Restore this checkpoint',
     body: `"${entry.name}" from ${timeAgo(entry.at)}, ${entry.objects} objects. What is on screen `
       + 'now will be replaced, and undo does not reach back past it. A checkpoint of where you are '
-      + 'is taken first.',
+      + 'is taken first.'
+      + (project?.layers.length
+        ? ` The ${project.layers.length} venue layers go too: a checkpoint is one map, never a set `
+          + 'of them. Export project first if you want them kept.'
+        : ''),
     confirmLabel: 'Restore',
     run: () => { takeCheckpoint('manual', true); go(); },
   });

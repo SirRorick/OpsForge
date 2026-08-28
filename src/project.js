@@ -67,6 +67,8 @@
 // ---------------------------------------------------------------------------
 
 import { DEG, wrap360 } from './unity.js';
+import { parseMap, serializeMap } from './format.js';
+import { zipRead, zipWrite } from './zip.js';
 
 export const PROJECT_FORMAT = 'opsforge.project';
 export const PROJECT_VERSION = 1;
@@ -284,4 +286,134 @@ export function buildVariant(project, layer) {
  */
 export function projectVariants(project) {
   return [project.primary, ...project.layers.map((l) => buildVariant(project, l))];
+}
+
+// -- The project file -------------------------------------------------------
+// `.opsproject` is a zip, and what is in it is deliberately readable with any
+// unzip tool: the map and every venue template sit in it as the game's own
+// files, unchanged, and one `project.json` holds the part that is OpsForge's --
+// where each design stands in each hall, what each hall calls its map, what it
+// has stopped inheriting and what it keeps of its own.
+//
+// It is a zip rather than one JSON document for two reasons. A map already has
+// a serialiser that reproduces the game's bytes exactly, and putting a map
+// inside JSON would mean escaping those bytes and trusting a second path to
+// give them back. And a project that goes wrong should still be a folder of
+// maps somebody can rescue by hand.
+//
+// **The guids in here are the point of the file.** They are minted once, when
+// the templates arrive, and kept -- so a second export replaces the set on
+// every headset rather than doubling it. That only holds as long as the project
+// comes back from here rather than being reassembled from raw templates, which
+// is why this exists at all.
+//
+// The map's objects carry ids that a map file has nowhere to put, since a
+// venue names the ones it has stopped inheriting. They travel beside the text
+// as a list in file order -- the same bargain the checkpoint sidecar strikes,
+// and safe for the same reason: the ids and the text are written in one go.
+
+const MAP_ENTRY = 'map';
+const MANIFEST_ENTRY = 'project.json';
+const templateEntry = (layer) => `templates/${layer.id}`;
+
+/** Take the layer id counter past anything a file brought in. */
+function adoptLayerIds(layers) {
+  for (const l of layers) {
+    const n = /^l(\d+)$/.exec(l.id || '');
+    if (n && Number(n[1]) >= layerSeq) layerSeq = Number(n[1]) + 1;
+  }
+}
+
+/**
+ * The whole project as one archive.
+ *
+ * `editor` is the grouping, locking and hidden state of the map's own objects,
+ * which the game's format has no room for -- the same sidecar a checkpoint
+ * carries, and the reason a project restores an afternoon's arena rather than
+ * four hundred loose objects.
+ */
+export async function writeProjectArchive(project, { editor = null } = {}) {
+  const manifest = {
+    format: PROJECT_FORMAT,
+    version: PROJECT_VERSION,
+    map: {
+      file: MAP_ENTRY,
+      // In file order, so index i names the object at index i.
+      ids: (project.primary.mapObjects || []).map((o) => o.id ?? null),
+      editor,
+    },
+    layers: project.layers.map((l) => ({
+      id: l.id,
+      name: l.name,
+      guid: l.guid,
+      template: templateEntry(l),
+      offset: l.offset,
+      yaw: l.yaw,
+      placed: !!l.placed,
+      detached: l.detached || [],
+      // A venue's own objects are OpsForge's, not the game's, so they travel as
+      // records rather than as a map -- which is also how they keep the editor
+      // state a map file could not hold.
+      objects: l.objects || [],
+    })),
+  };
+
+  return zipWrite([
+    { name: MANIFEST_ENTRY, data: JSON.stringify(manifest) },
+    { name: MAP_ENTRY, data: serializeMap(project.primary) },
+    ...project.layers.map((l) => ({
+      name: templateEntry(l),
+      data: serializeMap(l.template),
+    })),
+  ]);
+}
+
+/**
+ * Read one back. Returns the pieces rather than a live project: the map has to
+ * go through the editor's own ingest, which is `app.js`'s business.
+ *
+ * Throws with a reason on anything that is not one of these, because the file
+ * picker that reaches here also accepts maps, and "nothing happened" is the
+ * worst answer to a wrong file.
+ */
+export async function readProjectArchive(arrayBuffer) {
+  const entries = await zipRead(arrayBuffer);
+  const decoder = new TextDecoder();
+  const byName = new Map(entries.map((e) => [e.name, decoder.decode(e.bytes)]));
+
+  const raw = byName.get(MANIFEST_ENTRY);
+  if (!raw) throw new Error('no project.json in that archive');
+
+  let manifest;
+  try {
+    manifest = JSON.parse(raw);
+  } catch {
+    throw new Error('the project.json in that archive is not readable');
+  }
+  if (manifest.format !== PROJECT_FORMAT) throw new Error('that is not an OpsForge project');
+  if (!(manifest.version <= PROJECT_VERSION)) {
+    throw new Error(`written by a newer editor (project v${manifest.version})`);
+  }
+
+  const mapText = byName.get(manifest.map?.file || MAP_ENTRY);
+  if (!mapText) throw new Error('the map is missing from that project');
+
+  const layers = (manifest.layers || []).map((l) => {
+    const templateText = byName.get(l.template);
+    if (!templateText) throw new Error(`the template for "${l.name}" is missing`);
+    return {
+      id: l.id,
+      name: l.name,
+      guid: l.guid,
+      template: parseMap(templateText),
+      offset: l.offset || { x: 0, y: 0, z: 0 },
+      yaw: l.yaw || 0,
+      placed: !!l.placed,
+      detached: l.detached || [],
+      objects: l.objects || [],
+    };
+  });
+  adoptLayerIds(layers);
+
+  return { mapText, ids: manifest.map?.ids || [], editor: manifest.map?.editor || null, layers };
 }
