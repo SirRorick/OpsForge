@@ -3583,18 +3583,37 @@ function confirmDroppingVenues(then) {
 function openSourceChooser() {
   openDialog({
     title: 'Open a map',
-    body: lbeOn()
-      ? 'From a file the game or this editor wrote, or from the maps other players have '
-        + 'published. Open a project picks up a set of venues where you left it; Map and venues '
-        + 'starts a new one from a map and the halls it will be played in.'
-      : 'From a file the game or this editor wrote, or from the maps other players have published.',
+    body: 'From a file the game or this editor wrote, or from the maps other players have published.',
     actions: [
-      { label: 'From this computer', ghost: true, run: () => $('filepick').click() },
-      ...(lbeOn() ? [
-        { label: 'Open a project', ghost: true, run: () => $('projectpick').click() },
-        { label: 'Map and venues', ghost: true, run: () => openVenueImport() },
-      ] : []),
+      { label: 'From this computer', ghost: true, run: () => openFromDisk() },
       { label: 'Mod.io Library', run: () => openLibraryBrowser() },
+    ],
+  });
+}
+
+/**
+ * What "from this computer" means, which depends on whether venues are in play.
+ *
+ * With LBE mode off there is one kind of file to open and this is a file
+ * picker. With it on there are three, and they are different enough acts to be
+ * worth choosing between by name rather than by which file you happen to pick:
+ * one map, a project to carry on with, or a map together with the halls it is
+ * going to be played in.
+ *
+ * A second screen rather than three more buttons on the first, because the
+ * first screen's question is where the map is coming from, and none of these
+ * three is an answer to that -- they are all "this computer".
+ */
+function openFromDisk() {
+  if (!lbeOn()) return void $('filepick').click();
+  openDialog({
+    title: 'Open from this computer',
+    body: 'A map on its own, a project to pick up where it was left, or a map together with '
+      + 'the venues it will be played in.',
+    actions: [
+      { label: 'A map', ghost: true, run: () => $('filepick').click() },
+      { label: 'A project', ghost: true, run: () => $('projectpick').click() },
+      { label: 'Map and venues', run: () => openVenueImport() },
     ],
   });
 }
