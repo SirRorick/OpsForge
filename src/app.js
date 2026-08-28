@@ -4266,9 +4266,12 @@ async function openVenueExport() {
 
   const body = document.createElement('div');
   const intro = document.createElement('p');
-  intro.textContent = `${rows.length} files, in one zip. Unpack it and copy the lot into the `
-    + 'game’s maps folder — each one is a whole playable map, carrying the objects from '
-    + 'here and the spatial data of the venue it is for.';
+  intro.textContent = rows.length === 1
+    ? 'One map, in a zip. No venues have been added yet — Open, from this computer, map and '
+      + 'venues is where the halls come in.'
+    : `${rows.length} files, in one zip. Unpack it and copy the lot into the game’s maps `
+      + 'folder — each one is a whole playable map, carrying the objects from here and the '
+      + 'spatial data of the venue it is for.';
   body.appendChild(intro);
 
   const list = document.createElement('div');
@@ -4351,7 +4354,7 @@ async function openVenueExport() {
   };
 
   openDialog({
-    title: 'Export every venue',
+    title: rows.length === 1 ? 'Export' : 'Export every venue',
     body,
     wide: true,
     actions: [
@@ -4363,7 +4366,7 @@ async function openVenueExport() {
         run: (_v, ui) => { if (settleNames(ui)) { ui.close(); writeProjectFile(); } },
       },
       {
-        label: `Export ${rows.length} files`,
+        label: 'Export maps zip',
         keepOpen: true,
         run: (_v, ui) => { if (settleNames(ui)) { ui.close(); writeVenueZip(); } },
       },
@@ -4512,12 +4515,16 @@ function mapMetadataBlob() {
  * `Ctrl+S`, `Enter` muscle memory still writes the file.
  */
 function chooseExportDestination() {
-  // With venues on the go there is no destination to choose. Mod.io publishes
-  // one map and this is a set of them -- twenty near-identical arenas, each
-  // tied by its anchors to a room in one particular building, is not something
-  // the library is for. So the whole chooser is skipped rather than offering a
-  // route that would have to be explained away.
-  if (lbeOn() && project?.layers.length) return void openVenueExport();
+  // In LBE mode there is no destination to choose. Mod.io publishes one map and
+  // this is a set of them -- near-identical arenas, each tied by its anchors to
+  // a room in one particular building, is not what the library is for. So the
+  // chooser is skipped rather than offering a route that would then have to be
+  // explained away.
+  //
+  // On the switch alone, not on whether any venues have been added yet: the
+  // mode is the answer to "is this going to a venue", and a project with no
+  // venues in it yet is still on its way to one.
+  if (lbeOn()) return void openVenueExport();
 
   const token = modioToken();
   const username = modioCachedUsername();
