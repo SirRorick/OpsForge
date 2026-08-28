@@ -143,6 +143,10 @@ export class ComboGizmo extends THREE.Object3D {
     this.scaleSnap = null;
     this.showAxis = { x: true, y: true, z: true };
     this.showRotate = { x: true, y: true, z: true };
+    // Whether the resize handles are offered at all. Aligning a whole design
+    // into a hall is a move and a turn: the design is the size it is, and a
+    // stray drag on a scale cube would resize an arena rather than place it.
+    this.showScale = true;
     // Which end of each object axis the scale handle sits on. X and Z follow
     // the camera; see `_faceHandles`. Read by scene.js, which has to pin the
     // opposite face.
@@ -423,7 +427,9 @@ export class ComboGizmo extends THREE.Object3D {
     for (const part of [...this._parts, ...this._pickers]) {
       const { axis, mode } = part.userData;
       if (axis === 'view') continue;
-      const on = mode === 'rotate' ? this.showRotate[axis] : this.showAxis[axis];
+      const on = mode === 'scale' ? this.showScale && this.showAxis[axis]
+        : mode === 'rotate' ? this.showRotate[axis]
+        : this.showAxis[axis];
       part.visible = on;
     }
   }

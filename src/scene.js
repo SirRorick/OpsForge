@@ -18,8 +18,15 @@ import {
   ENEMY_ICONS, ENEMY_MODELS, ENEMY_TYPES, ENEMY_ANY, parseEnemyTypes,
   BOUNDARY_PACK,
 } from './packs.js';
-import { convertPosition, unityEulerToQuat, quatToUnityEuler, MODEL_YAW, DEG } from './unity.js';
+import {
+  convertPosition, unityEulerToQuat, quatToUnityEuler, MODEL_YAW, DEG, wrap360,
+  frameFromPlacement, placementFromFrame,
+} from './unity.js';
 import { decodeNavCloud, NAV_SPACING } from './format.js';
+
+// Scratch, so reading a pose out of the design frame does not allocate a
+// matrix per object per export. `designPose` is the only user.
+const _designMat = new THREE.Matrix4();
 
 const ACCENT = 0xe8c547;
 const CYAN = 0x4ec9e0;
@@ -1121,6 +1128,10 @@ export class Viewport extends EventTarget {
     // Take the invisible walls out of the view — see setHideBoundaries.
     this.hideBoundaries = false;
     this.showHidden = false;
+    // Venue layer view: the design drawn ghosted, and the gizmo placing the
+    // whole of it rather than anything in it. Both off is the ordinary editor.
+    this.designGhosted = false;
+    this.layerAlign = false;
     this._faded = new Map();
     this.placing = null;
     this._pointer = null;
@@ -1307,6 +1318,34 @@ export class Viewport extends EventTarget {
 
     this.navGroup = new THREE.Group();
     this.scene.add(this.navGroup);
+
+    // The design's own frame, and the parent of every map object.
+    //
+    // Map objects used to hang off the scene, which is the same thing as long
+    // as there is one place to stand. A venue layer is a second one: the design
+    // is the design, and the hall decides where in the room it sits. Putting
+    // that placement on a group above the objects means aligning a map moves
+    // nothing in it -- the file still says what it always said, and what
+    // changes is one transform belonging to the layer.
+    //
+    // Which is why everything that reads an object back for the file reads it
+    // *through* this group: see `designPose`. At rest the group is identity and
+    // the arithmetic is exactly what it was.
+    this.mapRoot = new THREE.Group();
+    this.scene.add(this.mapRoot);
+    // The arena outline belongs to the design rather than to the room, so it
+    // travels with it: in a venue layer the box is the thing being lined up
+    // against the walls, and left at the origin it would be drawn around
+    // nothing while the map stood somewhere else.
+    this.mapRoot.add(this.boundsGroup);
+
+    // A venue template's walls: drawn to align against, never picked, never
+    // exported. They are deliberately not in `this.objects`, which is what
+    // keeps them out of the file, the outliner, the selection, the undo
+    // snapshot and the count of what is outside the arena -- all of which ask
+    // that list what the map is made of.
+    this.venueGroup = new THREE.Group();
+    this.scene.add(this.venueGroup);
 
     // Where the array and mirror tools draw what they are about to make. Not
     // part of `objects`, so nothing can select one, pick one, frame one or
@@ -1886,7 +1925,7 @@ export class Viewport extends EventTarget {
     mesh.position.fromArray(convertPosition(mo.position));
     mesh.quaternion.fromArray(unityEulerToQuat(mo.rotation));
     mesh.scale.set(mo.scale.x, mo.scale.y, mo.scale.z);
-    this.scene.add(mesh);
+    this.mapRoot.add(mesh);
     this.objects.push(mesh);
     this._refreshBadge(mesh);
     this._refreshFigure(mesh);
@@ -2075,6 +2114,7 @@ export class Viewport extends EventTarget {
    * to find. Everything drawn, and nothing else.
    */
   pickable() {
+    if (this.layerAlign) return [];
     return this.objects.filter((m) => m.visible);
   }
 
@@ -2099,7 +2139,9 @@ export class Viewport extends EventTarget {
   _applyFade(mesh) {
     const solid = mesh.userData.solidMaterial;
     if (!solid) return;
-    const faded = !!mesh.userData.hidden && this.showHidden;
+    // Ghosted either because it was put away by hand, or because the whole
+    // design is standing in a hall it has not been aligned into yet.
+    const faded = this.designGhosted || (!!mesh.userData.hidden && this.showHidden);
     mesh.material = faded ? this._fadedOf(solid) : solid;
   }
 
@@ -2674,17 +2716,160 @@ export class Viewport extends EventTarget {
     this.emit('change');
   }
 
+  // -- venue layers ---------------------------------------------------------
+  // Standing the design in one hall of many. Everything here moves the frame
+  // the design hangs from, the walls drawn beside it, or the way the two are
+  // painted -- and nothing here touches a map object, which is the point.
+
+  /** Stand the design where a layer says it stands in that hall. */
+  setDesignTransform(offset, yaw) {
+    const o = offset || { x: 0, y: 0, z: 0 };
+    // Unity to three.js is the reflection in Z, and a turn about Y changes sign
+    // with it. Same conversion `setNavCloud` makes for the grid, for the same
+    // reason and in the same direction.
+    const frame = frameFromPlacement(o, yaw || 0);
+    this.mapRoot.position.fromArray(frame.position);
+    this.mapRoot.rotation.set(0, frame.yaw, 0);
+    this.mapRoot.updateMatrixWorld(true);
+  }
+
+  /** The placement it is standing at now, in the values a layer stores. */
+  designTransform() {
+    const e = new THREE.Euler().setFromQuaternion(this.mapRoot.quaternion, 'YXZ');
+    return placementFromFrame(this.mapRoot.position, e.y);
+  }
+
+  /**
+   * Keep the design flat and the size it is, however the drag went.
+   *
+   * The gizmo will not offer height, pitch, roll or scale in this mode, but a
+   * turn is applied as a quaternion and arrives back as one, and floating point
+   * leaves a few millionths of a degree of lean in it. Left alone that
+   * accumulates over a session of nudges into a map with a list on it.
+   */
+  _keepDesignUpright() {
+    const e = new THREE.Euler().setFromQuaternion(this.mapRoot.quaternion, 'YXZ');
+    this.mapRoot.quaternion.setFromEuler(new THREE.Euler(0, e.y, 0, 'YXZ'));
+    this.mapRoot.position.y = 0;
+    this.mapRoot.scale.set(1, 1, 1);
+    this.mapRoot.updateMatrixWorld(true);
+  }
+
+  /**
+   * Draw the whole design as something not yet put anywhere.
+   *
+   * The same fade a put-away object gets, for a different reason and over
+   * everything at once: in a hall it has not been aligned into, the design is
+   * standing wherever the last hall left it, and it should not look like it
+   * belongs there. Solid is what "this is placed" looks like.
+   */
+  setDesignGhosted(on) {
+    const next = !!on;
+    if (next === this.designGhosted) return;
+    this.designGhosted = next;
+    for (const m of this.objects) this._applyFade(m);
+  }
+
+  /**
+   * The hall's own walls, to align against.
+   *
+   * Built from a venue template's map objects and deliberately kept out of
+   * `this.objects`, which is the list every other part of the editor asks what
+   * the map is made of. Being absent from it is what keeps a hall wall out of
+   * the exported file, the outliner, the selection, the undo snapshot, the
+   * object count and the tally of what is standing outside the arena -- all of
+   * it, without a flag to test in any of those places.
+   *
+   * Drawn from the stand-in geometry rather than the game's own models. A
+   * template is walls and boxes traced round a room, which is exactly what the
+   * stand-ins are honest about, and it keeps twenty halls' worth of scenery out
+   * of the model cache.
+   *
+   * `raycast` is stubbed rather than the mesh being left pickable and filtered
+   * later: it takes the walls out of clicks, marquees, drop-onto and orbit-at-
+   * cursor in one move, the way the badge and outline helpers already do.
+   */
+  setVenueObjects(mapObjects) {
+    // `clear` rather than `disposeChildren`: the geometry here comes from the
+    // shared placeholder cache, and disposing it would empty that cache out
+    // from under every object in the library that draws from it.
+    this.venueGroup.clear();
+    for (const mo of mapObjects || []) {
+      const def = defFor(mo);
+      const mesh = new THREE.Mesh(geometryFor(def), this._venueMaterial());
+      mesh.position.fromArray(convertPosition(mo.position));
+      mesh.quaternion.fromArray(unityEulerToQuat(mo.rotation));
+      mesh.scale.set(mo.scale.x, mo.scale.y, mo.scale.z);
+      mesh.raycast = () => {};
+      this.venueGroup.add(mesh);
+    }
+    this.emit('change');
+  }
+
+  /** One material for every hall wall there will ever be, made once. */
+  _venueMaterial() {
+    if (!this._venueMat) {
+      this._venueMat = new THREE.MeshStandardMaterial({
+        color: 0x35505f, roughness: 0.95, metalness: 0,
+        transparent: true, opacity: 0.55, depthWrite: false,
+      });
+    }
+    return this._venueMat;
+  }
+
+  /**
+   * Put the gizmo on the design as a whole, and take the map out of reach.
+   *
+   * Both halves matter. The handle has to move the design rather than a piece
+   * of it, and a piece of it has to stop answering the pointer -- because
+   * picking one crate here and dragging it would take that crate out of the
+   * design and into this hall alone. That is a fork, and a fork should be a
+   * thing somebody meant rather than a thing a stray click did.
+   */
+  setLayerAlign(on) {
+    const next = !!on;
+    if (next === this.layerAlign) return;
+    this.layerAlign = next;
+    this.setSelection([]);
+    this.rebuildPivot();
+  }
+
   markDirty(mesh) {
     mesh.userData.dirty = true;
   }
 
   /** Unity-space record for a mesh, ready to hand to the serialiser. */
-  toMapObject(mesh) {
+  /**
+   * Where a mesh stands in the design's own frame, whatever it is parented to
+   * at the moment.
+   *
+   * Read through `mapRoot` rather than off the world, because in a venue layer
+   * the two are different things and only one of them is the map. The world
+   * says where the crate is standing in hall 3; the design frame says where it
+   * is in the map, which is the thing the file records and the thing every
+   * other hall inherits. Aligning a layer must not edit either.
+   *
+   * `matrixWorld` on the way in, so this is the same answer whether the mesh
+   * is sitting under `mapRoot` or has been picked up by the pivot for a drag.
+   *
+   * With no layer open `mapRoot` is identity, and inverting and multiplying by
+   * an identity matrix is exact in floating point -- the numbers that come out
+   * are bit for bit the ones that used to come off `matrixWorld` directly, so
+   * an ordinary export is unchanged by any of this.
+   */
+  designPose(mesh) {
     mesh.updateWorldMatrix(true, false);
+    this.mapRoot.updateWorldMatrix(true, false);
+    const local = _designMat.copy(this.mapRoot.matrixWorld).invert().multiply(mesh.matrixWorld);
     const p = new THREE.Vector3();
     const q = new THREE.Quaternion();
     const s = new THREE.Vector3();
-    mesh.matrixWorld.decompose(p, q, s);
+    local.decompose(p, q, s);
+    return { p, q, s };
+  }
+
+  toMapObject(mesh) {
+    const { p, q, s } = this.designPose(mesh);
     const { def, objectType, props } = mesh.userData;
     return {
       $type: objectType || 'MapObject',
@@ -2986,8 +3171,21 @@ export class Viewport extends EventTarget {
   // -- gizmo ----------------------------------------------------------------
 
   rebuildPivot() {
-    // Hand every child back to the scene before moving the pivot.
-    for (const child of [...this.pivot.children]) this.scene.attach(child);
+    // Hand every child back to the design frame before moving the pivot.
+    // `attach` keeps world placement, so an object released after a drag keeps
+    // the position the drag gave it -- expressed in the design's own frame,
+    // which is the one the file is written in.
+    for (const child of [...this.pivot.children]) this.mapRoot.attach(child);
+
+    if (this.layerAlign) {
+      // Aligning places the design, so the handle belongs to the frame the
+      // design hangs from. Nothing in the map moves and nothing in it is
+      // dirtied: what the drag changes is one transform belonging to the layer.
+      this.gizmo.attach(this.mapRoot);
+      if (this._ctrlDown) this.gizmo.visible = false;
+      this._applyGizmoConstraints();
+      return;
+    }
 
     if (!this.selection.size) {
       this.gizmo.detach();
@@ -3034,6 +3232,20 @@ export class Viewport extends EventTarget {
     // object's own extent is known.
     this.gizmo.scaleSnap = null;
     this.gizmo.uniform = this.uniformScale;
+
+    if (this.layerAlign) {
+      // A hall is a place on a floor and a direction to face. Height is not
+      // one of the choices -- a design sits on the floor of every room it is
+      // played in -- and neither is size, since resizing an arena to fit a
+      // room is a different act from placing it in one, and one nobody meant
+      // to start by grabbing a handle.
+      this.gizmo.showAxis = { x: true, y: false, z: true };
+      this.gizmo.showRotate = { x: false, y: true, z: false };
+      this.gizmo.showScale = false;
+      return;
+    }
+    this.gizmo.showAxis = { x: true, y: true, z: true };
+    this.gizmo.showScale = true;
     // All three circles, on everything. The catalog's `rotationAxes` used to
     // hide X and Z on a yaw-only piece, which is what the in-game editor allows
     // rather than what the format allows: the map file stores a full euler for
@@ -3062,6 +3274,9 @@ export class Viewport extends EventTarget {
   }
 
   _beginDrag() {
+    // A layer alignment drags the design frame, not the pivot, so there is no
+    // starting scale to capture and no selection whose own scale it multiplies.
+    if (this.layerAlign) return;
     this._dragStartScale = this.pivot.scale.clone();
     // The scale the object already carried, which is what the inspector shows
     // and the file stores. The pivot's own scale starts every drag at 1 and
@@ -3085,6 +3300,7 @@ export class Viewport extends EventTarget {
   }
 
   _constrainDuringDrag() {
+    if (this.layerAlign) return void this._keepDesignUpright();
     this._holdGroundOnly();
     if (this._activeMode() === 'scale') {
       const force = this.uniformScale || !this._perAxisExact;
@@ -3785,6 +4001,14 @@ export class Viewport extends EventTarget {
    * afterwards, so both need the sweep and neither needs the warning.
    */
   refreshOutside(meshes = this.objects, quiet = false) {
+    if (this.layerAlign) {
+      // The playable square is a fact about the arena, measured out from the
+      // design's own origin. In a hall the design is deliberately standing
+      // somewhere else, so every object in it would answer "outside" -- and
+      // the whole map would go red for doing exactly what it was told to.
+      for (const m of meshes) this._dropOutside(m);
+      return 0;
+    }
     let fresh = 0;
     for (const m of meshes) if (this._refreshOutside(m)) fresh++;
     if (fresh && !quiet) this.emit('outside', { fresh, total: this.outsideCount() });
@@ -3869,6 +4093,14 @@ export class Viewport extends EventTarget {
   }
 
   _endDrag() {
+    if (this.layerAlign) {
+      // Nothing in the map moved, so nothing in it is dirty, and the pivot has
+      // no selection to rebuild around. The placement the drag arrived at is
+      // read straight off the design frame by whoever asked for the alignment.
+      this._keepDesignUpright();
+      this.emit('transform');
+      return;
+    }
     this.settle();
     this._scaleAnchor = null;
     for (const m of this.selection) this.markDirty(m);

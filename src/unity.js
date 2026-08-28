@@ -137,6 +137,30 @@ export function quatToUnityEuler(q) {
   };
 }
 
+// -- venue placements -------------------------------------------------------
+// Where a whole design stands in one hall, converted the same way and in the
+// same direction as everything else here -- but for a *frame* rather than a
+// mesh, so there is no `MODEL_YAW` in it. The half turn belongs to the models,
+// and a group the design hangs from is not one.
+
+/** A layer's placement, in map values, as the three.js frame standing for it. */
+export function frameFromPlacement(offset = {}, yaw = 0) {
+  return {
+    position: convertPosition({ x: offset.x || 0, y: offset.y || 0, z: offset.z || 0 }),
+    // Reflecting Z turns a rotation about Y into its negative -- the same sign
+    // `setNavCloud` gives the play grid, for the same reason.
+    yaw: -wrap360(yaw) * DEG,
+  };
+}
+
+/** The same placement read back off that frame. `yawRadians` is its Y euler. */
+export function placementFromFrame(position, yawRadians) {
+  return {
+    offset: { x: position.x, y: position.y, z: -position.z },
+    yaw: wrap360(-yawRadians * RAD),
+  };
+}
+
 export function wrap360(deg) {
   let d = deg % 360;
   if (d < 0) d += 360;

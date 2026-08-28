@@ -45,6 +45,7 @@ const vp = new Viewport($('view'));
 
 let map = null;             // everything except mapObjects, which live in the viewport
 let project = null;         // `map` and its venue layers. No layers unless LBE mode put them there
+let activeLayer = null;     // index into project.layers, or null for the design itself
 let activePack = 'default';                 // theme shown inside Virtual Objects
 let openGroups = new Set(['virtual']);      // expanded top-level library sections
 let activeRuleSet = 0;                         // rule set tab
@@ -78,6 +79,7 @@ let placingLabel = null;    // set while a library pick-up is following the curs
   wireDragDrop();
   wireViewport();
   wireAutosave();
+  wireLayerPicker();
   await loadNavCloud();
   resize();
   addEventListener('resize', resize);
@@ -155,9 +157,11 @@ function wirePreviewButton() {
 function snapshot() {
   return {
     objects: vp.objects.map((m) => {
-      m.updateWorldMatrix(true, false);
-      const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
-      m.matrixWorld.decompose(p, q, s);
+      // In the design's own frame rather than the world's. A snapshot taken
+      // with a venue layer open has to record the map, not the placement of
+      // the map in hall 3 -- otherwise an undo in one hall would rewrite the
+      // design into that hall's coordinates for every other hall too.
+      const { p, q, s } = vp.designPose(m);
       return {
         // Identity, not order: a project names the objects a venue layer has
         // stopped inheriting, and an undo must not renumber them underneath it.
@@ -484,6 +488,7 @@ function placeNew(def, worldPoint) {
  * view and making the user drag it there was the odd one out.
  */
 function pickUpNew(def) {
+  if (blockedInLayer()) return;
   const mesh = newObject(def, vp.orbit.target.clone().setY(0));
   placeReturn = [...vp.selection];
   placingLabel = def.label;
@@ -551,6 +556,7 @@ function copySelection() {
 }
 
 function paste() {
+  if (blockedInLayer()) return;
   if (!clipboard.length) return toast('Nothing copied yet.');
   const remap = new Map();
   const made = clipboard.map((rec) => {
@@ -962,6 +968,7 @@ async function importPrefabFile(file) {
  * nesting for a group of groups to live in.
  */
 function placePrefab(data) {
+  if (blockedInLayer()) return;
   if (!data || data.format !== PREFAB_FORMAT || !Array.isArray(data.objects)) {
     throw new Error('that is not an OpsForge prefab file');
   }
@@ -1013,6 +1020,7 @@ function wireToolbar() {
   const startNewMap = async () => {
     map = await newMap({ name: 'New Map', author: map?.author || '' });
     project = newProject(map);
+    resetLayerView();
     vp.clearObjects();
     applyMapMeta();
     await loadNavCloud();
@@ -1600,6 +1608,12 @@ async function loadNavCloud() {
 
 /** Re-encode the painted mask back into the map. */
 async function commitNavMask() {
+  if (activeLayer !== null) {
+    // The grid on screen is the hall's, read out of its template. Painting it
+    // would write a venue's play space into the design's own file.
+    return void toast('That is the venue’s play space, not the map’s. '
+      + 'Go back to the map to paint its own.', true);
+  }
   if (!vp.navMask || !map?.navCloud) return;
   map.navCloud.encodedPoints = await encodeNavCloud(vp.navMask);
   touchEdited();
@@ -3426,7 +3440,13 @@ function wireViewport() {
     refreshPreview();
     refreshStatus();
   });
-  vp.addEventListener('transform', () => { refreshSelectionValues(); refreshStatus(); });
+  vp.addEventListener('transform', () => {
+    // Moving the design in a hall is what "placed" means, so the first drag is
+    // what takes the ghost off it.
+    if (activeLayer !== null) markLayerPlaced();
+    refreshSelectionValues();
+    refreshStatus();
+  });
   vp.addEventListener('outside', (e) => warnOutside(e.detail.fresh));
   vp.addEventListener('ground-held', () => warnGroundOnly());
   vp.addEventListener('commit-end', () => commit());
@@ -3858,6 +3878,7 @@ function fitBoundsToObjects() {
 async function loadMapText(text, sourceName) {
   const parsed = parseMap(text);
   map = parsed;
+  resetLayerView();
   vp.clearObjects();
   // The viewport mints the id an object keeps, and the map object it was built
   // from carries the same one from here on: `toMapObject` hands it back, so
@@ -4848,6 +4869,7 @@ function wireAutosave() {
 
   $('lbe').onchange = () => {
     try { localStorage.setItem(LBE_KEY, lbeOn() ? '1' : '0'); } catch { /* fine */ }
+    if (!lbeOn() && activeLayer !== null) showLayer(null);
     const held = project?.layers.length || 0;
     toast(lbeOn()
       ? 'LBE mode on. Open takes a map and a set of venue templates, and an export writes a '
@@ -5145,6 +5167,139 @@ function refreshVenues() {
     + 'and one per venue.';
 }
 
+// ---------------------------------------------------------------------------
+// Venue layers on screen
+// ---------------------------------------------------------------------------
+// Picking a hall out of the toolbar stands the map in it: the hall's walls come
+// in around it, the hall's play space replaces the grid on the floor, and the
+// gizmo changes hands from whatever was selected to the design as a whole.
+//
+// **Nothing in the map moves.** What moves is `mapRoot`, the frame every map
+// object hangs from, and the placement it lands at is the layer's — one offset
+// and one yaw, stored against that hall and no other. Which is the whole reason
+// a crate added later turns up in all twenty of them: there is no copy of the
+// design anywhere to be brought up to date.
+//
+// The design is drawn ghosted until it has been placed, because in a hall it
+// has not been aligned into it is standing wherever the last hall left it, and
+// it should not look like it belongs there.
+
+/**
+ * Refuse to build while standing in one of the halls, and say why.
+ *
+ * A placement is aimed with the pointer, which is in the room's frame, and an
+ * object records its position in the design's. With no venue open those are the
+ * same frame and there is nothing to say; inside one they are not, and a crate
+ * dropped where the pointer is would be written into the map several metres
+ * from where it looked. Objects belonging to one venue alone are their own
+ * piece of work, and this is not a quiet failure in the meantime.
+ */
+function blockedInLayer() {
+  if (activeLayer === null) return false;
+  toast('Objects are added to the map itself. Go back to it in the venue list — what you '
+    + 'add there turns up in every venue.', true);
+  return true;
+}
+
+/** Take the placement the design is standing at and give it to its layer. */
+function bankLayer() {
+  if (activeLayer === null || !project?.layers[activeLayer]) return;
+  const layer = project.layers[activeLayer];
+  const { offset, yaw } = vp.designTransform();
+  layer.offset = offset;
+  layer.yaw = yaw;
+}
+
+/** A design that has been moved in a hall is a design that has been put there. */
+function markLayerPlaced() {
+  const layer = project?.layers[activeLayer];
+  if (!layer || layer.placed) return;
+  layer.placed = true;
+  vp.setDesignGhosted(false);
+}
+
+/** Back to the design's own frame, with no hall around it. */
+function resetLayerView() {
+  activeLayer = null;
+  vp.setLayerAlign(false);
+  vp.setVenueObjects([]);
+  vp.setDesignGhosted(false);
+  vp.setDesignTransform({ x: 0, y: 0, z: 0 }, 0);
+}
+
+/**
+ * Show the map itself (`null`) or one of its venues.
+ *
+ * The placement on screen is banked back to the layer being left before
+ * anything else happens, so switching between halls keeps each one's alignment
+ * without anybody having to press anything.
+ */
+async function showLayer(index) {
+  bankLayer();
+  const layer = index === null ? null : project?.layers?.[index];
+  if (index !== null && !layer) return;
+
+  if (!layer) {
+    resetLayerView();
+    await vp.setNavCloud(map.navCloud);
+    refreshAll();
+    return void toast(`Back to ${map.name}. Changes here reach every venue.`);
+  }
+
+  activeLayer = index;
+  vp.setDesignTransform(layer.offset, layer.yaw);
+  vp.setVenueObjects(layer.template.mapObjects);
+  vp.setDesignGhosted(!layer.placed);
+  await vp.setNavCloud(layer.template.navCloud);
+  // Last, so the gizmo attaches to a frame already standing where it belongs.
+  vp.setLayerAlign(true);
+  refreshAll();
+
+  toast(layer.placed
+    ? `${layer.name}. Drag the map to adjust where it sits in this venue.`
+    : `${layer.name}. The map is ghosted until it is placed — drag it onto the `
+      + 'walls of this venue to line it up.');
+}
+
+/**
+ * The venue list in the toolbar.
+ *
+ * Rebuilt only when the names change, so choosing one does not tear the element
+ * out from under the pointer that is still inside it.
+ */
+function refreshLayerPicker() {
+  const grp = $('layer-grp');
+  if (!grp) return;
+  const layers = project?.layers || [];
+  grp.hidden = !(lbeOn() && layers.length);
+  if (grp.hidden) return;
+
+  const sel = $('layer-pick');
+  const key = [map.name, ...layers.map((l) => l.name)].join('\u0000');
+  if (sel.dataset.built !== key) {
+    sel.innerHTML = '';
+    const own = document.createElement('option');
+    own.value = 'map';
+    own.textContent = `${map.name} — the map`;
+    sel.appendChild(own);
+    layers.forEach((l, i) => {
+      const o = document.createElement('option');
+      o.value = String(i);
+      o.textContent = l.name;
+      sel.appendChild(o);
+    });
+    sel.dataset.built = key;
+  }
+  sel.value = activeLayer === null ? 'map' : String(activeLayer);
+}
+
+function wireLayerPicker() {
+  $('layer-pick').onchange = (e) => {
+    const v = e.target.value;
+    showLayer(v === 'map' ? null : Number(v));
+  };
+}
+
 function refreshAll() {
   // Everything that edits the map ends here, which makes it the one place that
   // has to notice a piece having left the playable square. Objects built by
@@ -5158,6 +5313,7 @@ function refreshAll() {
   refreshModeAvailability();
   refreshMeta();
   refreshVenues();
+  refreshLayerPicker();
   refreshPreview();
   refreshStatus();
   $('b-undo').disabled = !undoStack.length;
