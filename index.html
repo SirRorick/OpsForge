@@ -473,6 +473,18 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
 .cprow .kill{background:none;border:0;padding:0 2px;cursor:pointer;color:var(--faint);font-size:14px;line-height:1}
 .cprow .kill:hover{color:var(--danger)}
 
+/* ---------- LBE venue rows ---------- */
+.vrow{display:grid;grid-template-columns:1fr auto;gap:5px 8px;align-items:center;
+  padding:7px 0;border-bottom:1px solid var(--line-soft)}
+.vrow:last-of-type{border-bottom:0}
+.vrow .vfile{font-family:var(--mono);font-size:9.5px;color:var(--faint);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vrow .vname{grid-column:1/-1;width:100%}
+.vrow .vnote{grid-column:1/-1;margin:0;font-size:10.5px;line-height:1.4;color:var(--accent)}
+.vrow .kill{background:none;border:0;padding:0 2px;cursor:pointer;color:var(--faint);
+  font-size:14px;line-height:1}
+.vrow .kill:hover{color:var(--danger)}
+
 /* ---------- dialog ---------- */
 #veil{position:fixed;inset:0;z-index:200;display:none;place-items:center;
   background:rgba(6,10,14,.62)}
@@ -778,6 +790,14 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
         </div>
       </div>
 
+      <div class="sec" id="venue-sec" hidden>
+        <h2>Venues <span class="cnt" id="venue-count"></span></h2>
+        <div class="pad">
+          <div id="venue-list"></div>
+          <p class="hint" style="margin-top:8px" id="venue-note"></p>
+        </div>
+      </div>
+
       <div class="sec">
         <h2>Checkpoints <span class="cnt" id="cp-count"></span></h2>
         <div class="pad">
@@ -865,6 +885,8 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
 <div id="toast"></div>
 <input type="file" id="filepick" style="display:none">
 <input type="file" id="prefabpick" accept=".opsprefab,.json,application/json" style="display:none">
+<input type="file" id="primarypick" style="display:none">
+<input type="file" id="venuepick" multiple style="display:none">
 <input type="file" id="logopick" accept="image/*" style="display:none">
 
 <script type="importmap">

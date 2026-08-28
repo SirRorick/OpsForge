@@ -2695,6 +2695,10 @@ export class Viewport extends EventTarget {
       scale: { x: s.x, y: s.y, z: s.z },
       raw: mesh.userData.raw,
       dirty: mesh.userData.dirty,
+      // Editor-side, and invisible to `serializeMap`, which builds an object
+      // out of the six keys above. It travels so that a rebuilt `mapObjects`
+      // still names the same objects a venue layer named.
+      id: mesh.userData.id,
     };
   }
 

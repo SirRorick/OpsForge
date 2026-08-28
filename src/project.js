@@ -72,6 +72,40 @@ export function projectFileName(name) {
   return `${safe}.${PROJECT_EXT}`;
 }
 
+// -- Naming the files a venue writes ----------------------------------------
+// The name is the map name the game lists *and* the first half of the file
+// name, so it is the only thing telling twenty otherwise identical maps apart
+// on a headset. Both of these are shared by the import dialog, which suggests
+// the names, and the export dialog, which is the last chance to change them.
+
+/**
+ * The name suggested for a venue's map: the design, then the hall in brackets.
+ *
+ * Matches the convention these files were already being named by hand --
+ * `ARENA-01_[VEN1_HALL1]` -- so a template called `VEN1_HALL1` in the headset
+ * comes back with its map already named. It is a suggestion and nothing more:
+ * anything typed over it is kept.
+ */
+export function venueMapName(designName, templateName) {
+  return `${designName}_[${templateName}]`;
+}
+
+/**
+ * The first name in `names` that some earlier one already used, or null.
+ *
+ * Two maps of one name are two files of one name, and the second overwrites
+ * the first on the way to a headset -- silently, and after the point where
+ * anyone would still be watching. Cheaper to refuse the export.
+ */
+export function duplicateName(names) {
+  const seen = new Set();
+  for (const n of names) {
+    if (seen.has(n)) return n;
+    seen.add(n);
+  }
+  return null;
+}
+
 // -- Object identity --------------------------------------------------------
 // A layer names the primary objects it has stopped inheriting, and it has to
 // still mean the same objects tomorrow. Position in `mapObjects` will not do:

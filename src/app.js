@@ -25,6 +25,7 @@ import {
   objectWeapon,
   INT, BOOL, ENUM, FLAGS,
 } from './rules.js';
+import { newProject, newLayer, venueMapName, duplicateName } from './project.js';
 import { geometryFor } from './placeholders.js';
 import {
   checkpointsAvailable, checkpointList, checkpointText, checkpointEditorState,
@@ -43,6 +44,7 @@ const $ = (id) => document.getElementById(id);
 const vp = new Viewport($('view'));
 
 let map = null;             // everything except mapObjects, which live in the viewport
+let project = null;         // `map` and its venue layers. No layers unless LBE mode put them there
 let activePack = 'default';                 // theme shown inside Virtual Objects
 let openGroups = new Set(['virtual']);      // expanded top-level library sections
 let activeRuleSet = 0;                         // rule set tab
@@ -58,6 +60,7 @@ let placingLabel = null;    // set while a library pick-up is following the curs
 
 (async function boot() {
   map = await newMap({ name: 'New Map' });
+  project = newProject(map);
   applyMapMeta();
   buildLibrary();
   buildRules();
@@ -1009,6 +1012,7 @@ function wirePrefabTool() {
 function wireToolbar() {
   const startNewMap = async () => {
     map = await newMap({ name: 'New Map', author: map?.author || '' });
+    project = newProject(map);
     vp.clearObjects();
     applyMapMeta();
     await loadNavCloud();
@@ -1032,7 +1036,11 @@ function wireToolbar() {
       title: 'Start a new map',
       body: `This clears the ${vp.objects.length} object${vp.objects.length === 1 ? '' : 's'} on `
         + 'screen and everything set against them. A checkpoint of the current map is taken first, '
-        + 'so you can get back to it from the Map tab.',
+        + 'so you can get back to it from the Map tab.'
+        + (project?.layers.length
+          ? ` The ${project.layers.length} venue layers go too: an alignment is a placement of `
+            + 'one particular design, and this is about to be a different one.'
+          : ''),
       confirmLabel: 'New map',
       run: () => { takeCheckpoint('manual', true); startNewMap(); },
     });
@@ -3469,10 +3477,218 @@ async function openFile(file) {
 function openSourceChooser() {
   openDialog({
     title: 'Open a map',
-    body: 'From a file the game or this editor wrote, or from the maps other players have published.',
+    body: lbeOn()
+      ? 'From a file the game or this editor wrote, or from the maps other players have '
+        + 'published. Map and venues opens one map together with the halls it will be played in.'
+      : 'From a file the game or this editor wrote, or from the maps other players have published.',
     actions: [
       { label: 'From this computer', ghost: true, run: () => $('filepick').click() },
+      ...(lbeOn() ? [{ label: 'Map and venues', ghost: true, run: () => openVenueImport() }] : []),
       { label: 'Mod.io Library', run: () => openLibraryBrowser() },
+    ],
+  });
+}
+
+/**
+ * LBE import: the map, and a template per hall it will be played in.
+ *
+ * Two boxes, because the two files are not the same kind of thing. The map is
+ * the design — every object in it, its rules, its author — and there is one of
+ * it. A template is a room: walls traced around the spatial anchors on its own
+ * wall, built and exported in a headset standing in it. Nothing in a template
+ * is exported. What is wanted from it is the half of a map file that says
+ * where it is rather than what is in it — the nav cloud and the anchors.
+ *
+ * Every template is named here, because the name is both the map name the game
+ * lists and the first half of the file name, and twenty files all called
+ * ARENA-01 are twenty files nobody can tell apart on a headset. The default
+ * pairs the map with the template's own name — call a template VEN1_HALL1 in
+ * the headset and the name writes itself — and stops being offered for a row
+ * the moment somebody types in it.
+ *
+ * The guid is minted here, once, and kept for the life of the project. That is
+ * what makes the second export overwrite the first rather than leaving a second
+ * set of twenty maps on every headset in the building.
+ */
+function openVenueImport() {
+  const body = document.createElement('div');
+
+  const intro = document.createElement('p');
+  intro.textContent = 'The map is the one being built. A venue template is a hall, exported from '
+    + 'a headset standing in it, and only its walls and its spatial data are read — nothing in a '
+    + 'template is exported. One playable file comes out per venue, plus the map itself.';
+  body.appendChild(intro);
+
+  const mapRow = document.createElement('div');
+  mapRow.className = 'vrow';
+  const mapLabel = document.createElement('div');
+  mapLabel.className = 'vfile';
+  mapLabel.textContent = 'No map chosen yet';
+  const mapPick = document.createElement('button');
+  mapPick.className = 'btn ghost';
+  mapPick.textContent = 'Choose map';
+  mapPick.onclick = () => $('primarypick').click();
+  mapRow.append(mapLabel, mapPick);
+  body.appendChild(mapRow);
+
+  const venueRow = document.createElement('div');
+  venueRow.className = 'vrow';
+  const count = document.createElement('div');
+  count.className = 'vfile';
+  const addPick = document.createElement('button');
+  addPick.className = 'btn ghost';
+  addPick.textContent = 'Add venues';
+  addPick.onclick = () => $('venuepick').click();
+  venueRow.append(count, addPick);
+  body.appendChild(venueRow);
+
+  const status = document.createElement('p');
+  status.className = 'hint';
+  status.style.margin = '8px 0 0';
+  body.appendChild(status);
+
+  // Twenty halls is an ordinary number of them, so the list scrolls rather than
+  // growing the dialog off the bottom of the screen.
+  const list = document.createElement('div');
+  list.className = 'scroll';
+  list.style.cssText = 'max-height:40vh;margin-top:4px';
+  body.appendChild(list);
+
+  let primary = null;
+  let primaryText = '';
+  let primaryFile = '';
+  const templates = [];   // { file, map, name, touched }
+
+  const defaultName = (t) => (primary ? venueMapName(primary.name, t.map.name) : t.map.name);
+
+  function renderTemplates() {
+    list.innerHTML = '';
+    for (const t of templates) {
+      const row = document.createElement('div');
+      row.className = 'vrow';
+
+      const file = document.createElement('div');
+      file.className = 'vfile';
+      file.textContent = t.file;
+      file.title = `${t.file}\n${t.map.mapObjects.length} objects in this template, `
+        + 'none of which are exported';
+
+      const kill = document.createElement('button');
+      kill.className = 'kill';
+      kill.textContent = '×';
+      kill.title = 'Take this venue out';
+      kill.onclick = () => {
+        templates.splice(templates.indexOf(t), 1);
+        renderTemplates();
+      };
+
+      const name = document.createElement('input');
+      name.className = 'vname';
+      name.type = 'text';
+      name.value = t.name;
+      name.placeholder = 'Name the map this venue exports as';
+      name.oninput = () => { t.name = name.value; t.touched = true; };
+
+      row.append(file, kill, name);
+
+      // The one thing about a template that cannot be fixed here. A map naming
+      // no anchor names nothing the headset can re-localise against, so it
+      // lands asking to be aligned by hand — which is the work this exists to
+      // abolish, and much cheaper to hear about now than on site.
+      if (!(t.map.anchors || []).length) {
+        const note = document.createElement('p');
+        note.className = 'vnote';
+        note.textContent = 'No spatial anchors in this template. Its map will ask to be aligned '
+          + 'by hand in the headset instead of landing on its own.';
+        row.appendChild(note);
+      }
+
+      list.appendChild(row);
+    }
+    count.textContent = templates.length
+      ? `${templates.length} venue${templates.length === 1 ? '' : 's'}`
+      : 'No venue templates yet';
+  }
+
+  $('primarypick').onchange = async (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    try {
+      const text = await f.text();
+      primary = parseMap(text);
+      primaryText = text;
+      primaryFile = f.name;
+      mapLabel.textContent = `${primary.name} — ${primary.mapObjects.length} objects`;
+      mapLabel.title = f.name;
+      status.textContent = '';
+      // A name suggested with no map to pair it with was only ever half a name.
+      for (const t of templates) if (!t.touched) t.name = defaultName(t);
+      renderTemplates();
+    } catch (err) {
+      status.textContent = `Could not read ${f.name}: ${err.message}`;
+    }
+  };
+
+  $('venuepick').onchange = async (e) => {
+    const files = [...e.target.files];
+    e.target.value = '';
+    const bad = [];
+    for (const f of files) {
+      try {
+        const t = { file: f.name, map: parseMap(await f.text()), name: '', touched: false };
+        t.name = defaultName(t);
+        templates.push(t);
+      } catch (err) {
+        bad.push(`${f.name} (${err.message})`);
+      }
+    }
+    status.textContent = bad.length ? `Not a map file, so left out: ${bad.join(', ')}` : '';
+    renderTemplates();
+  };
+
+  renderTemplates();
+
+  openDialog({
+    title: 'Open a map and its venues',
+    body,
+    wide: true,
+    actions: [
+      { label: 'Cancel', ghost: true, run: () => {} },
+      {
+        label: 'Import',
+        keepOpen: true,
+        run: async (_v, ui) => {
+          if (!primary) {
+            return ui.status('Choose the map first — the one with the objects in it.', true);
+          }
+          const named = templates.map((t) => t.name.trim());
+          if (named.some((n) => !n)) {
+            return ui.status('Every venue needs a name: it is the map name in the game and the '
+              + 'file name on the headset.', true);
+          }
+          const twice = duplicateName(named);
+          if (twice) {
+            return ui.status(`Two venues are both called "${twice}". Two files of one name `
+              + 'overwrite each other on the way to a headset.', true);
+          }
+
+          ui.close();
+          // The map goes through the same ingest every other map does, so a
+          // venue import cannot load one differently from a plain open. That
+          // resets `project`, which is why the layers are attached afterwards.
+          await loadMapText(primaryText, primaryFile);
+          for (let i = 0; i < templates.length; i++) {
+            project.layers.push(newLayer({
+              name: named[i], guid: newGuid(), template: templates[i].map,
+            }));
+          }
+          refreshAll();
+          const n = project.layers.length;
+          toast(`${map.name} — ${vp.objects.length} objects, ${n} venue${n === 1 ? '' : 's'}. `
+            + `An export writes ${n + 1} files.`);
+        },
+      },
     ],
   });
 }
@@ -3643,7 +3859,16 @@ async function loadMapText(text, sourceName) {
   const parsed = parseMap(text);
   map = parsed;
   vp.clearObjects();
-  for (const mo of parsed.mapObjects) vp.addObject(mo);
+  // The viewport mints the id an object keeps, and the map object it was built
+  // from carries the same one from here on: `toMapObject` hands it back, so
+  // every later rebuild of `mapObjects` says the same thing the meshes do. One
+  // namespace, because a venue layer names the objects it has stopped
+  // inheriting and has to mean the same objects whichever of the two it asks.
+  for (const mo of parsed.mapObjects) mo.id = vp.addObject(mo).userData.id;
+  // A map arriving is a project starting. Venue layers are an alignment of one
+  // particular design, so they do not survive a different map coming in --
+  // including a checkpoint being restored, which is one map and never a set.
+  project = newProject(map);
   const resized = fitBoundsToObjects();
   applyMapMeta();
   activeRuleSet = 0;
@@ -4623,9 +4848,17 @@ function wireAutosave() {
 
   $('lbe').onchange = () => {
     try { localStorage.setItem(LBE_KEY, lbeOn() ? '1' : '0'); } catch { /* fine */ }
+    const held = project?.layers.length || 0;
     toast(lbeOn()
-      ? 'LBE mode on. Import takes a map and a set of venue templates, and export writes a file per venue.'
-      : 'LBE mode off. The editor works on one map at a time.');
+      ? 'LBE mode on. Open takes a map and a set of venue templates, and an export writes a '
+        + 'file per venue.'
+      // Turning it off hides the venue half rather than throwing it away. The
+      // switch is a switch, and losing twenty alignments to one is not a thing
+      // a switch should be able to do.
+      : held
+        ? `LBE mode off. The ${held} venue layers are kept, and not exported, until it is back on.`
+        : 'LBE mode off. The editor works on one map at a time.');
+    refreshVenues();
   };
 
   $('cp-save').onclick = () => {
@@ -4868,6 +5101,50 @@ function refreshMeta() {
   $('fname').textContent = mapFileName(map.name, map.guid);
 }
 
+/**
+ * The Venues section of the Map tab: what an export would write, and what each
+ * file would be called.
+ *
+ * A guid is minted once per venue and never again, so the file name beside each
+ * one is the same file name every export — which is the whole reason copying a
+ * fresh set onto a headset replaces the last set rather than doubling it. It is
+ * worth being able to read them.
+ *
+ * Hidden with no layers, and hidden with LBE mode off even when there are: the
+ * switch being off means the editor is working on one map, and a panel counting
+ * twenty of them would be arguing with that.
+ */
+function refreshVenues() {
+  const sec = $('venue-sec');
+  if (!sec) return;
+  const layers = project?.layers || [];
+  sec.hidden = !(lbeOn() && layers.length);
+  if (sec.hidden) return;
+
+  $('venue-count').textContent = `${layers.length}`;
+  const host = $('venue-list');
+  host.innerHTML = '';
+  for (const l of layers) {
+    const row = document.createElement('div');
+    row.className = 'cprow';
+    const meta = document.createElement('div');
+    meta.className = 'cpm';
+    const n = document.createElement('div');
+    n.className = 'cpn';
+    n.textContent = l.name;
+    const w = document.createElement('div');
+    w.className = 'cpw';
+    w.textContent = mapFileName(l.name, l.guid);
+    meta.append(n, w);
+    meta.title = `${l.name}\n${mapFileName(l.name, l.guid)}\n`
+      + `Template: ${l.template.name}, ${l.template.mapObjects.length} objects`;
+    row.appendChild(meta);
+    host.appendChild(row);
+  }
+  $('venue-note').textContent = `An export writes ${layers.length + 1} files: the map itself, `
+    + 'and one per venue.';
+}
+
 function refreshAll() {
   // Everything that edits the map ends here, which makes it the one place that
   // has to notice a piece having left the playable square. Objects built by
@@ -4880,6 +5157,7 @@ function refreshAll() {
   buildSelectionPanel();
   refreshModeAvailability();
   refreshMeta();
+  refreshVenues();
   refreshPreview();
   refreshStatus();
   $('b-undo').disabled = !undoStack.length;
