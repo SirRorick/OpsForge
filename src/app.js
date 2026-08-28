@@ -25,7 +25,9 @@ import {
   objectWeapon,
   INT, BOOL, ENUM, FLAGS,
 } from './rules.js';
-import { newProject, newLayer, venueMapName, duplicateName } from './project.js';
+import {
+  newProject, newLayer, projectVariants, venueMapName, duplicateName,
+} from './project.js';
 import { geometryFor } from './placeholders.js';
 import {
   checkpointsAvailable, checkpointList, checkpointText, checkpointEditorState,
@@ -3710,8 +3712,8 @@ function openVenueImport() {
           }
           const twice = duplicateName(named);
           if (twice) {
-            return ui.status(`Two venues are both called "${twice}". Two files of one name `
-              + 'overwrite each other on the way to a headset.', true);
+            return ui.status(`Two venues are both called "${twice}". The name is the only `
+              + 'thing that tells one from another in the game’s map list.', true);
           }
 
           ui.close();
@@ -4024,6 +4026,167 @@ function writeMapFile() {
   }
 }
 
+/**
+ * The last look at what an export is about to write, one row per file.
+ *
+ * The name is the only thing on this screen that cannot be fixed afterwards
+ * without exporting again: the game lists maps by it, the file is called after
+ * it, and twenty arenas in one building are told apart by nothing else. So it
+ * is here, editable, with the file name it produces underneath — and the two
+ * things that make a venue's file not work are said out loud rather than left
+ * to be discovered on site.
+ */
+function openVenueExport() {
+  // Whatever is on screen for the venue being looked at belongs to that venue
+  // before any of it is counted. Read rather than banked: an export has no
+  // business clearing the venue off the screen on its way past.
+  readLayerFromScene(currentLayer());
+
+  const rows = [
+    {
+      label: 'The map itself',
+      name: map.name,
+      guid: map.guid,
+      anchors: (map.anchors || []).length,
+      placed: true,
+      apply: (n) => { map.name = n; },
+    },
+    ...project.layers.map((l) => ({
+      label: `From ${l.template.name}`,
+      name: l.name,
+      guid: l.guid,
+      anchors: (l.template.anchors || []).length,
+      placed: l.placed,
+      apply: (n) => { l.name = n; },
+    })),
+  ];
+
+  const body = document.createElement('div');
+  const intro = document.createElement('p');
+  intro.textContent = `${rows.length} files, in one zip. Unpack it and copy the lot into the `
+    + 'game’s maps folder — each one is a whole playable map, carrying the objects from '
+    + 'here and the spatial data of the venue it is for.';
+  body.appendChild(intro);
+
+  const list = document.createElement('div');
+  list.className = 'scroll';
+  list.style.cssText = 'max-height:46vh;margin-top:4px';
+  body.appendChild(list);
+
+  for (const row of rows) {
+    const el = document.createElement('div');
+    el.className = 'vrow';
+
+    const label = document.createElement('div');
+    label.className = 'vfile';
+    label.textContent = row.label;
+
+    const name = document.createElement('input');
+    name.className = 'vname';
+    name.type = 'text';
+    name.value = row.name;
+    name.placeholder = 'Name this map';
+
+    const out = document.createElement('p');
+    out.className = 'vout';
+    const redraw = () => {
+      row.name = name.value;
+      out.textContent = mapFileName(name.value.trim() || 'Map', row.guid);
+    };
+    name.oninput = redraw;
+    redraw();
+
+    el.append(label, document.createElement('span'), name, out);
+
+    if (!row.anchors) {
+      const note = document.createElement('p');
+      note.className = 'vnote';
+      note.textContent = 'No spatial anchors: this one will ask to be aligned by hand in the '
+        + 'headset instead of landing on its own.';
+      el.appendChild(note);
+    }
+    if (!row.placed) {
+      const note = document.createElement('p');
+      note.className = 'vnote';
+      note.textContent = 'Never aligned. The map will sit wherever its own origin falls in this '
+        + 'venue, which is almost certainly not where you want it.';
+      el.appendChild(note);
+    }
+
+    list.appendChild(el);
+  }
+
+  openDialog({
+    title: 'Export every venue',
+    body,
+    wide: true,
+    actions: [
+      { label: 'Cancel', ghost: true, run: () => {} },
+      {
+        label: `Export ${rows.length} files`,
+        keepOpen: true,
+        run: (_v, ui) => {
+          const named = rows.map((r) => r.name.trim());
+          if (named.some((n) => !n)) {
+            return ui.status('Every map needs a name: it is what the game lists it under.', true);
+          }
+          const twice = duplicateName(named);
+          if (twice) {
+            return ui.status(`Two of these are both called "${twice}". The name is the only `
+              + 'thing that tells one from another in the game’s map list.', true);
+          }
+          rows.forEach((r, i) => r.apply(named[i]));
+          ui.close();
+          writeVenueZip();
+        },
+      },
+    ],
+  });
+}
+
+/**
+ * Every venue's map, in one zip.
+ *
+ * One file per venue plus the map itself, because that is what goes onto a
+ * headset — and as separate downloads a browser would block all but the first
+ * few of twenty. The archive unpacks to exactly the files the game reads, with
+ * no extension on any of them.
+ */
+async function writeVenueZip() {
+  try {
+    // For its side effects: this is what refreshes `mapObjects` off the
+    // viewport and stamps `editedTime`, so the map in the zip is the same
+    // bytes a plain export of it would write.
+    currentMapText();
+
+    const files = projectVariants(project).map((m) => ({
+      name: mapFileName(m.name, m.guid),
+      data: serializeMap(m),
+    }));
+    // `zipWrite` hands back a Blob already; it is rewrapped below only to put
+    // a type on it, since a Blob's type is fixed at construction.
+    const zip = await zipWrite(files);
+    const stem = String(map.name || 'Map').replace(/[\\/:*?"<>|]/g, '').trim() || 'Map';
+    const zipName = `${stem} venues.zip`;
+
+    const url = URL.createObjectURL(new Blob([zip], { type: 'application/zip' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = zipName;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+
+    $('st-file').textContent = zipName;
+    takeCheckpoint('export');
+    refreshAll();
+    toast(`Exported ${zipName} — ${files.length} maps. Unpack it and copy them into the game's `
+      + 'maps folder, with no file extension on any of them.');
+  } catch (err) {
+    console.error(err);
+    toast(`Export failed: ${err.message}`, true);
+  }
+}
+
 function promptForMapDetails(gaps = exportGaps()) {
   const body = document.createElement('div');
 
@@ -4122,6 +4285,13 @@ function mapMetadataBlob() {
  * `Ctrl+S`, `Enter` muscle memory still writes the file.
  */
 function chooseExportDestination() {
+  // With venues on the go there is no destination to choose. Mod.io publishes
+  // one map and this is a set of them -- twenty near-identical arenas, each
+  // tied by its anchors to a room in one particular building, is not something
+  // the library is for. So the whole chooser is skipped rather than offering a
+  // route that would have to be explained away.
+  if (lbeOn() && project?.layers.length) return void openVenueExport();
+
   const token = modioToken();
   const username = modioCachedUsername();
   const signedIn = !!(token && username);
@@ -5257,16 +5427,21 @@ function detachIntoLayer(meshes) {
  * are read in the design's frame, the same frame the map is written in, so the
  * export applies one placement to the whole of what a venue plays.
  */
-function bankLayer() {
-  const layer = currentLayer();
+function readLayerFromScene(layer) {
   if (!layer) return;
   const { offset, yaw } = vp.designTransform();
   layer.offset = offset;
   layer.yaw = yaw;
+  layer.objects = vp.layerOwnObjects().map((m) => vp.toMapObject(m));
+}
 
-  const own = vp.layerOwnObjects();
-  layer.objects = own.map((m) => vp.toMapObject(m));
-  vp.removeObjects(own);
+function bankLayer() {
+  const layer = currentLayer();
+  if (!layer) return;
+  readLayerFromScene(layer);
+  // Off the screen as well as into the model: only one venue is ever drawn,
+  // and the other nineteen have to be somewhere.
+  vp.removeObjects(vp.layerOwnObjects());
   vp.newObjectLayer = null;
 }
 

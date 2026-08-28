@@ -99,9 +99,11 @@ export function venueMapName(designName, templateName) {
 /**
  * The first name in `names` that some earlier one already used, or null.
  *
- * Two maps of one name are two files of one name, and the second overwrites
- * the first on the way to a headset -- silently, and after the point where
- * anyone would still be watching. Cheaper to refuse the export.
+ * Nothing is lost to a repeat -- the guid is in the file name, so two maps of
+ * one name are still two files. What is lost is the ability to tell them apart,
+ * and the name is the only thing that ever could: on a headset, in a venue,
+ * picking ARENA-01 out of a list of ARENA-01 is the whole job. Refused rather
+ * than warned about, because it is always a slip.
  */
 export function duplicateName(names) {
   const seen = new Set();
