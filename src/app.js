@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import { Viewport, PLAYABLE_SIZE, brandImage } from './scene.js';
 import {
   parseMap, serializeMap, newMap, newGuid, nowStamp, mapFileName,
-  buildNavMask, encodeNavCloud, MAP_VERSION,
+  buildNavMask, encodeNavCloud, decodeNavCloud, MAP_VERSION,
 } from './format.js';
 import {
   getPacks, categoriesOf, packsInGroup, getByKey, iconUrl,
@@ -28,7 +28,7 @@ import {
 import {
   newProject, newLayer, projectVariants, venueMapName, duplicateName,
   writeProjectArchive, readProjectArchive, projectFileName, identifyObjects, nextObjectId,
-  PROJECT_EXT,
+  objectsOutsidePlaySpace, PROJECT_EXT,
 } from './project.js';
 import { geometryFor } from './placeholders.js';
 import {
@@ -3583,9 +3583,13 @@ function openSourceChooser() {
  * inheriting, and those names have to still mean the same objects tomorrow.
  */
 async function importProjectFile(file) {
+  return importProjectBuffer(await file.arrayBuffer(), file.name);
+}
+
+async function importProjectBuffer(buffer, sourceName) {
   try {
-    const { mapText, ids, editor, layers } = await readProjectArchive(await file.arrayBuffer());
-    await loadMapText(mapText, file.name);
+    const { mapText, ids, editor, layers } = await readProjectArchive(buffer);
+    await loadMapText(mapText, sourceName);
     applyProjectIds(ids);
     applyEditorState(editor);
     project.layers = layers;
@@ -4069,13 +4073,23 @@ async function loadMapText(text, sourceName) {
   $('st-file').textContent = sourceName;
 }
 
+/**
+ * Bring `map.mapObjects` up to date with what is on screen, claiming nothing.
+ *
+ * The design, not everything on screen: a venue's own objects belong to that
+ * venue's file and have no business in the map's. Split out from
+ * `currentMapText` because the fit check needs the objects fresh and has no
+ * business stamping `editedTime` to get them.
+ */
+function syncMapObjects() {
+  map.mapObjects = vp.designObjects().map((m) => vp.toMapObject(m));
+}
+
 /** The map as the game would read it. Used by both Export and autosave. */
 function currentMapText() {
   map.editedTime = nowStamp();
   map.version = map.version || MAP_VERSION;
-  // The design, not everything on screen: a venue's own objects belong to that
-  // venue's file and have no business in the map's.
-  map.mapObjects = vp.designObjects().map((m) => vp.toMapObject(m));
+  syncMapObjects();
   return serializeMap(map);
 }
 
@@ -4158,11 +4172,32 @@ function writeMapFile() {
  * things that make a venue's file not work are said out loud rather than left
  * to be discovered on site.
  */
-function openVenueExport() {
+async function openVenueExport() {
   // Whatever is on screen for the venue being looked at belongs to that venue
   // before any of it is counted. Read rather than banked: an export has no
   // business clearing the venue off the screen on its way past.
   readLayerFromScene(currentLayer());
+  syncMapObjects();
+
+  // Every hall's play space, decoded once, so each row can say whether the
+  // design actually lands inside the boundary somebody walked in that room.
+  // The last chance to hear it: after this the files are on a headset and the
+  // next person to find out is standing in the building.
+  //
+  // Measured over the variants themselves -- the very maps the export is about
+  // to write -- rather than over a second calculation that would have to be
+  // trusted to agree with them. Primary first, then one per layer, which is
+  // the order the rows below are built in.
+  const outside = [];
+  for (const variant of projectVariants(project)) {
+    try {
+      const mask = await decodeNavCloud(variant.navCloud?.encodedPoints || '');
+      outside.push(objectsOutsidePlaySpace(variant, mask).length);
+    } catch {
+      // A play space that will not decode is one this cannot speak about.
+      outside.push(0);
+    }
+  }
 
   const rows = [
     {
@@ -4171,14 +4206,16 @@ function openVenueExport() {
       guid: map.guid,
       anchors: (map.anchors || []).length,
       placed: true,
+      outside: outside[0] || 0,
       apply: (n) => { map.name = n; },
     },
-    ...project.layers.map((l) => ({
+    ...project.layers.map((l, i) => ({
       label: `From ${l.template.name}`,
       name: l.name,
       guid: l.guid,
       anchors: (l.template.anchors || []).length,
       placed: l.placed,
+      outside: outside[i + 1] || 0,
       apply: (n) => { l.name = n; },
     })),
   ];
@@ -4232,6 +4269,14 @@ function openVenueExport() {
       note.className = 'vnote';
       note.textContent = 'Never aligned. The map will sit wherever its own origin falls in this '
         + 'venue, which is almost certainly not where you want it.';
+      el.appendChild(note);
+    }
+    if (row.outside) {
+      const note = document.createElement('p');
+      note.className = 'vnote';
+      note.textContent = `${row.outside} object${row.outside === 1 ? '' : 's'} outside the play `
+        + `space walked in this room. ${row.outside === 1 ? 'It is' : 'They are'} in the file, `
+        + 'and nobody can reach ' + (row.outside === 1 ? 'it.' : 'them.');
       el.appendChild(note);
     }
 
@@ -5310,6 +5355,70 @@ function applyEditorState(state) {
  * Write a checkpoint if there is anything to write. `force` is for the button,
  * which should work whether or not the switch is on.
  */
+// ---------------------------------------------------------------------------
+// The venue half of a session
+// ---------------------------------------------------------------------------
+// A checkpoint is one map, and a set of venues is not one map. So the alignments
+// and everything a venue keeps of its own would survive a crashed tab only as
+// far as somebody had written the project out -- and the whole point of an
+// autosave is the afternoon nobody thought to.
+//
+// One key, overwritten, rather than a ring of them: this is the tab coming back
+// from the dead, not a history to browse. The archive is the same one Export
+// project writes, base64'd because storage takes strings.
+
+const PROJECT_AUTOSAVE_KEY = 'spatialops.project.autosave';
+
+/** Keep a copy of the venue half beside the map's own checkpoint. */
+async function saveProjectAutosave() {
+  if (!checkpointsAvailable()) return;
+  try {
+    if (!project?.layers.length) return void localStorage.removeItem(PROJECT_AUTOSAVE_KEY);
+    const bytes = new Uint8Array(
+      await (await writeProjectArchive(project, { editor: editorState() })).arrayBuffer()
+    );
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    localStorage.setItem(PROJECT_AUTOSAVE_KEY, JSON.stringify({
+      at: Date.now(), name: map.name, venues: project.layers.length, data: btoa(binary),
+    }));
+  } catch {
+    // No storage, or no room in it. Export project is still the thing that
+    // keeps this, and it is what the warnings already point at.
+  }
+}
+
+function projectAutosave() {
+  try {
+    return JSON.parse(localStorage.getItem(PROJECT_AUTOSAVE_KEY) || 'null');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * On the way in, offer back the venues a previous session was holding.
+ *
+ * Asked rather than restored, because it replaces what is on screen -- and the
+ * editor opens on an empty map, so the honest version of "there is something
+ * here" is a question about it.
+ */
+function offerProjectAutosave() {
+  const rec = projectAutosave();
+  if (!rec?.data) return;
+  confirmDialog({
+    title: 'Pick up where you left off?',
+    body: `"${rec.name}" and ${rec.venues} venue${rec.venues === 1 ? '' : 's'}, from `
+      + `${timeAgo(rec.at)}. This browser kept a copy when the last session ended. Opening it `
+      + 'replaces what is on screen, which is a new map.',
+    confirmLabel: 'Open it',
+    run: async () => {
+      const bin = Uint8Array.from(atob(rec.data), (c) => c.charCodeAt(0));
+      await importProjectBuffer(bin.buffer, `${rec.name} (kept by the browser)`);
+    },
+  });
+}
+
 function takeCheckpoint(reason, force = false) {
   if (!map || (!force && !autosaveOn())) return null;
   try {
@@ -5326,6 +5435,9 @@ function takeCheckpoint(reason, force = false) {
       reason,
     });
     mapTouched = false;
+    // Fire and forget: it is a copy, the archive takes a moment to build, and
+    // nothing that follows a checkpoint is waiting on it.
+    saveProjectAutosave();
     if (entry) refreshCheckpoints();
     return entry;
   } catch (err) {
@@ -5433,6 +5545,7 @@ function restoreCheckpoint(entry) {
 
 /** On the way in, mention what is waiting rather than leaving it to be found. */
 function greetWithCheckpoints() {
+  offerProjectAutosave();
   const entries = checkpointList();
   if (!entries.length) return;
   refreshCheckpoints();

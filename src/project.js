@@ -67,7 +67,7 @@
 // ---------------------------------------------------------------------------
 
 import { DEG, wrap360 } from './unity.js';
-import { parseMap, serializeMap } from './format.js';
+import { parseMap, serializeMap, NAV_SPACING } from './format.js';
 import { zipRead, zipWrite } from './zip.js';
 
 export const PROJECT_FORMAT = 'opsforge.project';
@@ -286,6 +286,68 @@ export function buildVariant(project, layer) {
  */
 export function projectVariants(project) {
   return [project.primary, ...project.layers.map((l) => buildVariant(project, l))];
+}
+
+// -- Does it fit in the room ------------------------------------------------
+// The one thing about a venue that cannot be seen from the editor and cannot
+// be fixed on site: whether the design, stood where this hall stands it,
+// actually lands inside that hall's play space.
+//
+// The play space is the guardian boundary somebody walked in the headset, and
+// it is the real constraint — an object outside it is an object a player
+// cannot reach. The arena box is not the test: it is authored, it is centred
+// on the origin, and both headset-made maps in the fixtures already carry
+// objects outside their own. The mask is measured.
+//
+// Tested at the object's origin rather than over its footprint. Props sit on
+// their base and primitives on their centre, so the origin is the piece's own
+// spot on the floor either way, and a crate half over the line is a judgement
+// nobody wants an editor making for them.
+
+/** Whether a point in map values falls on a painted cell of this play space. */
+export function navCloudCovers(navCloud, mask, point) {
+  const div = navCloud?.divisions;
+  if (!mask?.length || !div?.x || !div?.y) return true; // nothing to measure against
+
+  // Per axis from size and divisions, the way `setNavCloud` derives it, so a
+  // grid recorded at another scale is read at that scale.
+  const sx = div.x > 1 ? navCloud.size.x / (div.x - 1) : NAV_SPACING;
+  const sz = div.y > 1 ? navCloud.size.y / (div.y - 1) : NAV_SPACING;
+
+  // Into the grid's own frame. It carries a position and a yaw of its own --
+  // a map realigned in a headset is exactly what writes them -- so the point
+  // is brought back by the opposite turn and the opposite shift.
+  const at = navCloud.position || { x: 0, y: 0, z: 0 };
+  const dx = point.x - (at.x || 0);
+  const dz = point.z - (at.z || 0);
+  const t = -wrap360(navCloud.rotation?.y || 0) * DEG;
+  const cos = Math.cos(t), sin = Math.sin(t);
+  const lx = dx * cos + dz * sin;
+  const lz = -dx * sin + dz * cos;
+
+  const col = Math.round(lx / sx + (div.x - 1) / 2);
+  const row = Math.round(lz / sz + (div.y - 1) / 2);
+  if (col < 0 || col >= div.x || row < 0 || row >= div.y) return false;
+  // `row * width + col`, col along X and row along Z. See docs/FORMAT.md.
+  return mask[row * div.x + col] === 1;
+}
+
+/**
+ * Everything in one map that lands outside that map's own play space.
+ *
+ * Takes a whole map rather than a project and a layer, so the check runs over
+ * exactly the files an export is about to write -- `projectVariants` has
+ * already put each venue's objects where that venue will play them and given
+ * it that room's play space. Checking anything else would be checking a
+ * parallel calculation and hoping it agreed.
+ *
+ * `mask` is the decoded `encodedPoints`. With no mask there is nothing to
+ * measure against and nothing is reported, which is the right answer for a
+ * template whose boundary was never walked.
+ */
+export function objectsOutsidePlaySpace(map, mask) {
+  if (!mask?.length) return [];
+  return (map.mapObjects || []).filter((o) => !navCloudCovers(map.navCloud, mask, o.position));
 }
 
 // -- The project file -------------------------------------------------------

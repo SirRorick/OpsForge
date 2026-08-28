@@ -254,6 +254,61 @@ the server until something asks for them.
 - Uploading a map you have published before offers to update that entry
   instead of creating a second one, once mod.io confirms you own it.
 
+## One map, several venues
+
+A map built for a location-based venue is played in more than one room, and the
+rooms are not the same room: different walls, different guardian boundaries,
+different spatial anchors. Done by hand that means saving the map, dragging the
+whole thing into place for a hall, saving it again under another name, and
+repeating until there are ten of them — after which changing one crate means
+doing it ten times.
+
+**LBE mode**, off by default, under Map → Options, is the way out. With it off
+the editor is exactly what it always was; with it on you can hold one design
+and a placement per venue, and generate the files.
+
+1. Build a **venue template** for each hall: put the spatial anchors on a wall,
+   make a new map in the headset standing in that room, trace its walls with
+   boundary objects, walk its play space, and export it. It carries no design —
+   what is wanted from it is the half of a map file that says where a room is
+   rather than what is in it.
+2. **Open → Map and venues.** One map, then a template per hall, each named for
+   the map it will export as. The suggestion is `ARENA-01_[VEN1_HALL1]`, so a
+   template called `VEN1_HALL1` in the headset arrives already named.
+3. **Pick a venue** from the list in the toolbar. The hall's walls come in
+   around the map, its play space replaces the grid, and the gizmo places the
+   design as a whole. Drag it onto the walls. The design is ghosted until it has
+   been placed.
+4. **Right-click a piece of the design** in a venue to break it out of the map,
+   in that venue only. From there it is an ordinary object — move it, resize it,
+   delete it — and none of that reaches the map or any other venue. Objects
+   added inside a venue belong to it alone the same way.
+5. **Export** writes one zip: the map, and a playable file per venue, each
+   carrying the objects from here and the spatial data of the room it is for.
+   The export screen is the last chance to change any of the names, and it says
+   which venues have never been aligned, which templates carry no anchors, and
+   how many objects would land outside the play space somebody walked.
+
+Everything else about the map is edited once. Add a crate and it turns up in
+every venue, because a venue holds a placement rather than a copy.
+
+### The project file
+
+**Export project** writes a `.opsproject` — the map, every template, and every
+alignment. It is a zip, and readable with any unzip tool: the maps inside it are
+the game's own files, unchanged, beside one `project.json` holding the part that
+is OpsForge's.
+
+Keep it, and open it with **Open → Open a project** to carry on. This matters
+for a reason that is not obvious: each venue's map identity is minted once, when
+its template first arrives, and kept in that file. Open the project and export
+again and the new files *replace* the set already on your headsets. Start over
+from raw templates instead and you get a second set of twenty maps beside the
+first, with nothing to say which is which.
+
+Grouping, locking and hidden objects travel in it too. Those otherwise live only
+in the browser they were made in.
+
 ## Keyboard
 
 | | |
