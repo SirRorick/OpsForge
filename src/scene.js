@@ -1132,6 +1132,15 @@ export class Viewport extends EventTarget {
     // whole of it rather than anything in it. Both off is the ordinary editor.
     this.designGhosted = false;
     this.layerAlign = false;
+    // Whether the gizmo is currently placing the design as a whole. True only
+    // in a venue with nothing selected -- pick one of the venue's own objects
+    // and the handle goes to it, exactly as it would on the map itself.
+    this._aligning = false;
+    // The venue anything built from here on belongs to, or null for the design.
+    // Set when a venue is opened, so every path that makes an object -- the
+    // library, paste, duplicate, array, mirror, a prefab -- lands it in the
+    // right place without any of them having to know a venue exists.
+    this.newObjectLayer = null;
     this._faded = new Map();
     this.placing = null;
     this._pointer = null;
@@ -1905,7 +1914,10 @@ export class Viewport extends EventTarget {
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     mesh.userData = {
-      id: this._nextId++,
+      // Its own id if it is coming back from somewhere that kept one -- a venue
+      // being reopened, an undo -- and a fresh one otherwise. `seedObjectIds`
+      // keeps the counter ahead of anything a file brought in.
+      id: Number.isInteger(mo.id) ? mo.id : this._nextId++,
       def,
       // The subtype and its extra fields belong to the object, not the catalog
       // entry: a spawner whose weapon the user changed still has to export the
@@ -1915,6 +1927,12 @@ export class Viewport extends EventTarget {
       raw: mo.raw || null,
       dirty: !!mo.dirty,
       group: null,
+      // The venue this object belongs to and no other, or null for the design.
+      // `designObjects` is the map; everything else on screen is one hall's.
+      // Stated explicitly wins, including an explicit null -- an undo puts back
+      // design objects and venue objects together, and each has to land where
+      // it came from rather than wherever the editor is standing.
+      layer: mo.layer !== undefined ? mo.layer : this.newObjectLayer,
       // Put away by hand, and nothing to do with the map: an undo has to bring
       // this back with the object, and an export has to ignore it entirely.
       hidden: !!mo.hidden,
@@ -2114,8 +2132,35 @@ export class Viewport extends EventTarget {
    * to find. Everything drawn, and nothing else.
    */
   pickable() {
-    if (this.layerAlign) return [];
+    // In a venue only that venue's own objects answer the pointer. The design
+    // is inherited, and dragging a piece of it here would fork that piece into
+    // this hall alone -- which is a thing to mean, not a thing to do by
+    // clicking. `objectAt` still finds an inherited one for the right-click
+    // menu, which is where meaning it lives.
+    if (this.layerAlign) return this.objects.filter((m) => m.visible && m.userData.layer);
     return this.objects.filter((m) => m.visible);
+  }
+
+  /** The map: everything on screen that is not one venue's own. */
+  designObjects() {
+    return this.objects.filter((m) => !m.userData.layer);
+  }
+
+  /** What belongs to the venue being looked at, and to no other. */
+  layerOwnObjects() {
+    return this.objects.filter((m) => m.userData.layer);
+  }
+
+  /**
+   * A point in the world, in the design's frame.
+   *
+   * Anything that puts an object somewhere the pointer chose has to come
+   * through here: the pointer is in the room and an object records where it is
+   * in the map, and inside a venue those are metres apart.
+   */
+  toDesignPoint(world) {
+    this.mapRoot.updateWorldMatrix(true, false);
+    return this.mapRoot.worldToLocal(world.clone());
   }
 
   // -- drawing a hidden object as hidden ---------------------------------------
@@ -2141,7 +2186,11 @@ export class Viewport extends EventTarget {
     if (!solid) return;
     // Ghosted either because it was put away by hand, or because the whole
     // design is standing in a hall it has not been aligned into yet.
-    const faded = this.designGhosted || (!!mesh.userData.hidden && this.showHidden);
+    // The design is ghosted whole in a venue it has not been placed in yet. A
+    // venue's own objects never are: solid is how you tell what belongs to this
+    // hall alone from what every hall inherits.
+    const faded = (this.designGhosted && !mesh.userData.layer)
+      || (!!mesh.userData.hidden && this.showHidden);
     mesh.material = faded ? this._fadedOf(solid) : solid;
   }
 
@@ -2770,6 +2819,16 @@ export class Viewport extends EventTarget {
     for (const m of this.objects) this._applyFade(m);
   }
 
+  /** True while the gizmo is placing the design itself rather than anything in it. */
+  isAligning() {
+    return this._aligning;
+  }
+
+  /** Redraw these the way their own state now says, after that state changed. */
+  refreshFade(meshes) {
+    for (const m of meshes) this._applyFade(m);
+  }
+
   /**
    * The hall's own walls, to align against.
    *
@@ -2972,7 +3031,12 @@ export class Viewport extends EventTarget {
    */
   pickAt(ndcPoint) {
     this.ray.setFromCamera(ndcPoint, this.camera);
-    const hits = this.ray.intersectObjects(this.pickable(), true);
+    // Everything drawn, not `pickable()`. Outside a venue the two lists are the
+    // same; inside one, `pickable` holds back the design so it cannot be
+    // dragged out of shape by a stray click -- and right-click is the gesture
+    // that takes a piece of it out of the design on purpose, the same way it is
+    // the only gesture that reaches a locked object.
+    const hits = this.ray.intersectObjects(this.objects.filter((m) => m.visible), true);
     return this._ownerOf(hits.find((h) => h.object.isMesh)?.object) || null;
   }
 
@@ -3177,15 +3241,21 @@ export class Viewport extends EventTarget {
     // which is the one the file is written in.
     for (const child of [...this.pivot.children]) this.mapRoot.attach(child);
 
-    if (this.layerAlign) {
+    if (this.layerAlign && !this.selection.size) {
       // Aligning places the design, so the handle belongs to the frame the
       // design hangs from. Nothing in the map moves and nothing in it is
       // dirtied: what the drag changes is one transform belonging to the layer.
+      //
+      // Only with nothing selected. Picking one of the venue's own objects
+      // hands the gizmo to it and the editor behaves as it always does, so
+      // clicking off it is how the alignment handle comes back.
+      this._aligning = true;
       this.gizmo.attach(this.mapRoot);
       if (this._ctrlDown) this.gizmo.visible = false;
       this._applyGizmoConstraints();
       return;
     }
+    this._aligning = false;
 
     if (!this.selection.size) {
       this.gizmo.detach();
@@ -3233,7 +3303,7 @@ export class Viewport extends EventTarget {
     this.gizmo.scaleSnap = null;
     this.gizmo.uniform = this.uniformScale;
 
-    if (this.layerAlign) {
+    if (this._aligning) {
       // A hall is a place on a floor and a direction to face. Height is not
       // one of the choices -- a design sits on the floor of every room it is
       // played in -- and neither is size, since resizing an arena to fit a
@@ -3276,7 +3346,7 @@ export class Viewport extends EventTarget {
   _beginDrag() {
     // A layer alignment drags the design frame, not the pivot, so there is no
     // starting scale to capture and no selection whose own scale it multiplies.
-    if (this.layerAlign) return;
+    if (this._aligning) return;
     this._dragStartScale = this.pivot.scale.clone();
     // The scale the object already carried, which is what the inspector shows
     // and the file stores. The pivot's own scale starts every drag at 1 and
@@ -3300,7 +3370,7 @@ export class Viewport extends EventTarget {
   }
 
   _constrainDuringDrag() {
-    if (this.layerAlign) return void this._keepDesignUpright();
+    if (this._aligning) return void this._keepDesignUpright();
     this._holdGroundOnly();
     if (this._activeMode() === 'scale') {
       const force = this.uniformScale || !this._perAxisExact;
@@ -3534,7 +3604,9 @@ export class Viewport extends EventTarget {
         const world = new THREE.Vector3();
         m.getWorldPosition(world);
         world.y -= drop;
-        m.position.copy(m.parent === this.pivot ? this.pivot.worldToLocal(world.clone()) : world);
+        m.position.copy(m.parent === this.pivot
+          ? this.pivot.worldToLocal(world.clone())
+          : this.toDesignPoint(world));
         this.markDirty(m);
         moved++;
       }
@@ -4057,7 +4129,9 @@ export class Viewport extends EventTarget {
       const world = new THREE.Vector3();
       m.getWorldPosition(world);
       world.y -= box.min.y;
-      m.position.copy(m.parent === this.pivot ? this.pivot.worldToLocal(world.clone()) : world);
+      m.position.copy(m.parent === this.pivot
+          ? this.pivot.worldToLocal(world.clone())
+          : this.toDesignPoint(world));
       held++;
     }
     if (held) this._groundHeld = true;
@@ -4093,7 +4167,7 @@ export class Viewport extends EventTarget {
   }
 
   _endDrag() {
-    if (this.layerAlign) {
+    if (this._aligning) {
       // Nothing in the map moved, so nothing in it is dirty, and the pivot has
       // no selection to rebuild around. The placement the drag arrived at is
       // read straight off the design frame by whoever asked for the alignment.

@@ -43,6 +43,12 @@
 // It is also the one place drift can get back in, which is why it takes a
 // deliberate act to start it.
 //
+// What a fork does keep is the *frame*. Its position is stored in the design's
+// coordinates like everything else, and the hall's placement is applied to it
+// on the way out — so nudging an alignment moves the whole of what that hall
+// plays rather than sliding the design out from under the pieces put where
+// they are to work around a pillar. Shared frame, separate objects.
+//
 // **What comes from where.** The design's half is the primary's: objects,
 // rules, author, and the arena box. The room's half is the template's: the
 // nav cloud, the anchors, and `hasArUcoAnchor`, which belongs with them. The
@@ -220,15 +226,26 @@ export function alignMapObject(mo, offset, yaw) {
 
 // -- The fan-out ------------------------------------------------------------
 
-/** What one layer's file holds: the design it still inherits, then its own. */
+/**
+ * What one layer's file holds: the design it still inherits, then its own.
+ *
+ * Both halves are placed by the same transform, because both are stored in the
+ * design's frame and the placement is the hall's answer to where that frame
+ * sits. So nudging an alignment moves the whole of what will be played in that
+ * hall, forks and additions included, rather than sliding the design out from
+ * under the pieces that were put where they are to work around a pillar.
+ *
+ * It is the frame they share, not an inheritance. A layer's own object is its
+ * own: editing, resizing or deleting the design's copy does nothing to it, and
+ * no other hall has ever heard of it.
+ */
 export function layerMapObjects(project, layer) {
   const gone = new Set(layer.detached || []);
-  const inherited = (project.primary.mapObjects || [])
-    .filter((o) => !gone.has(o.id))
-    .map((o) => alignMapObject(o, layer.offset, layer.yaw));
-  // A layer's own objects were authored in that hall, standing where they
-  // stand, so they are already in its space and the transform is not theirs.
-  return [...inherited, ...(layer.objects || [])];
+  const place = (o) => alignMapObject(o, layer.offset, layer.yaw);
+  return [
+    ...(project.primary.mapObjects || []).filter((o) => !gone.has(o.id)).map(place),
+    ...(layer.objects || []).map(place),
+  ];
 }
 
 /** One layer as a map the game would read. */

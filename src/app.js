@@ -166,6 +166,9 @@ function snapshot() {
         // Identity, not order: a project names the objects a venue layer has
         // stopped inheriting, and an undo must not renumber them underneath it.
         id: m.userData.id,
+        // Which venue it is one of, or null for the map. Both are on screen
+        // together, and an undo has to put each back where it came from.
+        layer: m.userData.layer,
         type: m.userData.def.type,
         $type: m.userData.objectType,
         props: { ...m.userData.props },
@@ -176,6 +179,10 @@ function snapshot() {
     }),
     selection: vp.objects.map((m) => vp.selection.has(m)),
     bounds: { ...map.mapBoundsSize },
+    // Where the design is standing. An alignment is an edit like any other and
+    // undo should reach it -- and without this an undo would put the objects
+    // back and leave the frame under them wherever the last drag left it.
+    placement: vp.designTransform(),
   };
 }
 
@@ -187,16 +194,17 @@ function restore(snap) {
       type: rec.type, $type: rec.$type, props: rec.props,
       position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 },
       raw: rec.raw, dirty: rec.dirty, hidden: rec.hidden,
+      id: rec.id, layer: rec.layer ?? null,
     });
     mesh.position.fromArray(rec.p);
     mesh.quaternion.fromArray(rec.q);
     mesh.scale.fromArray(rec.s);
-    if (rec.id !== undefined) mesh.userData.id = rec.id;
     mesh.userData.group = rec.group;
     mesh.userData.locked = !!rec.locked;
     if (snap.selection[i]) picked.push(mesh);
   });
   map.mapBoundsSize = { ...snap.bounds };
+  if (snap.placement) vp.setDesignTransform(snap.placement.offset, snap.placement.yaw);
   vp.setBounds(map.mapBoundsSize);
   vp.setSelection(picked);
   // Quietly, before `refreshAll` would do it loudly: putting a state back is
@@ -457,6 +465,7 @@ function newObject(def, worldPoint) {
   // The scale a piece is placed at comes from the catalog, not from 1,1,1: a
   // solid cylinder is 0.5 x 2 x 0.5 in every map the game wrote, and a tunnel
   // is 1 x 2 x 1.
+  const local = vp.toDesignPoint(worldPoint);
   const [sx, sy, sz] = def.defaultScale;
   const y = def.pivot === 'center' ? (def.size[1] * sy) / 2 : 0;
   // Square to the grid, unless the mesh itself is not: Graffiti's Big Crate is
@@ -467,7 +476,7 @@ function newObject(def, worldPoint) {
     $type: def.objectType,
     type: def.type,
     props: def.props ? { ...def.props } : undefined,
-    position: { x: round(worldPoint.x), y, z: round(-worldPoint.z) },
+    position: { x: round(local.x), y, z: round(-local.z) },
     rotation: { x: 0, y: def.shapeYaw, z: 0 },
     scale: { x: sx, y: sy, z: sz },
     dirty: true,
@@ -488,7 +497,6 @@ function placeNew(def, worldPoint) {
  * view and making the user drag it there was the odd one out.
  */
 function pickUpNew(def) {
-  if (blockedInLayer()) return;
   const mesh = newObject(def, vp.orbit.target.clone().setY(0));
   placeReturn = [...vp.selection];
   placingLabel = def.label;
@@ -556,7 +564,6 @@ function copySelection() {
 }
 
 function paste() {
-  if (blockedInLayer()) return;
   if (!clipboard.length) return toast('Nothing copied yet.');
   const remap = new Map();
   const made = clipboard.map((rec) => {
@@ -968,7 +975,6 @@ async function importPrefabFile(file) {
  * nesting for a group of groups to live in.
  */
 function placePrefab(data) {
-  if (blockedInLayer()) return;
   if (!data || data.format !== PREFAB_FORMAT || !Array.isArray(data.objects)) {
     throw new Error('that is not an OpsForge prefab file');
   }
@@ -2793,6 +2799,16 @@ function showContextMenu(x, y, meshes) {
     : meshes[0].userData.def.label;
   el.appendChild(head);
 
+  if (activeLayer !== null && meshes.every((m) => !m.userData.layer)) {
+    // Everything else on this menu edits the map, and the map is not what is
+    // being looked at: a lock, a delete or a swap here would reach all twenty
+    // venues from inside one of them. Taking it out of the design first is
+    // what makes any of those mean this venue and no other.
+    item(many ? 'Break these out of the map' : 'Break out of the map', '',
+      () => detachIntoLayer(meshes));
+    return void mountContextMenu(el);
+  }
+
   if (locked || mixed) {
     item(mixed ? 'Unlock all' : 'Unlock', '', () => {
       vp.setLocked(meshes, false);
@@ -2839,8 +2855,12 @@ function showContextMenu(x, y, meshes) {
   item('Copy', 'Ctrl C', () => { vp.setSelection(meshes); copySelection(); }, locked);
   item('Delete', 'Del', () => { vp.setSelection(meshes); deleteSelection(); }, locked);
 
+  mountContextMenu(el);
+}
+
+/** Put a built menu on the page, and keep it there when the click was near an edge. */
+function mountContextMenu(el) {
   document.body.appendChild(el);
-  // Keep it on screen when the click was near an edge.
   const r = el.getBoundingClientRect();
   if (r.right > innerWidth) el.style.left = `${Math.max(0, innerWidth - r.width - 4)}px`;
   if (r.bottom > innerHeight) el.style.top = `${Math.max(0, innerHeight - r.height - 4)}px`;
@@ -3441,9 +3461,10 @@ function wireViewport() {
     refreshStatus();
   });
   vp.addEventListener('transform', () => {
-    // Moving the design in a hall is what "placed" means, so the first drag is
-    // what takes the ghost off it.
-    if (activeLayer !== null) markLayerPlaced();
+    // Moving the *design* in a hall is what "placed" means, so the first drag
+    // of the alignment handle takes the ghost off it. Nudging one of the
+    // venue's own crates is not the same claim and does not count.
+    if (activeLayer !== null && vp.isAligning()) markLayerPlaced();
     refreshSelectionValues();
     refreshStatus();
   });
@@ -3928,7 +3949,9 @@ async function loadMapText(text, sourceName) {
 function currentMapText() {
   map.editedTime = nowStamp();
   map.version = map.version || MAP_VERSION;
-  map.mapObjects = vp.objects.map((m) => vp.toMapObject(m));
+  // The design, not everything on screen: a venue's own objects belong to that
+  // venue's file and have no business in the map's.
+  map.mapObjects = vp.designObjects().map((m) => vp.toMapObject(m));
   return serializeMap(map);
 }
 
@@ -4926,7 +4949,9 @@ function wireAutosave() {
  */
 function editorState() {
   const objects = {};
-  vp.objects.forEach((m, i) => {
+  // Indexed against the same list `currentMapText` writes, which is the design
+  // alone -- a venue's own objects are not in the map these positions name.
+  vp.designObjects().forEach((m, i) => {
     const rec = {};
     if (m.userData.group) rec.g = m.userData.group;
     if (m.userData.locked) rec.l = 1;
@@ -4956,7 +4981,7 @@ function applyEditorState(state) {
   const hidden = [], locked = [];
   let touched = 0, highest = 0;
   for (const [key, rec] of Object.entries(state.objects)) {
-    const m = vp.objects[Number(key)];
+    const m = vp.designObjects()[Number(key)];
     if (!m) continue;
     if (rec.g) {
       m.userData.group = rec.g;
@@ -4989,7 +5014,7 @@ function takeCheckpoint(reason, force = false) {
       name: map.name,
       author: map.author,
       guid: map.guid,
-      objects: vp.objects.length,
+      objects: vp.designObjects().length,
       reason,
     });
     mapTouched = false;
@@ -5184,30 +5209,65 @@ function refreshVenues() {
 // has not been aligned into it is standing wherever the last hall left it, and
 // it should not look like it belongs there.
 
+/** The venue anything built right now belongs to, or null for the map. */
+const currentLayer = () => (activeLayer === null ? null : project?.layers[activeLayer] || null);
+
 /**
- * Refuse to build while standing in one of the halls, and say why.
+ * Take a piece of the design out of the design, in this venue only.
  *
- * A placement is aimed with the pointer, which is in the room's frame, and an
- * object records its position in the design's. With no venue open those are the
- * same frame and there is nothing to say; inside one they are not, and a crate
- * dropped where the pointer is would be written into the map several metres
- * from where it looked. Objects belonging to one venue alone are their own
- * piece of work, and this is not a quiet failure in the meantime.
+ * Nothing moves. The object is already standing where it stands, already in the
+ * frame the file records, and all that changes is who it belongs to: its id
+ * goes on the layer's `detached` list so this venue stops inheriting it, and
+ * the mesh itself is marked as the venue's own. From here it is an ordinary
+ * object — move it, resize it, swap it, delete it — and none of that reaches
+ * the map or any other venue.
+ *
+ * It is a fork rather than an override, so it does not come back. Deleting the
+ * design's copy later leaves this one standing, because by then they are not
+ * the same object and have not been since the moment this ran. Which is the
+ * argument for it being a deliberate act off a menu rather than something a
+ * drag could start.
  */
-function blockedInLayer() {
-  if (activeLayer === null) return false;
-  toast('Objects are added to the map itself. Go back to it in the venue list — what you '
-    + 'add there turns up in every venue.', true);
-  return true;
+function detachIntoLayer(meshes) {
+  const layer = currentLayer();
+  if (!layer) return;
+  const taken = meshes.filter((m) => !m.userData.layer);
+  if (!taken.length) return;
+
+  for (const m of taken) {
+    if (Number.isInteger(m.userData.id)) layer.detached.push(m.userData.id);
+    m.userData.layer = layer.id;
+    // It is this venue's now, so it stops being drawn as part of the design.
+    vp.refreshFade([m]);
+  }
+  vp.setSelection(taken);
+  commit();
+  const n = taken.length;
+  toast(`${n} object${n === 1 ? '' : 's'} now ${n === 1 ? 'belongs' : 'belong'} to ${layer.name} `
+    + 'alone. Changes to the map no longer reach '
+    + `${n === 1 ? 'it' : 'them'}, and neither does deleting the original.`);
 }
 
-/** Take the placement the design is standing at and give it to its layer. */
+/**
+ * Give the venue on screen back everything that is its own: where the design
+ * ended up standing, and every object belonging to that venue alone.
+ *
+ * The objects go back to being values rather than meshes, because only one
+ * venue is ever on screen and the other nineteen have to be somewhere. They
+ * are read in the design's frame, the same frame the map is written in, so the
+ * export applies one placement to the whole of what a venue plays.
+ */
 function bankLayer() {
-  if (activeLayer === null || !project?.layers[activeLayer]) return;
-  const layer = project.layers[activeLayer];
+  const layer = currentLayer();
+  if (!layer) return;
   const { offset, yaw } = vp.designTransform();
   layer.offset = offset;
   layer.yaw = yaw;
+
+  const own = vp.layerOwnObjects();
+  layer.objects = own.map((m) => vp.toMapObject(m));
+  vp.removeObjects(own);
+  vp.newObjectLayer = null;
 }
 
 /** A design that has been moved in a hall is a design that has been put there. */
@@ -5221,6 +5281,7 @@ function markLayerPlaced() {
 /** Back to the design's own frame, with no hall around it. */
 function resetLayerView() {
   activeLayer = null;
+  vp.newObjectLayer = null;
   vp.setLayerAlign(false);
   vp.setVenueObjects([]);
   vp.setDesignGhosted(false);
@@ -5242,6 +5303,7 @@ async function showLayer(index) {
   if (!layer) {
     resetLayerView();
     await vp.setNavCloud(map.navCloud);
+    undoStack = []; redoStack = []; current = snapshot();
     refreshAll();
     return void toast(`Back to ${map.name}. Changes here reach every venue.`);
   }
@@ -5249,10 +5311,20 @@ async function showLayer(index) {
   activeLayer = index;
   vp.setDesignTransform(layer.offset, layer.yaw);
   vp.setVenueObjects(layer.template.mapObjects);
+  // This venue's own: the pieces taken out of the design here, and anything
+  // added here. Stored as values while some other venue is on screen, since
+  // only one of them can be, and built back into meshes on the way in.
+  vp.newObjectLayer = layer.id;
+  for (const mo of layer.objects) vp.addObject({ ...mo, layer: layer.id });
   vp.setDesignGhosted(!layer.placed);
   await vp.setNavCloud(layer.template.navCloud);
   // Last, so the gizmo attaches to a frame already standing where it belongs.
   vp.setLayerAlign(true);
+  // Undo does not reach across the switch, for the same reason it does not
+  // reach across a new map: the stack is full of states of a scene that is no
+  // longer the scene on screen, and stepping back into one of them would put
+  // another venue's objects into this one.
+  undoStack = []; redoStack = []; current = snapshot();
   refreshAll();
 
   toast(layer.placed
