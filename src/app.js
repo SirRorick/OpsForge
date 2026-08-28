@@ -3727,9 +3727,10 @@ function openVenueImport() {
   const body = document.createElement('div');
 
   const intro = document.createElement('p');
-  intro.textContent = 'The map is the one being built. A venue template is a hall, exported from '
-    + 'a headset standing in it, and only its walls and its spatial data are read — nothing in a '
-    + 'template is exported. One playable file comes out per venue, plus the map itself.';
+  intro.textContent = 'The map is the one being built. A venue template is a hall, exported '
+    + 'from a headset standing in it: its boundary walls and its spatial data travel into that '
+    + 'venue’s file, and everything else in it stays here to align against. One playable file '
+    + 'comes out per venue, plus the map itself.';
   body.appendChild(intro);
 
   const mapRow = document.createElement('div');
@@ -3783,8 +3784,8 @@ function openVenueImport() {
       const file = document.createElement('div');
       file.className = 'vfile';
       file.textContent = t.file;
-      file.title = `${t.file}\n${t.map.mapObjects.length} objects in this template, `
-        + 'none of which are exported';
+      file.title = `${t.file}\n${t.map.mapObjects.length} objects in this template; its `
+        + 'boundary walls travel into the venue, and the rest stays here';
 
       const kill = document.createElement('button');
       kill.className = 'kill';
@@ -4182,19 +4183,27 @@ function exportMap() {
   chooseExportDestination();
 }
 
+/**
+ * Hand the browser one map file, named the way the game wants it.
+ *
+ * Not application/json: `download` names the file without an extension, and
+ * browsers append one inferred from the MIME type when it is missing. A JSON
+ * type gets ".json" bolted on and the game will not read the file.
+ */
+function downloadMapFile(text, name) {
+  const url = URL.createObjectURL(new Blob([text], { type: 'application/octet-stream' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
 function writeMapFile() {
   try {
     const text = currentMapText();
     const name = mapFileName(map.name, map.guid);
-    // Not application/json: `download` names the file without an extension,
-    // and browsers append one inferred from the MIME type when it is missing.
-    // A JSON type gets ".json" bolted on and the game will not read the file.
-    const url = URL.createObjectURL(new Blob([text], { type: 'application/octet-stream' }));
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = name;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    downloadMapFile(text, name);
     $('st-file').textContent = name;
     // An export is the best moment there is to take a checkpoint: it is the one
     // point where the author has said this state is worth keeping.
@@ -4371,6 +4380,16 @@ async function openVenueExport() {
     actions: [
       { label: 'Cancel', ghost: true, run: () => {} },
       {
+        // Named for what is on screen, because that is what it writes -- one
+        // file, for the venue being looked at. Re-exporting a single hall
+        // after a change meant for that hall alone is a normal thing to want,
+        // and unpacking a zip of twenty to find one of them is not.
+        label: activeLayer === null ? 'Export the map only' : 'Export this venue only',
+        ghost: true,
+        keepOpen: true,
+        run: (_v, ui) => { if (settleNames(ui)) { ui.close(); writeCurrentVariant(); } },
+      },
+      {
         label: 'Export project',
         ghost: true,
         keepOpen: true,
@@ -4383,6 +4402,33 @@ async function openVenueExport() {
       },
     ],
   });
+}
+
+/**
+ * One file: whichever map is being looked at.
+ *
+ * The venue on screen, or the map itself when none is. Same bytes that map
+ * would have in the zip -- built from the same fan-out and written by the same
+ * writer, so a hall re-exported on its own is the hall the whole set carries.
+ */
+function writeCurrentVariant() {
+  try {
+    readLayerFromScene(currentLayer());
+    currentMapText();
+
+    // `projectVariants` is the map first, then one per layer, in order.
+    const variant = projectVariants(project)[activeLayer === null ? 0 : activeLayer + 1];
+    const name = mapFileName(variant.name, variant.guid);
+    downloadMapFile(serializeMap(variant), name);
+
+    $('st-file').textContent = name;
+    takeCheckpoint('export');
+    toast(`Exported ${name} — ${variant.mapObjects.length} objects. Copy it into the game's `
+      + 'maps folder with no file extension.');
+  } catch (err) {
+    console.error(err);
+    toast(`Export failed: ${err.message}`, true);
+  }
 }
 
 /**

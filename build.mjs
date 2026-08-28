@@ -15,8 +15,8 @@ import { Script } from 'node:vm';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 export const ORDER = [
-  'unity.js', 'rules.js', 'format.js', 'zip.js', 'project.js', 'modio.js', 'packs.js', 'catalog.js',
-  'placeholders.js', 'checkpoints.js', 'gizmo.js', 'scene.js', 'app.js',
+  'unity.js', 'rules.js', 'format.js', 'zip.js', 'modio.js', 'packs.js', 'catalog.js',
+  'placeholders.js', 'project.js', 'checkpoints.js', 'gizmo.js', 'scene.js', 'app.js',
 ];
 
 // Matches single- and multi-line imports alike, capturing the module specifier

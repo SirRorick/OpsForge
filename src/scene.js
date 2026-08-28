@@ -2072,6 +2072,7 @@ export class Viewport extends EventTarget {
     if (next === this.hideBoundaries) return;
     this.hideBoundaries = next;
     this._refreshVisibility();
+    this._refreshVenueVisibility();
   }
 
   /**
@@ -2886,9 +2887,21 @@ export class Viewport extends EventTarget {
       mesh.quaternion.fromArray(unityEulerToQuat(mo.rotation));
       mesh.scale.set(mo.scale.x, mo.scale.y, mo.scale.z);
       mesh.raycast = () => {};
+      // A hall's walls are boundary objects like any others, and the switch
+      // that puts the map's out of the way has to put these out of the way
+      // too -- they are in front of exactly the same thing.
+      mesh.userData.boundary = isBoundary(def);
       this.venueGroup.add(mesh);
     }
+    this._refreshVenueVisibility();
     this.emit('change');
+  }
+
+  /** The hall's walls answer the boundaries switch, the way the map's do. */
+  _refreshVenueVisibility() {
+    for (const m of this.venueGroup.children) {
+      m.visible = !(this.hideBoundaries && m.userData.boundary);
+    }
   }
 
   /** One material for every hall wall there will ever be, made once. */

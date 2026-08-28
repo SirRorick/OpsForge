@@ -269,9 +269,11 @@ and a placement per venue, and generate the files.
 
 1. Build a **venue template** for each hall: put the spatial anchors on a wall,
    make a new map in the headset standing in that room, trace its walls with
-   boundary objects, walk its play space, and export it. It carries no design —
-   what is wanted from it is the half of a map file that says where a room is
-   rather than what is in it.
+   boundary objects, walk its play space, and export it. Two things travel out
+   of a template into each venue's file: the half of a map file that says where
+   a room is — its play space and its anchors — and its boundary walls, since
+   without them the game has nothing solid where the room has something solid.
+   Everything else in a template stays in the editor, to align against.
 2. **Open → Map and venues.** One map, then a template per hall, each named for
    the map it will export as. The suggestion is `ARENA-01_[VEN1_HALL1]`, so a
    template called `VEN1_HALL1` in the headset arrives already named.
@@ -284,10 +286,12 @@ and a placement per venue, and generate the files.
    delete it — and none of that reaches the map or any other venue. Objects
    added inside a venue belong to it alone the same way.
 5. **Export** writes one zip: the map, and a playable file per venue, each
-   carrying the objects from here and the spatial data of the room it is for.
-   The export screen is the last chance to change any of the names, and it says
-   which venues have never been aligned, which templates carry no anchors, and
-   how many objects would land outside the play space somebody walked.
+   carrying the objects from here and the walls and spatial data of the room it
+   is for. There is also a button for the one venue on screen, for when a change
+   was meant for that hall alone. The export screen is the last chance to change
+   any of the names, and it says which venues have never been aligned, which
+   templates carry no anchors, which have no play space recorded, and how many
+   objects would land outside the boundary somebody walked.
 
 Everything else about the map is edited once. Add a crate and it turns up in
 every venue, because a venue holds a placement rather than a copy.

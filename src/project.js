@@ -77,6 +77,7 @@
 import { DEG, wrap360 } from './unity.js';
 import { parseMap, serializeMap, NAV_SPACING } from './format.js';
 import { zipRead, zipWrite } from './zip.js';
+import { BOUNDARY_TYPES } from './packs.js';
 
 export const PROJECT_FORMAT = 'opsforge.project';
 export const PROJECT_VERSION = 1;
@@ -238,18 +239,31 @@ export function alignMapObject(mo, offset, yaw) {
 
 // -- The fan-out ------------------------------------------------------------
 
+/** A hall's own walls, which are boundary objects wherever they came from. */
+const isBoundaryObject = (o) => BOUNDARY_TYPES.includes(o.type);
+
 /**
- * What one layer's file holds: the design it still inherits, then its own.
+ * What one layer's file holds: the design it still inherits, its own, and the
+ * walls of the room it is being played in.
  *
- * Both halves are placed by the same transform, because both are stored in the
- * design's frame and the placement is the hall's answer to where that frame
- * sits. So nudging an alignment moves the whole of what will be played in that
- * hall, forks and additions included, rather than sliding the design out from
- * under the pieces that were put where they are to work around a pillar.
+ * The first two are placed by the same transform, because both are stored in
+ * the design's frame and the placement is the hall's answer to where that
+ * frame sits. So nudging an alignment moves the whole of what will be played
+ * in that hall, forks and additions included, rather than sliding the design
+ * out from under the pieces that were put where they are to work around a
+ * pillar. It is the frame they share, not an inheritance: a layer's own object
+ * is its own, and no other hall has ever heard of it.
  *
- * It is the frame they share, not an inheritance. A layer's own object is its
- * own: editing, resizing or deleting the design's copy does nothing to it, and
- * no other hall has ever heard of it.
+ * The walls are the exception, and they are not transformed. A template's
+ * boundary objects were traced round the room they describe, in that room's
+ * own coordinates -- which are the coordinates this file is written in, since
+ * its play space and its anchors come from that template too. Moving them
+ * would move the room away from itself.
+ *
+ * They are the one thing a template contributes to a file. Everything else in
+ * one is reference: it is there to align against and it stays in the editor.
+ * The walls have to travel, because without them the game has nothing solid
+ * where the room has something solid.
  */
 export function layerMapObjects(project, layer) {
   const gone = new Set(layer.detached || []);
@@ -257,6 +271,7 @@ export function layerMapObjects(project, layer) {
   return [
     ...(project.primary.mapObjects || []).filter((o) => !gone.has(o.id)).map(place),
     ...(layer.objects || []).map(place),
+    ...(layer.template?.mapObjects || []).filter(isBoundaryObject),
   ];
 }
 
