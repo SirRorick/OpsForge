@@ -156,6 +156,9 @@ function snapshot() {
       const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
       m.matrixWorld.decompose(p, q, s);
       return {
+        // Identity, not order: a project names the objects a venue layer has
+        // stopped inheriting, and an undo must not renumber them underneath it.
+        id: m.userData.id,
         type: m.userData.def.type,
         $type: m.userData.objectType,
         props: { ...m.userData.props },
@@ -181,6 +184,7 @@ function restore(snap) {
     mesh.position.fromArray(rec.p);
     mesh.quaternion.fromArray(rec.q);
     mesh.scale.fromArray(rec.s);
+    if (rec.id !== undefined) mesh.userData.id = rec.id;
     mesh.userData.group = rec.group;
     mesh.userData.locked = !!rec.locked;
     if (snap.selection[i]) picked.push(mesh);
@@ -4545,6 +4549,29 @@ function tip(id, message) {
 }
 
 // ---------------------------------------------------------------------------
+// LBE mode
+// ---------------------------------------------------------------------------
+// Location-based entertainment: one map played in a row of venue halls, each
+// with its own walls, its own guardian boundary and its own spatial anchors.
+// Building for that today means saving the map once per hall and dragging each
+// copy into place, after which changing one crate means changing it ten times.
+//
+// The switch turns on a different way of holding the same work: a project of
+// one design plus a placement per venue, exported as a file per hall. See
+// `src/project.js` for the model.
+//
+// **Off by default, and off is the editor exactly as it has always been.** That
+// is not politeness. With no layers a project is a single map, so the venue
+// path collapses into today's path rather than standing beside it as a second
+// one to keep in step.
+
+const LBE_KEY = 'spatialops.lbe';
+
+// The other two switches default on, and so ask whether they are `!== false`.
+// This one defaults off: a browser with no stored answer must leave it off.
+const lbeOn = () => $('lbe')?.checked === true;
+
+// ---------------------------------------------------------------------------
 // Autosave
 // ---------------------------------------------------------------------------
 // The editor holds the only copy of an unexported map, and a browser tab is a
@@ -4587,6 +4614,18 @@ function wireAutosave() {
   $('tips').onchange = () => {
     try { localStorage.setItem(TIPS_KEY, tipsOn() ? '1' : '0'); } catch { /* fine */ }
     toast(tipsOn() ? 'Hints on.' : 'Hints off, including the reminder before exporting.');
+  };
+
+  try {
+    const on = localStorage.getItem(LBE_KEY);
+    if (on !== null) $('lbe').checked = on === '1';
+  } catch { /* no storage: LBE stays off, which is the safe answer */ }
+
+  $('lbe').onchange = () => {
+    try { localStorage.setItem(LBE_KEY, lbeOn() ? '1' : '0'); } catch { /* fine */ }
+    toast(lbeOn()
+      ? 'LBE mode on. Import takes a map and a set of venue templates, and export writes a file per venue.'
+      : 'LBE mode off. The editor works on one map at a time.');
   };
 
   $('cp-save').onclick = () => {

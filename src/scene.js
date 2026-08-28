@@ -1842,6 +1842,21 @@ export class Viewport extends EventTarget {
   }
 
   /**
+   * Take the id counter past `n`, so nothing minted from here on can collide
+   * with an id that arrived in a file.
+   *
+   * A project carries the id of every object it holds, because a venue layer
+   * names the ones it has stopped inheriting and those names have to still
+   * mean the same objects tomorrow. Opening one therefore brings ids in from
+   * outside this counter's history, and a fresh viewport counting from 1 would
+   * hand the same numbers out again. See `identifyObjects` in `project.js`,
+   * which adopts before it mints for the same reason.
+   */
+  seedObjectIds(n) {
+    if (Number.isInteger(n) && n > this._nextId) this._nextId = n;
+  }
+
+  /**
    * Add a map object. `mo` uses Unity values, exactly as they appear in the
    * file, so nothing is lost on the way in or out.
    */
