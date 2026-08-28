@@ -2894,9 +2894,12 @@ export class Viewport extends EventTarget {
   /** One material for every hall wall there will ever be, made once. */
   _venueMaterial() {
     if (!this._venueMat) {
+      // A warm neutral, deliberately nothing like the cyan the map's own solid
+      // primitives are drawn in. A hall wall that reads as map geometry is a
+      // hall wall you cannot line the map up against, which is its whole job.
       this._venueMat = new THREE.MeshStandardMaterial({
-        color: 0x35505f, roughness: 0.95, metalness: 0,
-        transparent: true, opacity: 0.55, depthWrite: false,
+        color: 0x7d7266, roughness: 0.95, metalness: 0,
+        transparent: true, opacity: 0.4, depthWrite: false,
       });
     }
     return this._venueMat;

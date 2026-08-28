@@ -5623,7 +5623,7 @@ function refreshVenues() {
   host.innerHTML = '';
   for (const l of layers) {
     const row = document.createElement('div');
-    row.className = 'cprow';
+    row.className = 'cprow venuerow';
     const meta = document.createElement('div');
     meta.className = 'cpm';
     const n = document.createElement('div');

@@ -131,6 +131,10 @@ canvas{display:block;width:100%;height:100%;outline:none}
 .grp{display:flex;align-items:center;gap:4px}
 .grp+.grp{padding-left:12px;border-left:1px solid var(--line-soft)}
 #layer-grp[hidden]{display:none}
+/* The bar is a flex row and everything in it may shrink, which took this
+   down to a fourteen pixel sliver on a 1280 screen -- present, unreadable,
+   and the one control that has to say which venue you are looking at. */
+#layer-pick{flex:0 1 auto;min-width:130px;max-width:230px;text-overflow:ellipsis}
 .btn{background:var(--panel2);border:1px solid var(--line);border-radius:4px;
   padding:5px 10px;cursor:pointer;white-space:nowrap;
   font-family:var(--hud);font-size:13px;font-weight:600;letter-spacing:.08em;text-transform:uppercase}
@@ -470,6 +474,9 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
 .cprow .cpm{min-width:0}
 .cprow .cpn{font-size:11.5px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cprow .cpw{font-family:var(--mono);font-size:9.5px;color:var(--faint)}
+/* A map file name is one long unbroken token, and wrapped mid-token across
+   two lines it is unreadable. The row is narrow; the tail is the guid. */
+.cprow.venuerow .cpw{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cprow .btn{padding:3px 7px;font-size:11px}
 .cprow .kill{background:none;border:0;padding:0 2px;cursor:pointer;color:var(--faint);font-size:14px;line-height:1}
 .cprow .kill:hover{color:var(--danger)}
