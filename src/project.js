@@ -34,14 +34,22 @@
 // copy of it to update. That is the whole feature, and every other rule below
 // exists to keep it true.
 //
-// **Detaching is a fork, not an override.** Take an object out of the group in
-// one hall and it stops being that object: it moves into `layer.objects`, its
-// id goes into `detached`, and from then on it is edited, resized and deleted
-// on its own. Deleting the original from the primary leaves it standing. That
-// is deliberate — a half-inherited object would need a merge rule for every
-// field, and the venue that needed a pillar worked around does not want one.
-// It is also the one place drift can get back in, which is why it takes a
-// deliberate act to start it.
+// **Detaching is a fork, not an override, and a copy rather than a move.** Take
+// an object out of the group in one hall and the design keeps its own: a copy
+// of it goes into `layer.objects`, the original's id goes into `detached` so
+// this one hall stops inheriting it, and from then on the copy is edited,
+// resized and deleted on its own. Deleting the original from the primary leaves
+// the copy standing.
+//
+// A copy and not a move, because the design is written from the design objects
+// the editor is holding — move one into a venue and it would be gone from the
+// map, and from every other venue with it. The original stays exactly where it
+// was and is simply not drawn while the venue that replaced it is open.
+//
+// A fork and not an override, because a half-inherited object would need a
+// merge rule for every field, and the venue that needed a pillar worked around
+// does not want one. It is also the one place drift can get back in, which is
+// why it takes a deliberate act to start it.
 //
 // What a fork does keep is the *frame*. Its position is stored in the design's
 // coordinates like everything else, and the hall's placement is applied to it

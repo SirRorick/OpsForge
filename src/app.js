@@ -183,6 +183,10 @@ function snapshot() {
     }),
     selection: vp.objects.map((m) => vp.selection.has(m)),
     bounds: { ...map.mapBoundsSize },
+    // What the venue on screen has stopped inheriting. Not derivable from the
+    // objects -- a fork and the design object it came from are two objects with
+    // two ids -- so undoing a detachment needs it written down.
+    detached: currentLayer() ? [...currentLayer().detached] : [],
     // Where the design is standing. An alignment is an edit like any other and
     // undo should reach it -- and without this an undo would put the objects
     // back and leave the frame under them wherever the last drag left it.
@@ -192,6 +196,12 @@ function snapshot() {
 
 function restore(snap) {
   vp.clearObjects();
+  // Before the objects go back, so each is asked whether to draw itself against
+  // the right answer. Written back to the layer as well as to the viewport:
+  // the layer is what an export reads.
+  const layer = currentLayer();
+  if (layer) layer.detached = [...(snap.detached || [])];
+  vp.setDetachedHere(snap.detached || []);
   const picked = [];
   snap.objects.forEach((rec, i) => {
     const mesh = vp.addObject({
@@ -2610,8 +2620,14 @@ function buildOutliner() {
   // Walk the objects in order and emit either a lone object or, at the first
   // member of a group, the whole group. Order follows the scene, so a group
   // sits where its first member is.
+  // Everything except the design objects the venue on screen has replaced.
+  // Those are still the map's and still in its file, but this hall is showing
+  // its own copy of each instead, and two rows for one crate is a list nobody
+  // can read. Hand-hidden objects stay listed: the list is how they are reached.
+  const listed = vp.objects.filter((m) => !vp.replacedHere(m));
+
   const groups = new Map();
-  for (const m of vp.objects) {
+  for (const m of listed) {
     const g = m.userData.group;
     if (!g) continue;
     if (!groups.has(g)) groups.set(g, []);
@@ -2619,7 +2635,7 @@ function buildOutliner() {
   }
   const emitted = new Set();
 
-  for (const m of vp.objects) {
+  for (const m of listed) {
     const g = m.userData.group;
     if (!g) { host.appendChild(objectRow(m, false)); continue; }
     if (emitted.has(g)) continue;
@@ -2628,7 +2644,7 @@ function buildOutliner() {
     host.appendChild(groupRow(g, members));
     if (openGroupRows.has(g)) for (const child of members) host.appendChild(objectRow(child, true));
   }
-  $('obj-count').textContent = String(vp.objects.length);
+  $('obj-count').textContent = String(listed.length);
 }
 
 /**
@@ -2640,6 +2656,15 @@ function buildOutliner() {
  * actually was.
  */
 function outlinerRowClick(e, index, targets) {
+  // The list reaches objects the pointer deliberately cannot, which is the
+  // whole point of it -- a locked object, a hidden one. In a venue that would
+  // also mean the design, and selecting a piece of the design here is the one
+  // gesture that could fork it without anybody meaning to. Right-click still
+  // works on those rows, which is where meaning it lives.
+  if (activeLayer !== null && targets.some((m) => !m.userData.layer)) {
+    return void toast('That one belongs to the map. Right-click it to give this venue a copy of '
+      + 'its own, or go back to the map to change it everywhere.', true);
+  }
   if (e.shiftKey && outlinerAnchor >= 0) {
     const [lo, hi] = outlinerAnchor <= index ? [outlinerAnchor, index] : [index, outlinerAnchor];
     const next = new Set();
@@ -5659,15 +5684,21 @@ function detachIntoLayer(meshes) {
   const taken = meshes.filter((m) => !m.userData.layer);
   if (!taken.length) return;
 
-  for (const m of taken) {
+  const made = taken.map((m) => {
+    // A copy, standing exactly where the original stands. Not the original
+    // itself with its allegiance switched: the map is written from the design
+    // objects on screen, so moving one out of the design would take it out of
+    // the map, and out of every other venue with it. The design keeps its
+    // object; this venue gets one of its own, and stops drawing the one it has
+    // stopped inheriting.
+    const copy = vp.addObject({ ...vp.toMapObject(m), id: undefined, layer: layer.id });
     if (Number.isInteger(m.userData.id)) layer.detached.push(m.userData.id);
-    m.userData.layer = layer.id;
-    // It is this venue's now, so it stops being drawn as part of the design.
-    vp.refreshFade([m]);
-  }
-  vp.setSelection(taken);
+    return copy;
+  });
+  vp.setDetachedHere(layer.detached);
+  vp.setSelection(made);
   commit();
-  const n = taken.length;
+  const n = made.length;
   toast(`${n} object${n === 1 ? '' : 's'} now ${n === 1 ? 'belongs' : 'belong'} to ${layer.name} `
     + 'alone. Changes to the map no longer reach '
     + `${n === 1 ? 'it' : 'them'}, and neither does deleting the original.`);
@@ -5712,6 +5743,7 @@ function markLayerPlaced() {
 function resetLayerView() {
   activeLayer = null;
   vp.newObjectLayer = null;
+  vp.setDetachedHere([]);
   vp.setLayerAlign(false);
   vp.setVenueObjects([]);
   vp.setDesignGhosted(false);
@@ -5745,6 +5777,9 @@ async function showLayer(index) {
   // added here. Stored as values while some other venue is on screen, since
   // only one of them can be, and built back into meshes on the way in.
   vp.newObjectLayer = layer.id;
+  // Before the objects, so a design object this venue has replaced is already
+  // known to be one by the time it is asked whether to draw itself.
+  vp.setDetachedHere(layer.detached);
   for (const mo of layer.objects) vp.addObject({ ...mo, layer: layer.id });
   vp.setDesignGhosted(!layer.placed);
   await vp.setNavCloud(layer.template.navCloud);

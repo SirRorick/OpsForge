@@ -1136,6 +1136,11 @@ export class Viewport extends EventTarget {
     // in a venue with nothing selected -- pick one of the venue's own objects
     // and the handle goes to it, exactly as it would on the map itself.
     this._aligning = false;
+    // Ids of design objects the venue on screen has taken its own copy of. It
+    // no longer inherits them, so while it is open they are not drawn -- they
+    // are still the map's, and still in its file, but they are not part of what
+    // this hall plays and two crates in one place is not a picture of anything.
+    this.detachedHere = new Set();
     // The venue anything built from here on belongs to, or null for the design.
     // Set when a venue is opened, so every path that makes an object -- the
     // library, paste, duplicate, array, mirror, a prefab -- lands it in the
@@ -2123,8 +2128,34 @@ export class Viewport extends EventTarget {
   applyVisibility(mesh) {
     const away = !!mesh.userData.hidden;
     mesh.visible = !(this.hideBoundaries && isBoundary(mesh.userData.def))
-      && !(away && !this.showHidden);
+      && !(away && !this.showHidden)
+      && !this.replacedHere(mesh);
     this._applyFade(mesh);
+  }
+
+  /**
+   * Whether this is one of the design's objects that the venue on screen has
+   * taken its own copy of.
+   *
+   * One definition, because two things ask: what gets drawn, and what the
+   * outliner lists. The object is still the map's and still in its file; it is
+   * simply not part of what this hall plays, and its replacement is standing in
+   * the same spot.
+   */
+  replacedHere(mesh) {
+    return !mesh.userData.layer && this.detachedHere.has(mesh.userData.id);
+  }
+
+  /**
+   * Which of the design's objects the venue on screen has stopped inheriting.
+   *
+   * They stay in `objects`, because `objects` is what the map is written from
+   * and the map still has them -- what changes is that this hall is not showing
+   * them, since it is showing its own copy standing in their place instead.
+   */
+  setDetachedHere(ids) {
+    this.detachedHere = new Set(ids || []);
+    for (const m of this.objects) this.applyVisibility(m);
   }
 
   /**
@@ -2824,11 +2855,6 @@ export class Viewport extends EventTarget {
     return this._aligning;
   }
 
-  /** Redraw these the way their own state now says, after that state changed. */
-  refreshFade(meshes) {
-    for (const m of meshes) this._applyFade(m);
-  }
-
   /**
    * The hall's own walls, to align against.
    *
@@ -3002,7 +3028,16 @@ export class Viewport extends EventTarget {
    * does the padlock beside its row in the outliner.
    */
   setSelection(list) {
-    this.selection = new Set([...list].filter((m) => !m.userData.locked));
+    // A locked object cannot be selected, and inside a venue neither can the
+    // design. Held here rather than at each of the places that build a
+    // selection -- the pointer, the marquee, the outliner, Select all, "select
+    // every one of these" off the menu -- because it only takes one of them
+    // forgetting for a piece of the design to be dragged out of shape from
+    // inside one hall, and that is the one edit this whole mode exists to make
+    // deliberate.
+    this.selection = new Set([...list].filter(
+      (m) => !m.userData.locked && !(this.layerAlign && !m.userData.layer)
+    ));
     this._syncOutline();
     this.rebuildPivot();
     this.emit('selection');
