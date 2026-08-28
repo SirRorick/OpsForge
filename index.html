@@ -130,6 +130,7 @@ canvas{display:block;width:100%;height:100%;outline:none}
 /* ---------- controls ---------- */
 .grp{display:flex;align-items:center;gap:4px}
 .grp+.grp{padding-left:12px;border-left:1px solid var(--line-soft)}
+#layer-grp[hidden]{display:none}
 .btn{background:var(--panel2);border:1px solid var(--line);border-radius:4px;
   padding:5px 10px;cursor:pointer;white-space:nowrap;
   font-family:var(--hud);font-size:13px;font-weight:600;letter-spacing:.08em;text-transform:uppercase}
@@ -506,7 +507,7 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
 .dlg .field .hint{margin:4px 0 0;grid-column:2;font-size:10.5px;line-height:1.4}
 .dlg .status{margin:10px 0 0;font-size:11.5px;color:var(--dim)}
 .dlg .status.bad{color:var(--danger)}
-.dlg .acts{display:flex;gap:6px;justify-content:flex-end;margin-top:14px}
+.dlg .acts{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end;margin-top:14px}
 
 .libmod{display:flex;gap:10px;align-items:center;padding:6px 4px;
   border-bottom:1px solid var(--line-soft);cursor:pointer}
