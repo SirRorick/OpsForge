@@ -26,10 +26,15 @@ import {
   INT, BOOL, ENUM, FLAGS,
 } from './rules.js';
 import {
-  newProject, newLayer, projectVariants, venueMapName, duplicateName,
+  newProject, newLayer, rebaseLayers, projectVariants, venueMapName, duplicateName,
   writeProjectArchive, readProjectArchive, projectFileName, identifyObjects, nextObjectId,
   objectsOutsidePlaySpace, paintedCells, isBoundaryObject, PROJECT_EXT,
 } from './project.js';
+import {
+  straighteningTransform, straightenPoint, straightenQuaternion, straightenMapObject,
+  straighteningPlacement, straightenNavCloud, rebasePlacement, GRID_STEP,
+} from './align.js';
+import { publishPlan, needsNewIdentity, describeClash } from './publish.js';
 import { geometryFor } from './placeholders.js';
 import {
   checkpointsAvailable, checkpointList, checkpointText, checkpointEditorState,
@@ -37,7 +42,8 @@ import {
 } from './checkpoints.js';
 import { zipWrite } from './zip.js';
 import {
-  modioSearch, modioFetchMapText, modioValidateToken, modioMyMods,
+  modioSearch, modioFetchMod, modioFetchMapText, modioValidateToken, modioMyMods,
+  modioFindByGuid,
   modioAddMod, modioEditMod, modioAddModfile, modioAddTags, modioDeleteTags,
   modioToken, modioSaveToken,
   modioForgetToken, modioMineMap, modioRecordMine, modioCachedUsername,
@@ -89,8 +95,13 @@ let placingLabel = null;    // set while a library pick-up is following the curs
   addEventListener('resize', resize);
   current = snapshot();
   refreshAll();
-  toast('Ready. Open a map file, or drag objects in from the library.');
-  greetWithCheckpoints();
+  // A `?map=` link is an instruction, and it outranks both the greeting and the
+  // offer to pick up where the last session left off: somebody who followed a
+  // link to a map wants that map, not the one they had open on Tuesday.
+  if (!(await openLinkedMap())) {
+    toast('Ready. Open a map file, or drag objects in from the library.');
+    greetWithCheckpoints();
+  }
 })();
 
 function resize() {
@@ -191,6 +202,22 @@ function snapshot() {
     // undo should reach it -- and without this an undo would put the objects
     // back and leave the frame under them wherever the last drag left it.
     placement: vp.designTransform(),
+    // Every other hall's placement and every other hall's own objects.
+    //
+    // Almost every edit leaves these exactly as they were and this costs a
+    // reference apiece to say so. Straighten does not: it is the one edit that
+    // reaches across all twenty halls at once, moving each hall's forks with
+    // the design they were forked from and taking the same turn back out of
+    // each hall's alignment. Without them here an undo would put the design
+    // back and leave twenty venues straightened, which is a worse map than
+    // either of the two states anybody asked for.
+    //
+    // *Other* halls: the one on screen has its objects in `objects` above as
+    // meshes and its placement in `placement`, and both of those are the live
+    // copies rather than whatever was banked when it was opened.
+    venues: (project?.layers || [])
+      .filter((_, i) => i !== activeLayer)
+      .map((l) => ({ id: l.id, yaw: l.yaw, offset: { ...l.offset }, objects: l.objects })),
   };
 }
 
@@ -217,6 +244,13 @@ function restore(snap) {
     mesh.userData.locked = !!rec.locked;
     if (snap.selection[i]) picked.push(mesh);
   });
+  for (const rec of snap.venues || []) {
+    const venue = project?.layers?.find((l) => l.id === rec.id);
+    if (!venue) continue;
+    venue.yaw = rec.yaw;
+    venue.offset = { ...rec.offset };
+    venue.objects = rec.objects;
+  }
   map.mapBoundsSize = { ...snap.bounds };
   if (snap.placement) vp.setDesignTransform(snap.placement.offset, snap.placement.yaw);
   vp.setBounds(map.mapBoundsSize);
@@ -529,9 +563,10 @@ function duplicate() {
   const remap = new Map();
   const made = [];
   for (const m of source) {
-    m.updateWorldMatrix(true, false);
-    const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
-    m.matrixWorld.decompose(p, q, s);
+    // Read in the map's frame, because that is the frame the copy is written
+    // in: `addObject` hangs it off the design, and inside a venue the design
+    // and the room are the venue's whole placement apart.
+    const { p, q, s } = vp.designPose(m);
     const copy = vp.addObject({
       type: m.userData.def.type,
       $type: m.userData.objectType,
@@ -563,9 +598,9 @@ function duplicate() {
 function copySelection() {
   if (!vp.selection.size) return toast('Nothing to copy.');
   clipboard = [...vp.selection].map((m) => {
-    m.updateWorldMatrix(true, false);
-    const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
-    m.matrixWorld.decompose(p, q, s);
+    // The map's frame, which is the frame `paste` puts them back into and the
+    // only one that means the same thing in the next venue along.
+    const { p, q, s } = vp.designPose(m);
     return {
       type: m.userData.def.type,
       $type: m.userData.objectType,
@@ -651,9 +686,7 @@ function arraySelection({ nx, ny, nz, dx, dy, dz }) {
   const groups = new Map();
   for (const { cell, step } of vp.arraySteps({ nx, ny, nz, dx, dy, dz })) {
     for (const m of source) {
-      m.updateWorldMatrix(true, false);
-      const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
-      m.matrixWorld.decompose(p, q, s);
+      const { p, q, s } = vp.designPose(m);
       const copy = vp.addObject({
         type: m.userData.def.type,
         $type: m.userData.objectType,
@@ -661,7 +694,7 @@ function arraySelection({ nx, ny, nz, dx, dy, dz }) {
         position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 },
         dirty: true,
       });
-      copy.position.copy(p).add(step);
+      copy.position.copy(p).add(vp.designDirection(step));
       copy.quaternion.copy(q);
       copy.scale.copy(s);
       if (m.userData.group) {
@@ -729,7 +762,11 @@ function mirrorSelection(axis, into = null) {
   let already = 0, kept = 0, flipped = 0;
 
   for (const m of [...vp.selection]) {
-    const placement = mirroredPlacement(m, axis);
+    const reflected = mirroredPlacement(m, axis);
+    // The reflection is handed over in the room's frame, because that is what
+    // its ghosts are drawn at; the copy is written in the map's, because that
+    // is where `addObject` hangs it.
+    const placement = { ...reflected, ...vp.designFromWorld(reflected.position, reflected.quaternion) };
 
     const target = into ? into.pick(m.userData.def) : null;
     const def = target || m.userData.def;
@@ -893,16 +930,17 @@ function prefabFromSelection(name) {
   // The viewport's own measurement of the selection, which leaves out what the
   // editor draws about an object: a spawner near the edge of a prefab used to
   // push the whole thing off centre by the length of the gun hanging over it.
-  const centre = vp.selectionBounds().getCenter(new THREE.Vector3());
+  const centre = vp.selectionBounds(true).getCenter(new THREE.Vector3());
   return {
     format: PREFAB_FORMAT,
     version: PREFAB_VERSION,
     name,
     created: nowStamp(),
     objects: list.map((m) => {
-      m.updateWorldMatrix(true, false);
-      const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
-      m.matrixWorld.decompose(p, q, s);
+      // The map's frame. A prefab is meant to be dropped into another map
+      // altogether, so capturing it at whatever angle the venue on screen
+      // happens to stand at would bake that venue into the file.
+      const { p, q, s } = vp.designPose(m);
       return {
         type: m.userData.def.type,
         $type: m.userData.objectType,
@@ -1226,7 +1264,26 @@ function wireInspector() {
   }
   $('m-name').onchange = () => { map.name = $('m-name').value || 'Untitled'; refreshMeta(); touchEdited(); };
   $('m-author').onchange = () => { map.author = $('m-author').value; touchEdited(); };
-  $('b-newguid').onclick = () => { map.guid = newGuid(); refreshMeta(); toast('New map ID generated.'); };
+  $('b-newguid').onclick = () => {
+    // The note about which library entry this map came from moves with it.
+    //
+    // Without this, taking a New ID is a one-way door: the record is kept
+    // against the guid, so a map that needed a fresh identity — which is
+    // exactly the map that has collided with something — loses its link to the
+    // entry it was published as, and the only way back is to publish a third
+    // one and delete the second by hand.
+    //
+    // Safe on somebody else's map, which is the case this looks alarming for.
+    // The record is only ever a hint: Export still confirms ownership live
+    // against `/me/mods` before offering to update anything, so carrying a note
+    // about a stranger's entry across changes nothing about what is offered.
+    const mine = modioMineMap()[map.guid];
+    map.guid = newGuid();
+    if (mine) modioRecordMine(map.guid, mine);
+    refreshMeta();
+    toast('New map ID generated.');
+  };
+  $('b-straighten').onclick = () => straightenMap();
 
   $('nav-shape').onchange = async () => {
     const shape = $('nav-shape').value;
@@ -1989,7 +2046,7 @@ function refreshSelectionValues() {
     set(selFields.r, mo.rotation);
     set(selFields.s, mo.scale);
   } else {
-    const c = vp.selectionBounds().getCenter(new THREE.Vector3());
+    const c = vp.selectionBounds(true).getCenter(new THREE.Vector3());
     set(selFields.p, { x: c.x, y: c.y, z: -c.z });
     set(selFields.r, { x: 0, y: 0, z: 0 });
     set(selFields.s, { x: 1, y: 1, z: 1 });
@@ -2030,12 +2087,14 @@ function applyNumericEdit() {
     list[0].scale.set(s.x || 0.001, s.y || 0.001, s.z || 0.001);
     vp.markDirty(list[0]);
   } else {
-    const c = vp.selectionBounds().getCenter(new THREE.Vector3());
+    const c = vp.selectionBounds(true).getCenter(new THREE.Vector3());
     const shown = { x: c.x, y: c.y, z: -c.z };
     const target = read(selFields.p, shown);
-    vp.pivot.position.add(
+    // Typed against the map's numbers, so the step is one the map named; the
+    // pivot it is added to stands in the room.
+    vp.pivot.position.add(vp.worldDirection(
       new THREE.Vector3(target.x - shown.x, target.y - shown.y, -(target.z - shown.z))
-    );
+    ));
     for (const m of list) vp.markDirty(m);
   }
   // The three boxes can put a piece off the floor or outside the square as
@@ -3096,9 +3155,7 @@ function swapInPlace(pairs) {
 
   const made = [];
   for (const [m, def] of live) {
-    m.updateWorldMatrix(true, false);
-    const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
-    m.matrixWorld.decompose(p, q, s);
+    const { p, q, s } = vp.designPose(m);
     const next = vp.addObject({
       $type: def.objectType,
       type: def.type,
@@ -3703,6 +3760,127 @@ async function writeProjectFile() {
 }
 
 /**
+ * The list of venue templates a dialog is collecting, and the button that adds
+ * to it.
+ *
+ * Shared by the two dialogs that collect them: Open's map-and-venues, which
+ * starts a project, and the toolbar's `+`, which adds halls to one that is
+ * already open. The rows are the same rows and the rules are the same rules —
+ * a file name that cannot be typed over, a map name that can, and the one
+ * warning about a template carrying no anchors — and a second copy of them
+ * would be a second copy to keep in step.
+ *
+ * `nameFor` is asked for a row's suggested name on every render, so a name that
+ * was only half decided when the row arrived can be completed later: in Open,
+ * templates chosen before the map are renamed the moment the map is. A row that
+ * has been typed in is never asked about again, and typing does not re-render,
+ * so the box is never torn out from under the cursor that is still in it.
+ */
+function templatePicker({ addLabel = 'Add venues', nameFor }) {
+  const templates = [];   // { file, map, name, touched }
+  const el = document.createElement('div');
+
+  const row = document.createElement('div');
+  row.className = 'vrow';
+  const count = document.createElement('div');
+  count.className = 'vfile';
+  const add = document.createElement('button');
+  add.className = 'btn ghost';
+  add.textContent = addLabel;
+  add.onclick = () => $('venuepick').click();
+  row.append(count, add);
+  el.appendChild(row);
+
+  const status = document.createElement('p');
+  status.className = 'hint';
+  status.style.margin = '8px 0 0';
+  el.appendChild(status);
+
+  // Twenty halls is an ordinary number of them, so the list scrolls rather than
+  // growing the dialog off the bottom of the screen.
+  const list = document.createElement('div');
+  list.className = 'scroll';
+  list.style.cssText = 'max-height:40vh;margin-top:4px';
+  el.appendChild(list);
+
+  function render() {
+    list.innerHTML = '';
+    for (const t of templates) {
+      if (!t.touched) t.name = nameFor(t);
+
+      const line = document.createElement('div');
+      line.className = 'vrow';
+
+      const file = document.createElement('div');
+      file.className = 'vfile';
+      file.textContent = t.file;
+      file.title = `${t.file}\n${t.map.mapObjects.length} objects in this template; its `
+        + 'boundary walls travel into the venue, and the rest stays here';
+
+      const kill = document.createElement('button');
+      kill.className = 'kill';
+      kill.textContent = '×';
+      kill.title = 'Take this venue out';
+      kill.onclick = () => {
+        templates.splice(templates.indexOf(t), 1);
+        render();
+      };
+
+      const name = document.createElement('input');
+      name.className = 'vname';
+      name.type = 'text';
+      name.value = t.name;
+      name.placeholder = 'Name the map this venue exports as';
+      name.oninput = () => { t.name = name.value; t.touched = true; };
+
+      line.append(file, kill, name);
+
+      // The one thing about a template that cannot be fixed here. A map naming
+      // no anchor names nothing the headset can re-localise against, so it
+      // lands asking to be aligned by hand — which is the work this exists to
+      // abolish, and much cheaper to hear about now than on site.
+      if (!(t.map.anchors || []).length) {
+        const note = document.createElement('p');
+        note.className = 'vnote';
+        note.textContent = 'No spatial anchors in this template. Its map will ask to be aligned '
+          + 'by hand in the headset instead of landing on its own.';
+        line.appendChild(note);
+      }
+
+      list.appendChild(line);
+    }
+    count.textContent = templates.length
+      ? `${templates.length} venue${templates.length === 1 ? '' : 's'}`
+      : 'No venue templates yet';
+  }
+
+  $('venuepick').onchange = async (e) => {
+    const files = [...e.target.files];
+    e.target.value = '';
+    const bad = [];
+    for (const f of files) {
+      try {
+        templates.push({ file: f.name, map: parseMap(await f.text()), name: '', touched: false });
+      } catch (err) {
+        bad.push(`${f.name} (${err.message})`);
+      }
+    }
+    status.textContent = bad.length ? `Not a map file, so left out: ${bad.join(', ')}` : '';
+    render();
+  };
+
+  render();
+  return {
+    el,
+    templates,
+    render,
+    say: (text) => { status.textContent = text || ''; },
+    /** The names as typed, trimmed, in row order. */
+    names: () => templates.map((t) => t.name.trim()),
+  };
+}
+
+/**
  * LBE import: the map, and a template per hall it will be played in.
  *
  * Two boxes, because the two files are not the same kind of thing. The map is
@@ -3745,84 +3923,15 @@ function openVenueImport() {
   mapRow.append(mapLabel, mapPick);
   body.appendChild(mapRow);
 
-  const venueRow = document.createElement('div');
-  venueRow.className = 'vrow';
-  const count = document.createElement('div');
-  count.className = 'vfile';
-  const addPick = document.createElement('button');
-  addPick.className = 'btn ghost';
-  addPick.textContent = 'Add venues';
-  addPick.onclick = () => $('venuepick').click();
-  venueRow.append(count, addPick);
-  body.appendChild(venueRow);
-
-  const status = document.createElement('p');
-  status.className = 'hint';
-  status.style.margin = '8px 0 0';
-  body.appendChild(status);
-
-  // Twenty halls is an ordinary number of them, so the list scrolls rather than
-  // growing the dialog off the bottom of the screen.
-  const list = document.createElement('div');
-  list.className = 'scroll';
-  list.style.cssText = 'max-height:40vh;margin-top:4px';
-  body.appendChild(list);
-
   let primary = null;
   let primaryText = '';
   let primaryFile = '';
-  const templates = [];   // { file, map, name, touched }
 
-  const defaultName = (t) => (primary ? venueMapName(primary.name, t.map.name) : t.map.name);
-
-  function renderTemplates() {
-    list.innerHTML = '';
-    for (const t of templates) {
-      const row = document.createElement('div');
-      row.className = 'vrow';
-
-      const file = document.createElement('div');
-      file.className = 'vfile';
-      file.textContent = t.file;
-      file.title = `${t.file}\n${t.map.mapObjects.length} objects in this template; its `
-        + 'boundary walls travel into the venue, and the rest stays here';
-
-      const kill = document.createElement('button');
-      kill.className = 'kill';
-      kill.textContent = '×';
-      kill.title = 'Take this venue out';
-      kill.onclick = () => {
-        templates.splice(templates.indexOf(t), 1);
-        renderTemplates();
-      };
-
-      const name = document.createElement('input');
-      name.className = 'vname';
-      name.type = 'text';
-      name.value = t.name;
-      name.placeholder = 'Name the map this venue exports as';
-      name.oninput = () => { t.name = name.value; t.touched = true; };
-
-      row.append(file, kill, name);
-
-      // The one thing about a template that cannot be fixed here. A map naming
-      // no anchor names nothing the headset can re-localise against, so it
-      // lands asking to be aligned by hand — which is the work this exists to
-      // abolish, and much cheaper to hear about now than on site.
-      if (!(t.map.anchors || []).length) {
-        const note = document.createElement('p');
-        note.className = 'vnote';
-        note.textContent = 'No spatial anchors in this template. Its map will ask to be aligned '
-          + 'by hand in the headset instead of landing on its own.';
-        row.appendChild(note);
-      }
-
-      list.appendChild(row);
-    }
-    count.textContent = templates.length
-      ? `${templates.length} venue${templates.length === 1 ? '' : 's'}`
-      : 'No venue templates yet';
-  }
+  const picker = templatePicker({
+    nameFor: (t) => (primary ? venueMapName(primary.name, t.map.name) : t.map.name),
+  });
+  body.appendChild(picker.el);
+  const templates = picker.templates;
 
   $('primarypick').onchange = async (e) => {
     const f = e.target.files[0];
@@ -3835,33 +3944,14 @@ function openVenueImport() {
       primaryFile = f.name;
       mapLabel.textContent = `${primary.name} — ${primary.mapObjects.length} objects`;
       mapLabel.title = f.name;
-      status.textContent = '';
-      // A name suggested with no map to pair it with was only ever half a name.
-      for (const t of templates) if (!t.touched) t.name = defaultName(t);
-      renderTemplates();
+      picker.say('');
+      // A name suggested with no map to pair it with was only ever half a name,
+      // and `render` re-asks for every one that has not been typed in.
+      picker.render();
     } catch (err) {
-      status.textContent = `Could not read ${f.name}: ${err.message}`;
+      picker.say(`Could not read ${f.name}: ${err.message}`);
     }
   };
-
-  $('venuepick').onchange = async (e) => {
-    const files = [...e.target.files];
-    e.target.value = '';
-    const bad = [];
-    for (const f of files) {
-      try {
-        const t = { file: f.name, map: parseMap(await f.text()), name: '', touched: false };
-        t.name = defaultName(t);
-        templates.push(t);
-      } catch (err) {
-        bad.push(`${f.name} (${err.message})`);
-      }
-    }
-    status.textContent = bad.length ? `Not a map file, so left out: ${bad.join(', ')}` : '';
-    renderTemplates();
-  };
-
-  renderTemplates();
 
   openDialog({
     title: 'Open a map and its venues',
@@ -3876,14 +3966,14 @@ function openVenueImport() {
           if (!primary) {
             return ui.status('Choose the map first — the one with the objects in it.', true);
           }
-          const named = templates.map((t) => t.name.trim());
+          const named = picker.names();
           if (named.some((n) => !n)) {
             return ui.status('Every venue needs a name: it is the map name in the game and the '
               + 'file name on the headset.', true);
           }
-          const twice = duplicateName(named);
+          const twice = duplicateName([primary.name, ...named]);
           if (twice) {
-            return ui.status(`Two venues are both called "${twice}". The name is the only `
+            return ui.status(`Two of these are both called "${twice}". The name is the only `
               + 'thing that tells one from another in the game’s map list.', true);
           }
 
@@ -3905,6 +3995,444 @@ function openVenueImport() {
       },
     ],
   });
+}
+
+// ---------------------------------------------------------------------------
+// Adding and removing what a project holds
+// ---------------------------------------------------------------------------
+// A project is opened rather than assembled — one map and a set of templates,
+// or a `.opsproject` picked up where it was left — and for a while that was the
+// only way its contents could change. It is not how the work actually goes: a
+// venue is signed a fortnight after the others, a hall is refitted and its
+// template retraced, a booking falls through, and the design itself turns out
+// to be the wrong one. None of those is a reason to start the project again and
+// lose the identities every headset in the building already has.
+//
+// So the toolbar's list of venues gained a `+` and a `−`, and between them they
+// cover all four. The `−` acts on whatever the list is showing, which is the
+// only reading of it that needs no explaining: the venue on screen, or the map.
+//
+// **Both ask first, and neither can be undone.** Undo is the scene's, and it is
+// already cleared crossing between venues for the same reason it is cleared on
+// a new map — the stack is full of states of a scene that is no longer on
+// screen. A layer is not in it at all. A confirmation is what stands in for it,
+// and it says what is about to be lost rather than asking whether you are sure.
+
+/** Add halls to the project that is already open. */
+function openVenueAdd() {
+  const body = document.createElement('div');
+
+  const intro = document.createElement('p');
+  intro.textContent = 'A venue template is a hall, exported from a headset standing in it: its '
+    + 'boundary walls and its spatial data travel into that venue’s file, and everything else '
+    + 'in it stays here to align against. Each one added here is another playable file the '
+    + 'export writes, and it starts unaligned — pick it from the list afterwards and drag the '
+    + 'map onto its walls.';
+  body.appendChild(intro);
+
+  const picker = templatePicker({ nameFor: (t) => venueMapName(map.name, t.map.name) });
+  body.appendChild(picker.el);
+
+  openDialog({
+    title: 'Add venues',
+    body,
+    wide: true,
+    actions: [
+      { label: 'Cancel', ghost: true, run: () => {} },
+      {
+        label: 'Add',
+        keepOpen: true,
+        run: (_v, ui) => {
+          const named = picker.names();
+          if (!named.length) {
+            return ui.status('No venue templates chosen yet.', true);
+          }
+          if (named.some((n) => !n)) {
+            return ui.status('Every venue needs a name: it is the map name in the game and the '
+              + 'file name on the headset.', true);
+          }
+          // Against what the project already holds as well as against each
+          // other. A hall added today can collide with one added a fortnight
+          // ago just as easily, and on a headset the name is the only thing
+          // that tells the two files apart.
+          const twice = duplicateName([map.name, ...project.layers.map((l) => l.name), ...named]);
+          if (twice) {
+            return ui.status(`Two of these are both called "${twice}". The name is the only `
+              + 'thing that tells one from another in the game’s map list.', true);
+          }
+
+          ui.close();
+          // Whatever is on screen belongs to the venue on screen before the
+          // list it is an index into changes underneath it.
+          readLayerFromScene(currentLayer());
+          for (let i = 0; i < picker.templates.length; i++) {
+            project.layers.push(newLayer({
+              // A guid minted here and never again, exactly as in the import:
+              // it is what makes the next export replace this venue's file on
+              // every headset rather than leaving a second one beside it.
+              name: named[i], guid: newGuid(), template: picker.templates[i].map,
+            }));
+          }
+          refreshAll();
+          const n = named.length;
+          toast(`${n} venue${n === 1 ? '' : 's'} added — ${project.layers.length} in all, and an `
+            + `export now writes ${project.layers.length + 1} files. `
+            + `${n === 1 ? 'It is' : 'They are'} unaligned: pick `
+            + `${n === 1 ? 'it' : 'each'} from the list and drag the map onto the walls.`);
+        },
+      },
+    ],
+  });
+}
+
+/**
+ * Take one hall out of the project.
+ *
+ * The venue's own objects go with it — the pieces detached from the design in
+ * that hall and anything added there — because they were never anywhere else.
+ * The design does not notice: it kept its own copy of everything ever forked
+ * out of it, which is what `detachIntoLayer` is careful to do.
+ *
+ * If it is the hall on screen, the screen goes back to the map first. That
+ * banks an alignment into a layer about to be dropped, which is wasted work and
+ * the cheapest possible way to be sure nothing of the departing venue is left
+ * standing in the viewport.
+ */
+async function removeLayerAt(index) {
+  const layer = project?.layers?.[index];
+  if (!layer) return;
+
+  if (activeLayer === index) await showLayer(null);
+  project.layers.splice(index, 1);
+  // An index into a list that just got shorter. Only reachable if some other
+  // venue was on screen, which the `−` button cannot do — but `activeLayer` is
+  // an index and every index into a spliced list is worth correcting.
+  if (activeLayer !== null && activeLayer > index) activeLayer -= 1;
+
+  refreshAll();
+  const n = project.layers.length;
+  const left = n
+    ? `${n} venue${n === 1 ? '' : 's'} left, and an export writes ${n + 1} files.`
+    : 'No venues left — an export writes the map alone.';
+  toast(`${layer.name} removed. ${left}`);
+}
+
+/** Ask, then take the hall the list is showing out of the project. */
+function confirmRemoveLayer(index) {
+  const layer = project?.layers?.[index];
+  if (!layer) return;
+
+  // Read first, so the count below is what the venue actually holds right now
+  // rather than what it held when it was last banked.
+  if (activeLayer === index) readLayerFromScene(layer);
+  const own = (layer.objects || []).length;
+
+  const body = document.createElement('div');
+  const what = document.createElement('p');
+  what.textContent = `${layer.name} is a whole playable file: the map placed in `
+    + `${layer.template.name}, carrying that room’s walls and its spatial data. Removing it `
+    + 'takes the venue out of this project — its alignment, and the identity its file already '
+    + 'has on the headsets it has been copied to.';
+  body.appendChild(what);
+
+  const rest = document.createElement('p');
+  rest.textContent = own
+    ? `${own} object${own === 1 ? '' : 's'} belong${own === 1 ? 's' : ''} to this venue alone — `
+      + `${own === 1 ? 'a piece' : 'pieces'} detached from the design here, or added here — and `
+      + `${own === 1 ? 'it goes' : 'they go'} with it. The map keeps its own, and no other venue `
+      + 'is touched. This cannot be undone.'
+    : 'Nothing else is touched: the map keeps every object it has, and so does every other '
+      + 'venue. This cannot be undone.';
+  body.appendChild(rest);
+
+  confirmDialog({
+    title: 'Remove this venue?',
+    body,
+    confirmLabel: 'Remove venue',
+    run: () => removeLayerAt(index),
+  });
+}
+
+/**
+ * Take the design out and put another in its place.
+ *
+ * What the venues keep and what they let go of is `rebaseLayers` in
+ * `project.js`, which is where the model's rules live and where they can be
+ * tested without a screen. The short of it: every fact about a *room* survives,
+ * the identity above all, and the two things naming objects in the departing
+ * map do not.
+ *
+ * Nothing is removed until a replacement has actually been read. Cancelling the
+ * picker, or choosing a file that will not parse, leaves the project exactly as
+ * it was: there is no state in this editor for having no map, and inventing one
+ * to hold a few seconds of a dialog would be felt everywhere.
+ */
+function openPrimaryReplace() {
+  const body = document.createElement('div');
+
+  const label = document.createElement('div');
+  label.className = 'vfile';
+  label.style.marginBottom = '10px';
+  label.textContent = 'No replacement chosen yet';
+
+  const pick = document.createElement('button');
+  pick.className = 'btn ghost';
+  pick.textContent = 'Choose map';
+  pick.onclick = () => $('primarypick').click();
+
+  const row = document.createElement('div');
+  row.className = 'vrow';
+  row.append(label, pick);
+  body.appendChild(row);
+
+  const note = document.createElement('p');
+  note.className = 'hint';
+  note.style.margin = '10px 0 0';
+  const n = project?.layers?.length || 0;
+  const one = n === 1;
+  note.textContent = n
+    ? `${one ? 'The venue keeps' : `All ${n} venues keep`} the same `
+      + `template${one ? '' : 's'}, the same alignment${one ? '' : 's'} and the same map `
+      + `identit${one ? 'y' : 'ies'} the headsets already have. Anything detached from the old `
+      + 'design is reattached, since the objects it named are leaving with it, and venue names '
+      + 'still matching the old map’s are re-suggested against the new one.'
+    : 'There are no venues, so this is the same as opening a map.';
+  body.appendChild(note);
+
+  let next = null;        // the parsed replacement
+  let nextText = '';
+  let nextFile = '';
+
+  const dlg = openDialog({
+    title: 'Replace the map',
+    body,
+    wide: true,
+    actions: [
+      { label: 'Cancel', ghost: true, run: () => {} },
+      {
+        label: 'Replace the map',
+        disabled: true,
+        keepOpen: true,
+        run: (_v, ui) => {
+          if (!next) return ui.status('Choose the map that is taking its place.', true);
+          ui.close();
+          replacePrimary(nextText, nextFile);
+        },
+      },
+    ],
+  });
+
+  $('primarypick').onchange = async (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    try {
+      const text = await f.text();
+      next = parseMap(text);
+      nextText = text;
+      nextFile = f.name;
+      label.textContent = `${next.name} — ${next.mapObjects.length} objects`;
+      label.title = f.name;
+      dlg.status('');
+      dlg.enable('Replace the map', true);
+    } catch (err) {
+      next = null;
+      dlg.enable('Replace the map', false);
+      dlg.status(`Could not read ${f.name}: ${err.message}`, true);
+    }
+  };
+}
+
+/** Swap the design under the venues, keeping every room fact they hold. */
+async function replacePrimary(text, sourceName) {
+  try {
+    const layers = project?.layers || [];
+    // The name they are about to stop being named after, taken before the load
+    // replaces it.
+    const was = map.name;
+
+    // The same ingest a plain open uses, so a replacement cannot load a map
+    // differently from any other path. It resets `project`, which is why the
+    // layers are put back afterwards — exactly as a project open does.
+    await loadMapText(text, sourceName);
+    project.layers = rebaseLayers(layers, was, map.name);
+    undoStack = []; redoStack = []; current = snapshot();
+    refreshAll();
+
+    const n = layers.length;
+    const halls = n
+      ? `, standing in the same ${n === 1 ? 'venue' : `${n} venues`}`
+      : '';
+    const clash = duplicateName([map.name, ...layers.map((l) => l.name)]);
+    toast(`${map.name} is now the map${halls}. `
+      + (clash
+        ? `Two of these are both called "${clash}" — the export screen is where to settle it.`
+        : `${was} is gone from this project.`), !!clash);
+  } catch (err) {
+    console.error(err);
+    toast(`Could not read that map: ${err.message}`, true);
+  }
+}
+
+/** Ask before taking the design out, and only then ask for its replacement. */
+function confirmRemovePrimary() {
+  const n = project?.layers?.length || 0;
+  const body = document.createElement('div');
+
+  const one = n === 1;
+  const standing = n ? `, which ${one ? 'the venue is' : 'the venues are'} then standing in` : '';
+  const what = document.createElement('p');
+  what.textContent = `${map.name} is the design — every object in it, its rules, its author and `
+    + `its arena. Removing it means choosing another map to take its place${standing}. The `
+    + 'editor is never left without one, so nothing happens until a replacement has been read.';
+  body.appendChild(what);
+
+  const rest = document.createElement('p');
+  rest.textContent = n
+    ? `${one ? 'The venue stays. It keeps' : `All ${n} venues stay. Each keeps`} its template, `
+      + 'its alignment and the map identity its file already has on the headsets, so the next '
+      + 'export replaces those files rather than doubling them. What goes with the old design '
+      + `is anything detached from it: ${one ? 'that venue starts' : 'the venues start'} `
+      + 'inheriting the new map whole. This cannot be undone.'
+    : 'There are no venues attached, so this is the same as opening another map. Anything '
+      + 'unexported in this one is lost.';
+  body.appendChild(rest);
+
+  confirmDialog({
+    title: 'Remove the map?',
+    body,
+    confirmLabel: 'Choose a replacement',
+    run: () => openPrimaryReplace(),
+  });
+}
+
+/**
+ * The `−` beside the venue list, acting on whatever the list is showing.
+ *
+ * `activeLayer` rather than the select's own value, because the two cannot
+ * disagree — the list is set from it on every refresh and choosing a row is
+ * what sets it — and it is the one of the pair that is already a number or
+ * null rather than a string to be parsed back.
+ */
+function removeShownFromProject() {
+  if (!project) return;
+  if (activeLayer === null) confirmRemovePrimary();
+  else confirmRemoveLayer(activeLayer);
+}
+
+// ---------------------------------------------------------------------------
+// Map links
+// ---------------------------------------------------------------------------
+// `?map=1234` in the editor's own address opens that library map, and Export
+// hands the author the address after a publish. The point of it is a template:
+// one person lays out the walls of a room, publishes it, and pastes one link
+// into a chat — and everyone who opens the link is looking at the same starting
+// map, ready to build their own play area on top of it, with no file to find,
+// download, or explain where to put.
+//
+// **The link points at wherever this editor is being served from**, because
+// there is nowhere else for it to point: OpsForge is self-hosted and there is
+// no canonical address to hard-code. In practice that is what makes it work —
+// two people who both ran `npx serve .` are both on `localhost:3000`, so the
+// link one pastes is the link the other can open — and if the editor is on a
+// LAN address or a public one, the link is simply that. The hint beside the
+// box says as much rather than leaving it to be discovered.
+//
+// The id is mod.io's numeric one, not the slug in a profile URL: it is what the
+// API reads a single mod by, and it does not change when a map is renamed.
+
+const MAP_LINK_PARAM = 'map';
+
+/** The address that opens one library map in this copy of the editor. */
+function mapShareUrl(modId) {
+  const url = new URL(location.href);
+  // Whatever else is on the address is somebody else's business and not part of
+  // what is being shared.
+  url.search = '';
+  url.hash = '';
+  url.searchParams.set(MAP_LINK_PARAM, String(modId));
+  return url.toString();
+}
+
+/** The mod id this page was opened with, or null. */
+function linkedMapId() {
+  try {
+    const id = new URL(location.href).searchParams.get(MAP_LINK_PARAM);
+    // Digits only. The id goes straight into a request path, and anything else
+    // in it was not written by the button that writes these.
+    return /^\d+$/.test(id || '') ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Open the map the address named, if it named one. True if it tried, so boot
+ * knows whether to greet with the usual empty map instead.
+ *
+ * A failure here is a toast and nothing more. The link may be for a map that
+ * has been taken down, or the machine may be offline, and neither is a reason
+ * for the editor not to come up — what is left standing is the new empty map
+ * boot already built.
+ */
+async function openLinkedMap() {
+  const id = linkedMapId();
+  if (!id) return false;
+  toast('Opening the map this link points at…');
+  try {
+    const mod = await modioFetchMod(id);
+    const { text, name } = await modioFetchMapText(mod);
+    await adoptLibraryMap(mod, text, name);
+  } catch (err) {
+    toast(`Could not open the map this link points at: ${err.message}`, true);
+  }
+  return true;
+}
+
+/**
+ * A map from the library, on screen and accounted for.
+ *
+ * Shared by the browser and by a link, because they are the same arrival and
+ * the bookkeeping either way is the same: it goes through `loadMapText` like
+ * every other map, the mod it came from is written down so Export can offer to
+ * update it, and the guid it is still wearing is somebody else's.
+ */
+async function adoptLibraryMap(mod, text, fileName) {
+  await loadMapText(text, fileName);
+  // A downloaded map carries its author's guid — record which mod it came from,
+  // but Export (Part 5) still confirms ownership live before ever offering to
+  // treat it as yours to update.
+  modioRecordMine(map.guid, mod.id);
+  tip('modio-open', 'Downloaded maps keep their author’s ID. Take a New ID, '
+    + 'in the Map tab, if you mean to publish this as your own.');
+}
+
+/**
+ * Put text on the clipboard, and say whether it went.
+ *
+ * `navigator.clipboard` needs a secure context, and `http://192.168.x.x` — the
+ * address a second machine on the network reaches a self-hosted editor at — is
+ * not one. So there is the old `execCommand` path behind it, and if both fail
+ * the caller still has the text in a box the user can select by hand.
+ */
+async function copyToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch { /* no clipboard API here, or the page is not allowed one */ }
+  try {
+    const holder = document.createElement('textarea');
+    holder.value = text;
+    holder.setAttribute('readonly', '');
+    holder.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+    document.body.appendChild(holder);
+    holder.select();
+    const ok = document.execCommand('copy');
+    holder.remove();
+    return ok;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -3968,15 +4496,11 @@ function openLibraryBrowser() {
       if (row.classList.contains('busy')) return;
       row.classList.add('busy');
       try {
+        // Downloaded before the dialog closes, so the row stays busy for as
+        // long as the download takes rather than the screen going quiet.
         const { text, name: fileName } = await modioFetchMapText(mod);
         closeDialog();
-        await loadMapText(text, fileName);
-        // A downloaded map carries its author's guid — record which mod it
-        // came from, but Export (Part 5) still confirms ownership live before
-        // ever offering to treat it as yours to update.
-        modioRecordMine(map.guid, mod.id);
-        tip('modio-open', 'Downloaded maps keep their author’s ID. Take a New ID, '
-          + 'in the Map tab, if you mean to publish this as your own.');
+        await adoptLibraryMap(mod, text, fileName);
       } catch (err) {
         row.classList.remove('busy');
         toast(`Could not open "${mod.name}": ${err.message}`, true);
@@ -4059,6 +4583,157 @@ function fitBoundsToObjects() {
   if (fit.x === size.x && fit.y === size.y && fit.z === size.z) return false;
   map.mapBoundsSize = fit;
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Straighten to grid
+// ---------------------------------------------------------------------------
+// The other half of the headset round trip that `fitBoundsToObjects` deals with
+// the first half of. A map aligned to a play area in the headset comes back
+// turned and shifted as one rigid body, and this takes that turn and that shift
+// back off — again as one rigid body, so the promise the panel makes is exact:
+// nothing inside the map moves relative to anything else, and the only thing
+// that changes is which way the whole of it faces.
+//
+// The arithmetic is `align.js` and is tested there. What is here is everything
+// the map is made of that has to move together, and the reason each does:
+//
+// - **The objects.** The map itself, and the evidence the transform was worked
+//   out from.
+// - **The play grid.** It carries a position and a yaw of its own — where the
+//   player last aligned it to their room — and leaving it behind would put the
+//   ground the bots may walk on somewhere the map no longer is.
+// - **Every venue's own objects.** A fork is stored in the design's coordinates
+//   like everything else, and is sitting in `layer.objects` as values rather
+//   than on screen as meshes while the design is what is open. Leave those and
+//   every hall's worked-around pillar slides out from under the pillar.
+// - **Every venue that has been aligned.** A layer's placement is *where the
+//   design stands in that hall*, so straightening the design under it would
+//   slide that hall's whole map sideways by exactly the amount the design
+//   moved. Correcting each placement by the same amount in the other direction
+//   is what keeps twenty already-aligned halls playing what they played
+//   yesterday. Halls nobody has aligned yet are left at nothing, because that
+//   is what "not placed" means — and it is also why, once one *has* been
+//   aligned, the transform is asked for a turn and a shift and no tilt: a
+//   placement is a yaw and an offset and has nowhere to put a third thing.
+//
+// The spatial anchors are the one thing deliberately left where they are. An
+// anchor is a fixed point in somebody's actual room, and a map that has just
+// been squared up is no longer standing in that room — there is nothing to
+// carry them round to. They stay as they arrived, which is what the whole of
+// `format.js` promises for them anyway.
+
+/**
+ * Square the map back up to the grid, as one piece.
+ *
+ * The design's, never a hall's: the design is the thing every venue is a
+ * placement of, and squaring one hall's copy would be squaring nothing.
+ */
+async function straightenMap() {
+  if (activeLayer !== null) {
+    return void toast('Straighten works on the map, not on one hall. Go back to the map — '
+      + 'every venue follows it round.', true);
+  }
+  const meshes = vp.designObjects();
+  if (!meshes.length) return void toast('There is nothing on the map to straighten.');
+
+  // The grid the toolbar is set to, so the button squares the map up to the
+  // same lines the arrow keys and the gizmo are already snapping to.
+  const step = vp.snap.translate || GRID_STEP;
+  // A hall's alignment is a yaw and a shift and has nowhere to put a tilt, so
+  // once one has been aligned the straightening has to stay inside what a hall
+  // can follow. Squaring the map up and putting every venue a centimetre out is
+  // not a trade anybody would make.
+  const layers = project?.layers || [];
+  const aligned = layers.filter((l) => l.placed);
+  const xf = straighteningTransform(meshes.map((m) => vp.designPose(m)),
+    { step, level: !aligned.length });
+  if (!xf) return void toast('There is nothing on the map to straighten.');
+  if (!xf.changed) return void toast(nothingToStraighten(xf));
+
+  for (const m of meshes) {
+    // Read and written in the design's frame, which for a map object is the
+    // frame it is parented to — so this is the same pair of numbers `restore`
+    // puts back on an undo, and an undo puts back exactly what was here.
+    const { p, q } = vp.designPose(m);
+    m.position.copy(straightenPoint(xf, p));
+    m.quaternion.copy(straightenQuaternion(xf, q));
+    vp.markDirty(m);
+  }
+
+  const applied = straighteningPlacement(xf);
+  if (map.navCloud) {
+    Object.assign(map.navCloud, straightenNavCloud(xf, map.navCloud));
+    await vp.setNavCloud(map.navCloud);
+  }
+  for (const layer of layers) {
+    // A venue's own objects are the design's coordinates too — banked as values
+    // while the design is on screen, so they are not among the meshes above and
+    // have to be moved by the same transform or every fork slides out from
+    // under the piece it was forked from.
+    layer.objects = layer.objects.map((mo) => straightenMapObject(xf, mo));
+    // Only a hall somebody has actually stood the map in. An unplaced one is
+    // at nothing, and "nothing" is the whole of what not-yet-placed means.
+    if (!layer.placed) continue;
+    const fixed = rebasePlacement(layer, applied);
+    layer.yaw = fixed.yaw;
+    layer.offset = fixed.offset;
+  }
+
+  vp.rebuildPivot();
+  if (fitBoundsToObjects()) applyMapMeta();
+  commit();
+  toast(describeStraightening(xf, meshes.length, aligned.length));
+  tip('straighten',
+    'Nothing inside the map moved — every piece is exactly where it was relative to every '
+    + 'other one, and the whole thing is square again. Undo puts it back if it is not what '
+    + 'you wanted.');
+}
+
+/** Metres, in the units the number is actually readable in. */
+function niceLength(m) {
+  const cm = Math.abs(m) * 100;
+  return cm < 100 ? `${cm.toFixed(cm < 10 ? 1 : 0)} cm` : `${Math.abs(m).toFixed(2)} m`;
+}
+
+const AXIS_WORDS = { x: 'across', y: 'up', z: 'deep' };
+
+/**
+ * Why a map that could not be straightened could not be.
+ *
+ * "Already square" and "nothing in it to square up to" are the same absence of
+ * movement and completely different facts, and the second one is the one
+ * somebody pressing the button twice needs to hear. `align.js` keeps them apart
+ * so this can say which.
+ */
+function nothingToStraighten(xf) {
+  const unclear = [xf.level, xf.turn, ...Object.values(xf.slide)].some((r) => r.reason === 'unclear');
+  return unclear
+    ? 'Nothing to go on: too little of this map lines up with itself to work out where its '
+      + 'grid was. Nothing has been moved.'
+    : 'The map is already square to the grid. Nothing has been moved.';
+}
+
+/** What just happened to the map, in the order somebody would notice it. */
+function describeStraightening(xf, count, alignedVenues) {
+  const did = [];
+  if (xf.turn.applied) did.push(`turned ${Math.abs(xf.turn.degrees).toFixed(2)}°`);
+  if (xf.level.applied) did.push(`levelled ${Math.abs(xf.level.degrees).toFixed(2)}°`);
+  const slid = ['x', 'y', 'z'].filter((a) => xf.slide[a].applied);
+  if (slid.length) did.push(`moved ${niceLength(Math.hypot(...slid.map((a) => xf.shift[a])))}`);
+
+  let msg = `Straightened ${count} object${count === 1 ? '' : 's'} as one piece — ${did.join(', ')}.`;
+  const left = ['x', 'y', 'z'].filter((a) => xf.slide[a].reason === 'unclear').map((a) => AXIS_WORDS[a]);
+  if (left.length) {
+    msg += ` Left where it was ${left.join(' and ')}: too little of the map sits on a grid `
+      + 'there to say where the lines are.';
+  }
+  if (xf.level.reason === 'refused' && xf.level.degrees >= 0.01) {
+    msg += ` Left leaning ${xf.level.degrees.toFixed(2)}°, so the ${alignedVenues} aligned `
+      + `venue${alignedVenues === 1 ? '' : 's'} still line${alignedVenues === 1 ? 's' : ''} up — `
+      + 'a hall can be turned and moved, never tilted.';
+  }
+  return msg;
 }
 
 /**
@@ -4829,13 +5504,32 @@ async function openUploadDialog() {
       owned = mine.find((m) => m.id === mineId) || null;
     } catch { /* couldn't confirm — treat as not owned, publishing as new is always safe */ }
   }
+  // Everything in the library already carrying this map's guid, whoever put it
+  // there. `owned` answers "may I edit an entry"; this answers "would a new
+  // entry collide", and they are not the same question — the entry in the way
+  // may belong to somebody else entirely, which is how a downloaded map
+  // republished under a new name lands on top of the map it came from. `null`
+  // on failure, which `publishPlan` reads as "not asked" rather than as "clear".
+  let libraryHits = null;
+  try {
+    libraryHits = await modioFindByGuid(map.guid);
+  } catch { /* the library is a bonus; a publish is never blocked on it */ }
 
+  const plan = publishPlan({ owned, libraryHits });
+
+  // The identity a new entry would go out under, minted now rather than at the
+  // last moment so the dialog can show the file name it will actually write.
+  // Nothing is committed to the map unless the upload gets that far.
+  const freshGuid = newGuid();
+  let titleNow = owned ? owned.name : map.name;
+  let renameToTitle = plan.kind !== 'update-or-new';
   let updateMode = !!owned;
-  if (owned) {
+
+  if (plan.kind === 'update-or-new') {
     const note = document.createElement('p');
     note.className = 'hint';
-    note.innerHTML = `You have published this map before, as <b>${owned.name}</b> — `
-      + `${owned.stats?.subscribers_total ?? 0} subscribers.`;
+    note.innerHTML = `You have published this map before, as <b>${escapeHtml(plan.update.name)}</b> — `
+      + `${plan.update.subscribers} subscribers.`;
     body.appendChild(note);
 
     const choice = document.createElement('div');
@@ -4845,19 +5539,82 @@ async function openUploadDialog() {
     updateOpt.innerHTML = '<input type="radio" name="modio-mode" checked> Update it';
     const newOpt = document.createElement('label');
     newOpt.className = 'flagopt';
-    newOpt.innerHTML = '<input type="radio" name="modio-mode"> Publish as a separate map';
+    newOpt.title = 'A separate map needs an identity of its own, or the headset writes it over '
+      + 'the one you published before — same ID, same file name, one map.';
+    newOpt.innerHTML = '<input type="radio" name="modio-mode"> Publish as a separate map '
+      + '<span style="opacity:.7">(takes a new ID)</span>';
     choice.append(updateOpt, newOpt);
     body.appendChild(choice);
-    updateOpt.querySelector('input').onchange = () => { updateMode = true; };
-    newOpt.querySelector('input').onchange = () => { updateMode = false; };
+    const pick = (on) => { updateMode = on; renameToTitle = !on; refreshIdentity(); };
+    updateOpt.querySelector('input').onchange = () => pick(true);
+    newOpt.querySelector('input').onchange = () => pick(false);
   }
+
+  // Anything else in the library already carrying this guid, whether or not
+  // this upload is the thing that would collide with it. Shown beside the
+  // update option too: an entry you did not know was there is worth knowing
+  // about on the press that leaves it alone as much as on the one that does not.
+  const warn = document.createElement('p');
+  warn.className = 'hint';
+  warn.style.cssText = 'margin:0 0 12px;color:var(--warn,#e0a94a)';
+  warn.hidden = !plan.clashes.length;
+  body.appendChild(warn);
+
+  // -- what the headset actually gets ---------------------------------------
+  // The whole of this bug is that the field below is the name of a listing in a
+  // shop, and the name that decides whether two maps are one file is somewhere
+  // else entirely. So the file name is on the dialog, live: tick the box and
+  // watch it change, pick "separate map" and watch the ID change. Nobody has to
+  // be told the rule to see it working.
+  const rename = document.createElement('label');
+  rename.className = 'flagopt';
+  rename.style.cssText = 'margin:0 0 6px';
+  rename.title = 'The title above names the listing on mod.io. This names the map itself — what '
+    + 'the headset lists it as, and half of the file name it is saved under.';
+  const renameBox = document.createElement('input');
+  renameBox.type = 'checkbox';
+  renameBox.checked = renameToTitle;
+  rename.append(renameBox, document.createTextNode('Name the map this in the game too'));
+  renameBox.onchange = () => { renameToTitle = renameBox.checked; refreshIdentity(); };
+  body.appendChild(rename);
+
+  const identity = document.createElement('p');
+  identity.className = 'hint';
+  identity.style.cssText = 'margin:0 0 12px';
+  body.appendChild(identity);
+
+  /** The map's own name and file, as this upload would leave them. */
+  function nextIdentity() {
+    const name = renameToTitle ? (titleNow.trim() || map.name) : map.name;
+    const guid = needsNewIdentity(plan, !updateMode) ? freshGuid : map.guid;
+    return { name, guid, file: mapFileName(name, guid) };
+  }
+
+  function refreshIdentity() {
+    renameBox.checked = renameToTitle;
+    const next = nextIdentity();
+    const fresh = next.guid !== map.guid;
+    warn.textContent = describeClash(plan, { takingNewId: fresh }) || '';
+    identity.innerHTML = `In the game: <b>${escapeHtml(next.name)}</b>, saved as `
+      + `<code style="font-family:var(--mono);color:var(--dim)">${escapeHtml(next.file)}</code>`
+      + (fresh ? ' &mdash; a new ID, so it stands beside the one already published rather than '
+        + 'on top of it.' : '');
+  }
+  refreshIdentity();
 
   openDialog({
     title: 'Upload to the map library',
     body,
     wide: true,
     fields: [
-      { id: 'title', label: 'Title', value: owned ? owned.name : map.name },
+      {
+        id: 'title',
+        label: 'Title',
+        value: titleNow,
+        // The listing's name on mod.io, and — with the box above ticked — the
+        // map's own as well, so the file name under it has to keep up.
+        oninput: (value) => { titleNow = value; refreshIdentity(); },
+      },
       { id: 'summary', label: 'Summary', type: 'textarea', value: owned ? owned.summary : '' },
       // Shown whenever an update is even possible; ignored at submit time if
       // "Publish as a separate map" ends up chosen instead.
@@ -4875,8 +5632,27 @@ async function openUploadDialog() {
           ui.busy(true);
           ui.enable('Cancel', false);
           ui.enable('Upload', false);
+          // What the map is called and identified by before this upload touches
+          // it, so a failed one can be handed back exactly as it was found.
+          const wasNamed = map.name;
+          const wasGuid = map.guid;
           try {
             if (!logoBlob) { ui.status('Rendering a shot of the map…'); logoBlob = await vp.captureMapImage(); shot.src = URL.createObjectURL(logoBlob); }
+
+            // Applied to the map *before* the archive and the metadata blob are
+            // built, because both read it — the file name inside the zip is the
+            // one thing a headset uses to tell two maps apart, and it is built
+            // from these two fields and nothing else.
+            //
+            // A separate map takes a new ID whatever mod.io said, because a
+            // separate map with the same ID is not a separate map; and a map
+            // whose ID is already spoken for takes one because the alternative
+            // is landing on top of whoever spoke for it.
+            const next = nextIdentity();
+            map.name = next.name;
+            map.guid = next.guid;
+            if (next.guid !== wasGuid || next.name !== wasNamed) refreshMeta();
+
             ui.status('Zipping the map…');
             const zip = await modfileArchive(currentMapText(), mapFileName(map.name, map.guid));
             const tags = modeTags;
@@ -4912,21 +5688,28 @@ async function openUploadDialog() {
             const fileMeta = updateMode ? { version: values.version, changelog: values.changelog } : {};
             await modioAddModfile(modId, { zip, ...fileMeta });
 
+            // Under whatever the map is called *now*. A separate map has a new
+            // guid, so this writes a second record rather than overwriting the
+            // one pointing at the entry it was published beside — which used to
+            // orphan that entry, leaving the editor unable to offer an update
+            // for a map it had published minutes earlier.
             modioRecordMine(map.guid, modId);
             takeCheckpoint('export');
 
             const modUrl = modResult?.profile_url || `https://mod.io/g/spatial-ops/m/${modId}`;
             ui.close();
             toast(`${updateMode ? 'Updated' : 'Published'} "${values.title}" on mod.io.`);
-            openDialog({
-              title: updateMode ? 'Map updated' : 'Map published',
-              body: `"${values.title}" is ${updateMode ? 'updated' : 'now live'} on mod.io.`,
-              actions: [
-                { label: 'Close', ghost: true, run: () => {} },
-                { label: 'View on mod.io', run: () => window.open(modUrl, '_blank', 'noopener') },
-              ],
-            });
+            showPublishedMap(values.title, updateMode, modId, modUrl);
           } catch (err) {
+            // Nothing reached mod.io, so nothing about the map should have
+            // changed either. A half-published map wearing an ID it never got
+            // to use would look identical to a published one and behave
+            // nothing like it.
+            if (map.name !== wasNamed || map.guid !== wasGuid) {
+              map.name = wasNamed;
+              map.guid = wasGuid;
+              refreshMeta();
+            }
             ui.status(err?.errors ? `${err.message} (${Object.values(err.errors).join(', ')})` : err.message, true);
             ui.enable('Cancel', true);
             ui.enable('Upload', true);
@@ -4938,6 +5721,69 @@ async function openUploadDialog() {
   });
 
   setLogo(await vp.captureMapImage());
+}
+
+/**
+ * What a publish ends on: it is live, here is the mod.io page, and here is the
+ * address that opens this map in OpsForge.
+ *
+ * The link is the reason this is a panel rather than a sentence. A map in the
+ * library is a file somebody has to find, download and put somewhere; a link is
+ * a thing you paste into a chat, and the difference decides whether a template
+ * map gets used by the other nine people building for the same venue. So the
+ * address is shown in full, in a box, selected the moment it is clicked —
+ * because "Copy" is one browser permission away from doing nothing, and a
+ * visible address is never nothing.
+ */
+function showPublishedMap(title, updateMode, modId, modUrl) {
+  const shareUrl = mapShareUrl(modId);
+
+  const body = document.createElement('div');
+  const line = document.createElement('p');
+  line.textContent = `"${title}" is ${updateMode ? 'updated' : 'now live'} on mod.io.`;
+  line.style.marginTop = '0';
+
+  const row = document.createElement('div');
+  row.className = 'field';
+  const label = document.createElement('span');
+  label.textContent = 'Map URL';
+  const box = document.createElement('input');
+  box.type = 'text';
+  box.readOnly = true;
+  box.value = shareUrl;
+  box.onfocus = () => box.select();
+  box.onclick = () => box.select();
+  row.append(label, box);
+
+  const note = document.createElement('p');
+  note.className = 'hint';
+  note.textContent = 'Open that address and this map comes up ready to build on — no file to '
+    + 'download and nowhere to put it. It points at wherever this editor is being served from, '
+    + 'so it works for anyone running theirs at the same address, and for everyone if yours is '
+    + 'on one they can all reach.';
+
+  body.append(line, row, note);
+
+  openDialog({
+    title: updateMode ? 'Map updated' : 'Map published',
+    body,
+    actions: [
+      { label: 'Close', ghost: true, run: () => {} },
+      {
+        label: 'Copy map URL',
+        ghost: true,
+        keepOpen: true,
+        run: async (_values, ui) => {
+          box.select();
+          ui.status(await copyToClipboard(shareUrl)
+            ? 'Copied. Paste it wherever the people building on this map will see it.'
+            : 'This browser would not let the page copy for you — the address is selected, '
+              + 'so Ctrl+C will do it.', false);
+        },
+      },
+      { label: 'View on mod.io', run: () => window.open(modUrl, '_blank', 'noopener') },
+    ],
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -5086,6 +5932,10 @@ function openDialog({ title, body, fields = [], actions, wide }) {
     dialogClose = null;
   };
   (fields.length ? inputs[fields[0].id] : acts.lastChild)?.focus();
+  // The same handle the actions are given, for a caller that has to reach the
+  // dialog from outside one — a file picker landing back with a map to say
+  // something about, and a button that stays greyed out until it does.
+  return ui;
 }
 
 function closeDialog() {
@@ -5381,6 +6231,10 @@ function wireAutosave() {
         ? `LBE mode off. The ${held} venue layers are kept, and not exported, until it is back on.`
         : 'LBE mode off. The editor works on one map at a time.');
     refreshVenues();
+    // The toolbar's list and its two buttons appear and disappear with the
+    // switch, venues or not: turning it on with none held is exactly when the
+    // `+` is wanted.
+    refreshLayerPicker();
   };
 
   $('cp-save').onclick = () => {
@@ -5898,16 +6752,22 @@ async function showLayer(index) {
 }
 
 /**
- * The venue list in the toolbar.
+ * The venue list in the toolbar, and the two buttons that change what is in it.
  *
  * Rebuilt only when the names change, so choosing one does not tear the element
  * out from under the pointer that is still inside it.
+ *
+ * Shown whenever LBE mode is on, venues or not — which it did not used to be.
+ * A project with no halls in it yet is exactly the project that needs the `+`,
+ * and a control that only appears once you have done the thing it is for is no
+ * control at all. With the switch off the whole group stays hidden, so none of
+ * this is reachable from the editor as it has always been.
  */
 function refreshLayerPicker() {
   const grp = $('layer-grp');
   if (!grp) return;
   const layers = project?.layers || [];
-  grp.hidden = !(lbeOn() && layers.length);
+  grp.hidden = !lbeOn();
   if (grp.hidden) return;
 
   const sel = $('layer-pick');
@@ -5927,6 +6787,19 @@ function refreshLayerPicker() {
     sel.dataset.built = key;
   }
   sel.value = activeLayer === null ? 'map' : String(activeLayer);
+
+  // The list is one long row with no venues in it, which is a list of one and
+  // reads as broken. It still has to be there for `+` to sit beside, so it says
+  // what it is instead.
+  sel.disabled = !layers.length;
+  const del = $('b-layer-del');
+  const shown = activeLayer === null ? null : layers[activeLayer];
+  if (del) {
+    del.title = shown
+      ? `Remove ${shown.name} from this project. Asks first.`
+      : `Remove ${map.name} from this project and choose another map to take its place. `
+        + 'Asks first.';
+  }
 }
 
 function wireLayerPicker() {
@@ -5934,6 +6807,8 @@ function wireLayerPicker() {
     const v = e.target.value;
     showLayer(v === 'map' ? null : Number(v));
   };
+  $('b-layer-add').onclick = () => openVenueAdd();
+  $('b-layer-del').onclick = () => removeShownFromProject();
 }
 
 function refreshAll() {
@@ -5977,7 +6852,7 @@ function refreshStatus() {
   const b = map ? map.mapBoundsSize : { x: 0, y: 0, z: 0 };
   let extra = '';
   if (n) {
-    const s = vp.selectionBounds().getSize(new THREE.Vector3());
+    const s = vp.selectionBounds(true).getSize(new THREE.Vector3());
     extra = `<br>SEL <b>${s.x.toFixed(2)} × ${s.y.toFixed(2)} × ${s.z.toFixed(2)}</b> m`;
   }
   $('readout').innerHTML =

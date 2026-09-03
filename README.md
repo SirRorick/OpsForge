@@ -164,6 +164,31 @@ the server until something asks for them.
   beneath the pad wherever the pad is, so a spawner lifted onto a crate puts
   enemies inside the crate. The editor holds them down and explains why once.
 
+**Straighten a map that has been into a headset**
+
+Aligning a map to a play area in the headset turns and shifts the whole of it,
+and what comes back to OpsForge is square to nothing: the arrow keys nudge
+across the grain, nothing new lines up with what is there, and every field in
+the inspector has seven digits in it.
+
+**Straighten to grid**, in the Map tab under Options, takes that back off.
+
+- It works the turn and the shift out from the objects themselves — which way
+  their own axes point, and how far each one sits from the nearest grid line —
+  and applies the answer to **the whole map at once**. Nothing inside it moves
+  relative to anything else: every wall is exactly where it was against every
+  other wall, and the only thing that changes is which way the whole map faces.
+- It squares the map up to whichever grid the toolbar is set to, so it lands on
+  the same lines the arrow keys and the gizmo are already snapping to.
+- The play grid comes round with it, so the ground the bots may walk on is still
+  under the map. So do any venue alignments, so twenty already-aligned halls go
+  on playing what they played yesterday.
+- **A map with no grid in it is not moved.** A map built by hand in a headset
+  never had one, and the editor says so rather than turning it to an angle
+  nobody chose. The same goes one axis at a time: heights that were never on a
+  grid are left as they are while the floor plan is squared up.
+- One press, and undo puts it back.
+
 **The view**
 
 - Middle drag orbits, right drag pans, and the wheel zooms towards whatever the
@@ -253,6 +278,26 @@ the server until something asks for them.
   mod.io itself.
 - Uploading a map you have published before offers to update that entry
   instead of creating a second one, once mod.io confirms you own it.
+- **A map's ID is checked against the library before a second entry is made.**
+  The title on the upload dialog names a listing on mod.io; what a headset saves
+  is `name_ID`, and two maps agreeing on both are one file — download the second
+  and it lands on top of the first. So **Publish as a separate map** takes a new
+  ID, because that is what a separate map is, and a map whose ID is already in
+  the library is told what it clashes with and given a new one. Sending a new
+  version to the entry a map already has keeps its ID untouched, as it must.
+- The dialog shows the name and file the headset will actually get, and it
+  changes as you type — so which name does what is something you can see rather
+  than something you have to be told.
+- Every publish ends with a **map URL** and a button to copy it. Open that
+  address and the map comes up in the editor ready to build on — no file to find
+  and nowhere to put it — which is what makes a template map worth publishing:
+  lay out the walls of a room, publish it, paste one link, and everybody
+  building their own play area starts from the same map. The address points at
+  wherever your editor is being served from, so it works for anyone running
+  theirs at the same address, and for everyone if yours is on one they can all
+  reach.
+- The same link works typed by hand: `?map=` and a mod.io map id on the end of
+  the editor's address opens that map, signed in or not.
 
 ## One map, several venues
 
@@ -287,6 +332,14 @@ and a placement per venue, and generate the files.
    around the map, its play space replaces the grid, and the gizmo places the
    design as a whole. Drag it onto the walls. The design is ghosted until it has
    been placed.
+
+   The hall's walls are drawn exactly as the map's own boundaries are — at a
+   tenth opacity with their edges picked out — because that is what they are,
+   and **Hide boundaries** puts both away together. They cannot be selected,
+   moved or deleted from here: a wall that needs changing is changed by
+   opening that template as a map of its own. Everything else a template
+   carries is drawn as a plain stand-in, since it is there to align against
+   and travels no further.
 4. **Right-click a piece of the design** in a venue to break it out of the map,
    in that venue only. From there it is an ordinary object — move it, resize it,
    delete it — and none of that reaches the map or any other venue. Objects
@@ -301,6 +354,36 @@ and a placement per venue, and generate the files.
 
 Everything else about the map is edited once. Add a crate and it turns up in
 every venue, because a venue holds a placement rather than a copy.
+
+### Adding and removing what a project holds
+
+Opening a map and its venues is how a project starts, and it is not how the work
+goes on. A venue is signed a fortnight after the others, a hall is refitted and
+its template retraced, a booking falls through, and sometimes the design itself
+turns out to be the wrong one. The **+** and **−** beside the venue list cover
+all four without starting the project again — which matters, because starting
+again mints fresh identities and leaves the files already on the headsets
+standing beside the new ones with nothing to tell them apart.
+
+**+** takes any number of venue templates and adds them, naming each the way the
+import does. They arrive unaligned, to be picked out of the list and dragged
+onto their walls like any other.
+
+**−** removes whatever the list is showing, and asks first either way.
+
+- **A venue.** It goes, and so does anything belonging to it alone — pieces
+  detached from the design in that hall, and anything added there. The map keeps
+  its own, and no other venue is touched.
+- **The map.** The design comes out and another goes in; the editor is never
+  left without one, so nothing happens until a replacement has been read, and
+  cancelling changes nothing. Every venue stays, keeping its template, its
+  alignment and above all the map identity its file already has on the headsets.
+  Two things go with the old design, both because they name objects in it:
+  anything detached is reattached, so each hall inherits the new map whole, and
+  venue names still matching the old map's are re-suggested against the new one.
+  A name somebody typed is left alone.
+
+Neither can be undone, which is what the confirmations are for.
 
 ### The project file
 

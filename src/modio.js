@@ -127,6 +127,52 @@ export async function modioSearch(query, offset = 0) {
   });
 }
 
+/**
+ * One mod by its id.
+ *
+ * For a link that names a map: `?map=1234` in the editor's own address is a
+ * mod id and nothing else, so opening it is a single read of the one mod rather
+ * than a search that might not find it. Token-free like every other read here,
+ * so a shared link works for somebody who has never signed in.
+ */
+export async function modioFetchMod(id) {
+  return modioRequest(`/games/${MODIO_GAME_ID}/mods/${encodeURIComponent(id)}`);
+}
+
+/**
+ * Every mod in the library whose map carries this guid.
+ *
+ * A map's guid is its identity to the *game*, not to mod.io: the file a headset
+ * writes is named for the map's name and its guid, so two library entries
+ * carrying one guid are two entries the headset cannot keep apart — download
+ * both and the second lands on top of the first. mod.io has no idea any of that
+ * is happening, and will happily host as many as are submitted.
+ *
+ * The guid is in `metadata_blob`, which is a string as far as mod.io is
+ * concerned, so this asks the only question a string can be asked: does it
+ * contain this. A guid is 32 hex characters and nothing else in the blob looks
+ * remotely like one, so the match is exact in practice — checked against the
+ * live library, where a real guid returns its own entries and an unused one
+ * returns nothing.
+ *
+ * Token-free, like every other read here, because the question matters whether
+ * or not anybody is signed in: a map downloaded from the library and published
+ * back under a new name collides exactly as badly as a map published twice by
+ * its own author, and the person doing it may never have signed in at all.
+ *
+ * Blob-less mods cannot answer and are not found — about a third of the library,
+ * mostly maps published by tools that never wrote one. So a hit is proof of a
+ * clash and a miss is not proof of no clash, which is why nothing downstream
+ * treats this as permission rather than as a warning.
+ */
+export async function modioFindByGuid(guid) {
+  if (!/^[0-9a-f]{32}$/i.test(guid || '')) return [];
+  const body = await modioRequest(`/games/${MODIO_GAME_ID}/mods`, {
+    params: { 'metadata_blob-lk': `*${guid}*`, _limit: 20 },
+  });
+  return body.data || [];
+}
+
 /** A downloaded mod's file, unzipped if it is one — `{name, text}`. A mod
  *  uploaded as a bare map file still opens, since the PK magic is checked
  *  before unzipping rather than assumed. */

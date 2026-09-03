@@ -135,6 +135,11 @@ canvas{display:block;width:100%;height:100%;outline:none}
    down to a fourteen pixel sliver on a 1280 screen -- present, unreadable,
    and the one control that has to say which venue you are looking at. */
 #layer-pick{flex:0 1 auto;min-width:130px;max-width:230px;text-overflow:ellipsis}
+/* The two beside it are one glyph each, and a glyph in a button padded for a
+   word sits off centre in a rectangle three times too wide. */
+.btn.sq{flex:0 0 auto;width:26px;padding:5px 0;text-align:center;font-size:15px;line-height:1}
+.btn.sq:disabled{opacity:.35;cursor:default}
+.btn.sq:disabled:hover{background:transparent;border-color:var(--line)}
 .btn{background:var(--panel2);border:1px solid var(--line);border-radius:4px;
   padding:5px 10px;cursor:pointer;white-space:nowrap;
   font-family:var(--hud);font-size:13px;font-weight:600;letter-spacing:.08em;text-transform:uppercase}
@@ -602,6 +607,10 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
 
     <div class="grp" id="layer-grp" hidden>
       <select id="layer-pick" title="Which of the venues you are looking at. The map itself, or one of its halls — picking a hall stands the map in it, to be lined up against its walls."></select>
+      <button class="btn ghost sq" id="b-layer-add"
+        title="Add venue templates to this project. Each one is a hall exported from a headset standing in it, and each becomes a playable file of its own.">+</button>
+      <button class="btn ghost sq" id="b-layer-del"
+        title="Take whatever the list is showing out of this project — the venue on screen, or the map itself. Both ask first.">&minus;</button>
     </div>
 
     <div class="grp" style="margin-left:auto">
@@ -827,6 +836,14 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
       <div class="sec">
         <h2>Options</h2>
         <div class="pad">
+          <button class="btn ghost" id="b-straighten" style="width:100%;margin-bottom:8px"
+            title="Turn, level and shift the whole map back onto the grid, as one piece. Nothing inside it moves relative to anything else.">Straighten to grid</button>
+          <p class="hint" style="margin:0 0 12px">For a map that has been into a headset and back.
+            Aligning it to a play area turns and shifts the whole thing, and it comes back square to
+            nothing &mdash; so the arrow keys nudge across the grain and nothing new lines up with it.
+            This works out the turn and the shift from the objects themselves and takes them back off,
+            moving the map <b>as one piece</b>: every wall stays exactly where it was relative to every
+            other. The play grid and any venue alignments come with it. Undo puts it back.</p>
           <label class="flagopt" id="autosave-sw" title="Keep a rolling set of recent snapshots in this browser, so closing the tab does not lose the map."><input type="checkbox" id="autosave" checked>Autosave</label>
           <label class="flagopt" style="margin-top:6px" title="Show first-time hints and the reminders before exporting"><input type="checkbox" id="tips" checked>Tips</label>
           <label class="flagopt" style="margin-top:6px" id="lbe-sw" title="Location-based entertainment. Build one map, align it into each venue&#39;s own template, and export a playable file per hall. Off, the editor works exactly as it always has."><input type="checkbox" id="lbe">LBE mode</label>

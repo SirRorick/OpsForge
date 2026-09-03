@@ -15,7 +15,7 @@ import { Script } from 'node:vm';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 export const ORDER = [
-  'unity.js', 'rules.js', 'format.js', 'zip.js', 'modio.js', 'packs.js', 'catalog.js',
+  'unity.js', 'align.js', 'rules.js', 'format.js', 'publish.js', 'zip.js', 'modio.js', 'packs.js', 'catalog.js',
   'placeholders.js', 'project.js', 'checkpoints.js', 'gizmo.js', 'scene.js', 'app.js',
 ];
 
