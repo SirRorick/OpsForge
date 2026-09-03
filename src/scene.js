@@ -27,6 +27,7 @@ import { decodeNavCloud, NAV_SPACING } from './format.js';
 // Scratch, so reading a pose out of the design frame does not allocate a
 // matrix per object per export. `designPose` is the only user.
 const _designMat = new THREE.Matrix4();
+const _designQuat = new THREE.Quaternion();
 
 const ACCENT = 0xe8c547;
 const CYAN = 0x4ec9e0;
@@ -1046,24 +1047,66 @@ function stacked(a, b) {
 // size of the thing, whatever `_attachFixedPart` does to its scale.
 
 const _extentBox = new THREE.Box3();
+const _extentMat = new THREE.Matrix4();
 
-function unionMapGeometry(box, node) {
+function unionMapGeometry(box, node, pre) {
   if (node.userData?.decor) return;
   if (node.isMesh && node.geometry) {
     if (!node.geometry.boundingBox) node.geometry.computeBoundingBox();
-    box.union(_extentBox.copy(node.geometry.boundingBox).applyMatrix4(node.matrixWorld));
+    // One matrix, not two applications of one: a Box3 put through a rotation
+    // comes out as the box round the rotated box, so rotating twice would grow
+    // it both times and measure something bigger than the object.
+    const m = pre ? _extentMat.multiplyMatrices(pre, node.matrixWorld) : node.matrixWorld;
+    box.union(_extentBox.copy(node.geometry.boundingBox).applyMatrix4(m));
   }
-  for (const child of node.children) unionMapGeometry(box, child);
+  for (const child of node.children) unionMapGeometry(box, child, pre);
 }
 
 /**
  * Grow `box` by what `mesh` actually is. `Box3.expandByObject` with the
  * editor's own drawing left out — see the note above.
+ *
+ * `pre` measures it in some frame other than the world's, and the only one
+ * anything asks for is the design's: a flip turns a piece round the middle of
+ * the piece, and inside a venue the middle of its world bounding box is the
+ * middle of a box drawn round it at the venue's angle rather than its own.
  */
-function expandByMapExtent(box, mesh) {
+function expandByMapExtent(box, mesh, pre = null) {
   mesh.updateWorldMatrix(true, true);
-  unionMapGeometry(box, mesh);
+  unionMapGeometry(box, mesh, pre);
   return box;
+}
+
+/**
+ * The silhouette of a piece of geometry, as a child to hang over it.
+ *
+ * A boundary is drawn at a tenth opacity, and a tenth of anything is not enough
+ * to say where it ends: three invisible walls overlapping read as one smudge,
+ * and the corner you are trying to line up with the real sofa is the part you
+ * cannot see at all. So the outline is drawn over the top.
+ *
+ * Thirty degrees, so a cylinder shows its two rims and its silhouette rather
+ * than all twenty-four of the seams between its side faces.
+ *
+ * A free function rather than a method, because both kinds of boundary want
+ * exactly the same line: the map's own, through `_refreshEdges`, and the walls
+ * a venue template brings in, which are boundaries somebody traced round a room
+ * and have no reason to be drawn as anything else.
+ */
+function edgesOver(geometry, color) {
+  const child = new THREE.LineSegments(
+    new THREE.EdgesGeometry(geometry, 30),
+    new THREE.LineBasicMaterial({
+      color: new THREE.Color(color), transparent: true, opacity: 0.85,
+    })
+  );
+  // Lines are picked with a world-space threshold rather than by intersecting
+  // them, so leaving this raycastable would let the wireframe answer for the
+  // object a metre away from it — and `_surfaceUnder` takes the first thing its
+  // ray meets, so Drop would land a crate on nothing.
+  child.raycast = () => {};
+  child.userData.decor = true;
+  return child;
 }
 
 /**
@@ -2501,18 +2544,7 @@ export class Viewport extends EventTarget {
     this._dropEdges(mesh);
     const def = mesh.userData.def;
     if (!def?.edges) return;
-    const child = new THREE.LineSegments(
-      new THREE.EdgesGeometry(mesh.geometry, 30),
-      new THREE.LineBasicMaterial({
-        color: new THREE.Color(def.color), transparent: true, opacity: 0.85,
-      })
-    );
-    // Lines are picked with a world-space threshold rather than by intersecting
-    // them, so leaving this raycastable would let the wireframe answer for the
-    // object a metre away from it — and `_surfaceUnder` takes the first thing
-    // its ray meets, so Drop would land a crate on nothing.
-    child.raycast = () => {};
-    child.userData.decor = true;
+    const child = edgesOver(mesh.geometry, def.color);
     mesh.add(child);
     this._edges.set(mesh, child);
   }
@@ -2869,28 +2901,50 @@ export class Viewport extends EventTarget {
    * Drawn from the stand-in geometry rather than the game's own models. A
    * template is walls and boxes traced round a room, which is exactly what the
    * stand-ins are honest about, and it keeps twenty halls' worth of scenery out
-   * of the model cache.
+   * of the model cache. For a boundary that costs nothing at all: the stand-in
+   * *is* the shape the game has, since `Box.glb`'s visible mesh is a bare cube
+   * and `Cylinder.glb`'s is a bare cylinder.
    *
-   * `raycast` is stubbed rather than the mesh being left pickable and filtered
-   * later: it takes the walls out of clicks, marquees, drop-onto and orbit-at-
-   * cursor in one move, the way the badge and outline helpers already do.
+   * **A hall's walls are drawn as boundaries, because that is what they are.**
+   * The pack's own tint at its tenth opacity with the silhouette picked out --
+   * the same three things the map's own boundaries are drawn with, from the
+   * same catalog entry and the same helper. A wall traced round a room and a
+   * wall placed in the editor are the same object in the same game, and there
+   * is no reading a room whose walls are painted as something else. Everything
+   * else in a template stays the warm neutral below, which is the part that has
+   * to read as reference rather than as map.
+   *
+   * None of it is editable, and none of it needs a flag anywhere to stay that
+   * way: `raycast` is stubbed, which takes the walls out of clicks, marquees,
+   * drop-onto and orbit-at-cursor in one move, and the meshes are kept out of
+   * `this.objects`, which is what every other part of the editor asks what the
+   * map is made of. A wall that needs changing is changed in the template, and
+   * that is a map like any other.
    */
   setVenueObjects(mapObjects) {
     // `clear` rather than `disposeChildren`: the geometry here comes from the
-    // shared placeholder cache, and disposing it would empty that cache out
-    // from under every object in the library that draws from it.
+    // shared placeholder cache and the materials are shared too, and disposing
+    // either would empty them out from under every object in the library that
+    // draws from them. The outlines are the exception -- an `EdgesGeometry` is
+    // built for one mesh and held by nothing else -- so those go by hand.
+    for (const m of this.venueGroup.children) disposeChildren(m);
     this.venueGroup.clear();
     for (const mo of mapObjects || []) {
       const def = defFor(mo);
-      const mesh = new THREE.Mesh(geometryFor(def), this._venueMaterial());
+      // A hall's walls are boundary objects like any others, and the switch
+      // that puts the map's out of the way has to put these out of the way
+      // too -- they are in front of exactly the same thing.
+      const boundary = isBoundary(def);
+      const mesh = new THREE.Mesh(
+        geometryFor(def),
+        boundary ? this.materialFor(def) : this._venueMaterial(),
+      );
       mesh.position.fromArray(convertPosition(mo.position));
       mesh.quaternion.fromArray(unityEulerToQuat(mo.rotation));
       mesh.scale.set(mo.scale.x, mo.scale.y, mo.scale.z);
       mesh.raycast = () => {};
-      // A hall's walls are boundary objects like any others, and the switch
-      // that puts the map's out of the way has to put these out of the way
-      // too -- they are in front of exactly the same thing.
-      mesh.userData.boundary = isBoundary(def);
+      mesh.userData.boundary = boundary;
+      if (boundary && def.edges) mesh.add(edgesOver(mesh.geometry, def.color));
       this.venueGroup.add(mesh);
     }
     this._refreshVenueVisibility();
@@ -2969,6 +3023,59 @@ export class Viewport extends EventTarget {
     return { p, q, s };
   }
 
+  /**
+   * The way back: a pose read in the design's frame, in the world's.
+   *
+   * For the two things that stand in the room rather than in the map — the
+   * pivot the gizmo drives, and the ghosts a tool draws where it is about to
+   * put something. Everything else records where it is in the map and wants
+   * `designPose`.
+   *
+   * Position and rotation are carried separately rather than through a matrix
+   * because a mirrored placement carries a negative scale, and `decompose` is
+   * free to move that sign onto whichever axis it likes. `mapRoot` never has a
+   * scale of its own, so a scale handed through here comes out untouched.
+   */
+  worldFromDesign(p, q) {
+    this.mapRoot.updateWorldMatrix(true, false);
+    return {
+      position: p.clone().applyMatrix4(this.mapRoot.matrixWorld),
+      quaternion: new THREE.Quaternion().copy(this.mapRoot.quaternion).multiply(q),
+    };
+  }
+
+  /**
+   * The map's frame, for a placement worked out in the room's — the inverse of
+   * `worldFromDesign`, for a tool that decides where something goes by looking
+   * at what is on screen and then has to write it down as the map sees it.
+   */
+  designFromWorld(p, q) {
+    this.mapRoot.updateWorldMatrix(true, false);
+    return {
+      position: p.clone().applyMatrix4(_designMat.copy(this.mapRoot.matrixWorld).invert()),
+      // Its own quaternion rather than the shared scratch: this one is handed
+      // to a caller, and the next call through here would overwrite it.
+      quaternion: new THREE.Quaternion().copy(this.mapRoot.quaternion).invert().multiply(q),
+    };
+  }
+
+  /**
+   * A direction in the world, as the map reckons it: the turn without the
+   * shift. For a step rather than a place — an array's spacing is a direction
+   * and a distance, and moving it into the map's frame must not move its
+   * origin as well.
+   */
+  designDirection(v) {
+    this.mapRoot.updateWorldMatrix(true, false);
+    return v.clone().applyQuaternion(_designQuat.copy(this.mapRoot.quaternion).invert());
+  }
+
+  /** The same the other way: a direction the map named, pointing into the room. */
+  worldDirection(v) {
+    this.mapRoot.updateWorldMatrix(true, false);
+    return v.clone().applyQuaternion(this.mapRoot.quaternion);
+  }
+
   toMapObject(mesh) {
     const { p, q, s } = this.designPose(mesh);
     const { def, objectType, props } = mesh.userData;
@@ -2998,8 +3105,19 @@ export class Viewport extends EventTarget {
    * business, not the panel's.
    */
   placeSelection(unityPosition, unityRotation) {
-    this.pivot.position.set(unityPosition.x, unityPosition.y, -unityPosition.z);
-    this.pivot.quaternion.fromArray(unityEulerToQuat(unityRotation)).multiply(MAP_FRAME);
+    // Through the design frame, because that is the frame the numbers are in.
+    // The boxes show where a piece stands in the *map* — `toMapObject` is what
+    // fills them — and the pivot stands in the room. Outside a venue those are
+    // the same place; inside one they are the venue's whole placement apart,
+    // and writing the one straight onto the other moved a piece that far every
+    // time anybody typed into the panel, including typing back what was
+    // already showing.
+    const { position, quaternion } = this.worldFromDesign(
+      new THREE.Vector3(unityPosition.x, unityPosition.y, -unityPosition.z),
+      new THREE.Quaternion().fromArray(unityEulerToQuat(unityRotation)),
+    );
+    this.pivot.position.copy(position);
+    this.pivot.quaternion.copy(quaternion).multiply(MAP_FRAME);
   }
 
   /**
@@ -3131,9 +3249,24 @@ export class Viewport extends EventTarget {
     return this.expandGroup(mesh, override).filter((o) => o.visible);
   }
 
-  selectionBounds() {
+  /**
+   * The box round the selection, in the world by default.
+   *
+   * `inDesign` measures it in the map's frame instead, which is what anything
+   * quoting a number to the user or writing one into a file wants: inside a
+   * venue the world box is drawn round the selection standing at the venue's
+   * angle, so it is wider than the selection and centred somewhere the
+   * selection's own middle is not. The world box is still the right one for
+   * the pivot and for framing the camera, which are both jobs in the room.
+   */
+  selectionBounds(inDesign = false) {
     const box = new THREE.Box3();
-    for (const m of this.selection) expandByMapExtent(box, m);
+    let pre = null;
+    if (inDesign) {
+      this.mapRoot.updateWorldMatrix(true, false);
+      pre = new THREE.Matrix4().copy(this.mapRoot.matrixWorld).invert();
+    }
+    for (const m of this.selection) expandByMapExtent(box, m, pre);
     return box;
   }
 
@@ -3189,14 +3322,16 @@ export class Viewport extends EventTarget {
    * reflects, and the piece is turned inside out by whichever of the three ways
    * `mirrorFlipFor` says is cheapest.
    *
-   * The world transform is what comes back, ready for `compose`. Nothing is
-   * moved here: the tool, its ghosts and Flip all want the answer before they
-   * want the act.
+   * The world transform is what comes back, ready for `compose` — reflected in
+   * the map's frame and handed over in the room's. Nothing is moved here: the
+   * tool, its ghosts and Flip all want the answer before they want the act.
    */
   reflectedPlacement(mesh, axis, at = 0) {
-    mesh.updateWorldMatrix(true, false);
-    const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
-    mesh.matrixWorld.decompose(p, q, s);
+    // Read in the design's frame, because that is the frame the reflection is
+    // about: the plane is the middle of the *arena* and the axis is one of the
+    // *map's*. Inside a venue the room is turned relative to both, and a
+    // reflection in the room's X is a reflection in no axis the map has.
+    const { p, q, s } = this.designPose(mesh);
 
     const flip = this.mirrorFlipFor(mesh, axis);
     if (flip === 'scale') s[axis] = -s[axis];
@@ -3211,7 +3346,11 @@ export class Viewport extends EventTarget {
 
     const position = p.clone();
     position[axis] = 2 * at - p[axis];
-    return { position, quaternion, scale: s, flip };
+    // Handed back in world space, which is what the ghosts draw at and what
+    // `flipSelection` puts back through each object's own parent. The scale
+    // rides through `worldFromDesign` untouched, so a piece that needed a
+    // negative keeps it on the axis that was chosen for it.
+    return { ...this.worldFromDesign(position, quaternion), scale: s, flip };
   }
 
   /**
@@ -3227,8 +3366,13 @@ export class Viewport extends EventTarget {
   flipPlan(meshes, axis) {
     const list = meshes.filter((m) => !m.userData.locked);
     if (!list.length) return [];
+    // Measured in the design's frame, to match the frame the reflection is
+    // worked out in. A world box round a selection standing at the venue's
+    // angle has its middle somewhere the selection's own middle is not.
+    this.mapRoot.updateWorldMatrix(true, false);
+    const intoDesign = new THREE.Matrix4().copy(this.mapRoot.matrixWorld).invert();
     const box = new THREE.Box3();
-    for (const m of list) expandByMapExtent(box, m);
+    for (const m of list) expandByMapExtent(box, m, intoDesign);
     if (box.isEmpty()) return [];
     const at = box.getCenter(new THREE.Vector3())[axis];
     return list.map((m) => [m, this.reflectedPlacement(m, axis, at)]);
@@ -3812,7 +3956,8 @@ export class Viewport extends EventTarget {
 
   /**
    * The two horizontal directions the screen calls "right" and "away", each
-   * snapped to whichever world axis it is nearest.
+   * snapped to whichever axis of the *map* it is nearest, and returned in the
+   * map's frame.
    *
    * Snapped, and that is the whole point of them. Arrow keys that moved along
    * the camera's own vectors would step a quarter of a metre north-east while
@@ -3824,11 +3969,23 @@ export class Viewport extends EventTarget {
   viewGroundAxes() {
     const forward = new THREE.Vector3();
     this.camera.getWorldDirection(forward);
+    // Into the map's own frame before it is squared up, because the axis it is
+    // about to be squared up to has to be one of the map's. Inside a venue the
+    // room the camera stands in is turned relative to the map, so an axis
+    // picked in the room's frame is a direction the map has no name for — and
+    // a step along it lands on no grid square the file could record.
+    //
+    // `mapRoot` carries a yaw and nothing else, so turning a flat vector into
+    // its frame leaves it flat and the snap below still has two axes to choose
+    // between. With no venue open the turn is the identity.
+    this.mapRoot.updateWorldMatrix(true, false);
+    const intoDesign = _designQuat.copy(this.mapRoot.quaternion).invert();
+    forward.applyQuaternion(intoDesign);
     forward.y = 0;
     // Straight down, where the view direction has no horizontal part at all:
     // "away" is then whichever way the top of the screen points.
     if (forward.lengthSq() < 1e-8) {
-      forward.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
+      forward.set(0, 1, 0).applyQuaternion(this.camera.quaternion).applyQuaternion(intoDesign);
       forward.y = 0;
       if (forward.lengthSq() < 1e-8) forward.set(0, 0, -1);
     }
@@ -3863,15 +4020,19 @@ export class Viewport extends EventTarget {
     delta.y += up * step;
     if (delta.lengthSq() < 1e-12) return false;
 
-    this.pivot.position.add(delta);
+    // Stepped and rounded in the map's frame, then put back into the room.
+    // The grid is the map's grid and the file records map coordinates, so a
+    // key that landed the piece on a round number of the *room's* metres left
+    // it on nothing in particular in the only numbers anybody reads back.
+    this.mapRoot.updateWorldMatrix(true, false);
+    const p = this.mapRoot.worldToLocal(this.pivot.position.clone()).add(delta);
     if (this.snap.translate) {
       const g = this.snap.translate;
       for (const axis of ['x', 'y', 'z']) {
-        if (Math.abs(delta[axis]) > 1e-9) {
-          this.pivot.position[axis] = Math.round(this.pivot.position[axis] / g) * g;
-        }
+        if (Math.abs(delta[axis]) > 1e-9) p[axis] = Math.round(p[axis] / g) * g;
       }
     }
+    this.pivot.position.copy(this.mapRoot.localToWorld(p));
     for (const m of this.selection) this.markDirty(m);
     this.rebuildPivot();
     this.emit('transform');

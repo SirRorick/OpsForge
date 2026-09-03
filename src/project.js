@@ -188,6 +188,48 @@ export function newLayer({ name, guid, template }) {
   };
 }
 
+/**
+ * Move a set of venues onto a different design, in place.
+ *
+ * The design under a project is replaceable, and the venues are not thrown away
+ * with it. Everything a layer knows that is a fact about a *room* survives
+ * untouched: the template, the alignment, and above all the guid — the identity
+ * that venue's file already has on every headset it has been copied to. Getting
+ * a new design into the same halls by re-importing from raw templates would
+ * mint twenty fresh identities instead, and leave the old twenty files sitting
+ * beside the new ones with nothing to tell them apart. That is the whole reason
+ * this exists rather than the caller starting again.
+ *
+ * Two things do not survive, and both for one reason: they name things in a map
+ * that is leaving.
+ *
+ * `detached` is the list of the design's object ids a venue has stopped
+ * inheriting, and the objects it points at are going. Left alone it would go on
+ * suppressing whichever objects of the *new* map happened to be handed those
+ * numbers — a hall quietly missing pieces, for a reason nobody would ever find.
+ * So every venue starts inheriting the new design whole.
+ *
+ * A name is re-suggested only where it is still the suggestion. A venue called
+ * `ARENA-01_[VEN1_HALL1]` under a map now called ARENA-02 is a file named after
+ * a map that is not in it; a venue somebody typed a name into is that person's
+ * decision, and no rule here is worth overwriting it.
+ *
+ * A venue's own objects stay. They were forked and placed in that hall for
+ * reasons that were about that hall — a pillar worked around, a doorway kept
+ * clear — and none of those reasons left with the design. They are stored in
+ * the design's frame and placed by the layer's own transform, so they land
+ * exactly where they landed before.
+ */
+export function rebaseLayers(layers, fromName, toName) {
+  for (const l of layers) {
+    if (l.name === venueMapName(fromName, l.template?.name)) {
+      l.name = venueMapName(toName, l.template?.name);
+    }
+    l.detached = [];
+  }
+  return layers;
+}
+
 // -- The rigid transform ----------------------------------------------------
 
 /**
