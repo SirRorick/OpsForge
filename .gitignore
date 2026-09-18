@@ -29,3 +29,7 @@ test/
 
 # Local development notes — kept on the machine, not published.
 CLAUDE.md
+
+# Security audits and their remediation notes — kept on the machine, not
+# published.
+docs/security/

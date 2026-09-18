@@ -9,7 +9,8 @@
 // on the team of. The OAuth token represents the person instead, the same way
 // the game itself gets one when someone signs into mod.io in-headset: mod.io
 // emails a 5-digit code, and exchanging it hands back the token. Kept only in
-// this browser's localStorage, sent as `Authorization: Bearer` straight to
+// this tab's sessionStorage — or this browser's localStorage when the author
+// ticks "keep me signed in" — and sent as `Authorization: Bearer` straight to
 // `g-11054.modapi.io`. Nothing passes through anyone else's hands.
 //
 // The token is stored and sent, never logged and never written into a map
@@ -22,6 +23,7 @@
 // ---------------------------------------------------------------------------
 
 import { zipRead, zipLooksLikeArchive } from './zip.js';
+import { readCapped } from './format.js';
 
 const MODIO_GAME_ID = 11054;
 const MODIO_HOST = 'https://g-11054.modapi.io/v1';
@@ -31,9 +33,9 @@ const MODIO_USER_KEY = 'spatialops.modio.username'; // cached, so Export need no
 const MODIO_MINE_KEY = 'spatialops.modio.mine'; // map guid -> mod id, for updates
 
 /** localStorage, or null where there is none — same guard as `checkpointStore`. */
-function modioStore() {
+function modioStore(kind = 'localStorage') {
   try {
-    const s = globalThis.localStorage;
+    const s = globalThis[kind];
     if (!s) return null;
     const probe = '__spatialops_probe__';
     s.setItem(probe, '1');
@@ -44,29 +46,75 @@ function modioStore() {
   }
 }
 
+// The write token lives in this tab's sessionStorage unless the author asked to
+// stay signed in, and only then in localStorage. A token that outlives the tab
+// is a token any later script on the page could read, and most sign-ins are
+// for one publish. A token already in localStorage from before this choice
+// existed is honoured as a "remember me" — nobody is signed out by an update.
+const sessionStore = () => modioStore('sessionStorage');
+
+function readBoth(key) {
+  try {
+    return sessionStore()?.getItem(key) || modioStore()?.getItem(key) || null;
+  } catch {
+    return null;
+  }
+}
+
 export function modioToken() {
-  try { return modioStore()?.getItem(MODIO_TOKEN_KEY) || null; } catch { return null; }
+  return readBoth(MODIO_TOKEN_KEY);
 }
 
 export function modioCachedUsername() {
-  try { return modioStore()?.getItem(MODIO_USER_KEY) || null; } catch { return null; }
+  return readBoth(MODIO_USER_KEY);
+}
+
+/** Whether the token on hand is one kept past the end of the tab. */
+export function modioRememberSignIn() {
+  try { return !!modioStore()?.getItem(MODIO_TOKEN_KEY); } catch { return false; }
 }
 
 /** `username` is whatever `GET /me` returned when the token was validated — kept
  *  alongside it so Export can show who is signed in without a request on every open. */
-export function modioSaveToken(token, username) {
+export function modioSaveToken(token, username, remember = false) {
+  modioForgetToken();
   try {
-    modioStore()?.setItem(MODIO_TOKEN_KEY, token);
-    if (username) modioStore()?.setItem(MODIO_USER_KEY, username);
+    const store = remember ? modioStore() : sessionStore();
+    store?.setItem(MODIO_TOKEN_KEY, token);
+    if (username) store?.setItem(MODIO_USER_KEY, username);
   } catch { /* fine */ }
 }
 
 export function modioForgetToken() {
-  try {
-    modioStore()?.removeItem(MODIO_TOKEN_KEY);
-    modioStore()?.removeItem(MODIO_USER_KEY);
-  } catch { /* fine */ }
+  for (const store of [modioStore(), sessionStore()]) {
+    try {
+      store?.removeItem(MODIO_TOKEN_KEY);
+      store?.removeItem(MODIO_USER_KEY);
+    } catch { /* fine */ }
+  }
 }
+
+/**
+ * A URL the mod.io API handed back, if it points at mod.io, or null.
+ *
+ * Thumbnails, profile pages and downloads all arrive as strings in API
+ * responses, and a string is not a promise about where it leads. Only https
+ * on mod.io's own domains is followed.
+ */
+export function modioUrlOrNull(value) {
+  try {
+    const u = new URL(String(value || ''));
+    if (u.protocol !== 'https:') return null;
+    const host = u.hostname.toLowerCase();
+    const ok = ['mod.io', 'modcdn.io', 'modapi.io'].some((d) => host === d || host.endsWith(`.${d}`));
+    return ok ? u.href : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A map download larger than this is not a map. The biggest in the library is tens of KB. */
+const MODIO_MAX_DOWNLOAD = 32 * 1048576;
 
 export function modioMineMap() {
   try {
@@ -177,11 +225,12 @@ export async function modioFindByGuid(guid) {
  *  uploaded as a bare map file still opens, since the PK magic is checked
  *  before unzipping rather than assumed. */
 export async function modioFetchMapText(mod) {
-  const url = mod?.modfile?.download?.binary_url;
+  const url = modioUrlOrNull(mod?.modfile?.download?.binary_url);
   if (!url) throw new Error('This map has no file to download.');
+  if (Number(mod.modfile.filesize) > MODIO_MAX_DOWNLOAD) throw new Error('That file is far too large to be a map.');
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Download failed (${res.status})`);
-  const buf = await res.arrayBuffer();
+  const buf = (await readCapped(res.body, MODIO_MAX_DOWNLOAD, 'download')).buffer;
   if (zipLooksLikeArchive(buf)) {
     const [entry] = await zipRead(buf);
     if (!entry) throw new Error('The archive has nothing in it.');

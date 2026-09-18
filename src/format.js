@@ -271,15 +271,27 @@ export function parseMap(text) {
     throw new Error('Not a Spatial Ops map file: no mapObjects array.');
   }
 
-  const rawObjects = extractRawMapObjects(text);
+  // The raw text is only trusted when it lines up one for one with what
+  // JSON.parse found. A file that does not — a duplicate top-level key, say —
+  // is written back from its values instead, which is correct if not
+  // byte-identical, rather than exporting the wrong records as the right ones.
+  let rawObjects = extractRawMapObjects(text);
+  if (rawObjects.length !== data.mapObjects.length) rawObjects = [];
   const mapObjects = data.mapObjects.map((o, i) => {
     // Anything that is not one of the five base keys belongs to a subtype.
     // Collecting them generically means a field we have never seen still
     // survives a round trip instead of being silently dropped on edit.
+    //
+    // Defined rather than assigned: a key spelled `__proto__` is an own
+    // property of what JSON.parse returns, and plain assignment would hand it
+    // to the prototype setter instead of keeping it as data.
     const props = {};
     for (const k of Object.keys(o)) {
-      if (!BASE_OBJECT_KEYS.includes(k)) props[k] = o[k];
+      if (!BASE_OBJECT_KEYS.includes(k)) {
+        Object.defineProperty(props, k, { value: o[k], enumerable: true, writable: true, configurable: true });
+      }
     }
+    const raw = rawObjects[i] || null;
     return {
       $type: o.$type || 'MapObject',
       type: o.type,
@@ -287,7 +299,7 @@ export function parseMap(text) {
       position: { ...o.position },
       rotation: { ...o.rotation },
       scale: { ...o.scale },
-      raw: rawObjects[i] || null,
+      raw: raw && rawMatches(raw, o) ? raw : null,
       dirty: false,
     };
   });
@@ -301,7 +313,11 @@ export function parseMap(text) {
     createdTime: data.createdTime ?? nowStamp(),
     editedTime: data.editedTime ?? nowStamp(),
     playedTime: data.playedTime ?? DOTNET_MIN_DATE,
-    mapBoundsSize: { ...data.mapBoundsSize },
+    // Numbers, whatever the file said. Both are int vectors written bare, so a
+    // real map loses nothing here — but a string in either used to ride all
+    // the way into the status readout's HTML, and a missing one exported as
+    // `NaN`, which is not JSON.
+    mapBoundsSize: intVector(data.mapBoundsSize, ['x', 'y', 'z'], { x: 7, y: 3, z: 7 }),
     ruleSets: (data.ruleSets || []).map(normalizeRuleSet),
     anchors: data.anchors || [],
     mapObjects,
@@ -310,8 +326,8 @@ export function parseMap(text) {
           position: { ...data.navCloud.position },
           rotation: { ...data.navCloud.rotation },
           size: { ...data.navCloud.size },
-          divisions: { ...data.navCloud.divisions },
-          encodedPoints: data.navCloud.encodedPoints,
+          divisions: intVector(data.navCloud.divisions, ['x', 'y'], { x: 141, y: 141 }),
+          encodedPoints: typeof data.navCloud.encodedPoints === 'string' ? data.navCloud.encodedPoints : '',
         }
       : defaultNavCloudStub(),
     hasArUcoAnchor: !!data.hasArUcoAnchor,
@@ -336,13 +352,62 @@ function normalizeRuleSet(r) {
   };
 }
 
+/**
+ * An int vector with every component a finite number. Anything else takes the
+ * fallback's value for that component, which is what the editor would have
+ * started a new map with.
+ */
+function intVector(v, keys, fallback) {
+  const out = {};
+  for (const k of keys) {
+    const n = Number(v?.[k]);
+    out[k] = Number.isFinite(n) ? n : fallback[k];
+  }
+  return out;
+}
+
+/** Does this slice of source text parse to the same object JSON.parse gave? */
+function rawMatches(raw, parsed) {
+  try {
+    return JSON.stringify(JSON.parse(raw)) === JSON.stringify(parsed);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Where the value of a top-level key starts, or -1.
+ *
+ * Top-level, and that is the point: the first `"mapObjects":` in the text is
+ * not necessarily the map's. A rule set dictionary may carry a key of that
+ * name, and taking the first match would copy whatever array followed it.
+ */
+function topLevelValueStart(text, name) {
+  let depth = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') {
+      const start = i;
+      for (i++; i < text.length && text[i] !== '"'; i++) if (text[i] === '\\') i++;
+      if (depth !== 1) continue;
+      let j = i + 1;
+      while (j < text.length && /\s/.test(text[j])) j++;
+      if (text[j] !== ':') continue;
+      let key;
+      try { key = JSON.parse(text.slice(start, i + 1)); } catch { continue; }
+      if (key !== name) continue;
+      for (j++; j < text.length && /\s/.test(text[j]); j++);
+      return j;
+    } else if (c === '{' || c === '[') depth++;
+    else if (c === '}' || c === ']') depth--;
+  }
+  return -1;
+}
+
 /** Pull the exact source text of each element of the "mapObjects" array. */
 function extractRawMapObjects(text) {
-  const key = '"mapObjects":';
-  const at = text.indexOf(key);
-  if (at < 0) return [];
-  let i = text.indexOf('[', at);
-  if (i < 0) return [];
+  let i = topLevelValueStart(text, 'mapObjects');
+  if (i < 0 || text[i] !== '[') return [];
   const out = [];
   let depth = 0;
   let start = -1;
@@ -384,10 +449,50 @@ export function nowStamp(d = new Date()) {
 
 export const NAV_SPACING = 0.25;
 
+/**
+ * The most a decoded nav cloud may hold, in points. The game writes 141 x 141
+ * (under 20,000); this is two hundred times that, and still small enough that
+ * a map built to inflate into gigabytes stops long before it takes the tab down.
+ */
+export const NAV_MAX_POINTS = 4_000_000;
+
+/** Whether a grid of this shape is one the editor will draw and paint. */
+export function navGridFits(divisions) {
+  const n = Number(divisions?.x), m = Number(divisions?.y);
+  return Number.isInteger(n) && Number.isInteger(m) && n > 0 && m > 0 && n * m <= NAV_MAX_POINTS;
+}
+
 export async function decodeNavCloud(encoded) {
   const bin = Uint8Array.from(atob(encoded), (c) => c.charCodeAt(0));
   const stream = new Blob([bin]).stream().pipeThrough(new DecompressionStream('gzip'));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
+  return readCapped(stream, NAV_MAX_POINTS, 'bot grid');
+}
+
+/**
+ * Read a byte stream to the end, refusing it once it passes `limit` bytes.
+ *
+ * Every decompression in the editor goes through here or its twin in zip.js,
+ * because the size an archive *declares* is only what its author typed, and a
+ * few kilobytes of gzip can honestly inflate to gigabytes.
+ */
+export async function readCapped(stream, limit, what = 'data') {
+  const reader = stream.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > limit) {
+      reader.cancel().catch(() => {});
+      throw new Error(`The ${what} is larger than the editor will unpack (${Math.round(limit / 1048576)} MB).`);
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) { out.set(c, at); at += c.length; }
+  return out;
 }
 
 export async function encodeNavCloud(bytes) {

@@ -12,10 +12,12 @@ import { readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { Script } from 'node:vm';
+import { createHash } from 'node:crypto';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 export const ORDER = [
   'unity.js', 'align.js', 'rules.js', 'format.js', 'publish.js', 'zip.js', 'modio.js', 'packs.js', 'catalog.js',
+  'ai.js', 'link.js', 'assistant.js',
   'placeholders.js', 'project.js', 'checkpoints.js', 'gizmo.js', 'scene.js', 'app.js',
 ];
 
@@ -55,8 +57,89 @@ export function build() {
 
   mkdirSync(join(ROOT, 'dist'), { recursive: true });
   const out = join(ROOT, 'dist', 'spatial-ops-map-editor.html');
-  writeFileSync(out, spliceBundle(html, bundle), 'utf8');
+  writeFileSync(out, withContentSecurityPolicy(spliceBundle(html, bundle)), 'utf8');
   return out;
+}
+
+/**
+ * The OpsForge link as one file: src/ai.js and what it imports, then
+ * tools/opsforge-link.mjs, flattened the same way as the editor. The people who
+ * run it have the file and not this repository, so nothing may be left for it
+ * to import. The modules are the headless ones — a three.js import here would
+ * be a bug in the module, not something to hoist.
+ */
+export const LINK_ORDER = ['unity.js', 'rules.js', 'format.js', 'packs.js', 'catalog.js', 'ai.js'];
+
+export function buildLink() {
+  const hoisted = [];
+  const bodies = [];
+  const sources = [
+    ...LINK_ORDER.map((name) => [`src/${name}`, readFileSync(join(ROOT, 'src', name), 'utf8')]),
+    ['tools/opsforge-link.mjs', readFileSync(join(ROOT, 'tools', 'opsforge-link.mjs'), 'utf8')],
+  ];
+  for (const [name, text] of sources) {
+    let src = text.replace(IMPORT_STMT, (stmt, specifier) => {
+      if (specifier.startsWith('.')) return '';
+      if (!specifier.startsWith('node:')) throw new Error(`${name} imports ${specifier}, which the link cannot carry.`);
+      const trimmed = stmt.trim();
+      if (!hoisted.includes(trimmed)) hoisted.push(trimmed);
+      return '';
+    });
+    src = src.replace(EXPORT_KW, '');
+    checkParses(name, src);
+    bodies.push(`// ==== ${name} ${'='.repeat(Math.max(0, 60 - name.length))}\n${src.trim()}\n`);
+  }
+  const bundle = `${hoisted.join('\n')}\n\n${bodies.join('\n\n')}`;
+  checkForCollisions(bundle);
+  return bundle;
+}
+
+/**
+ * Where the page may load code and send data, stated in the page itself.
+ *
+ * A meta tag rather than only a server header because the bundle is also a
+ * file people unzip and serve themselves, and the policy should travel with
+ * it. Inline scripts are allowed by hash, not by `'unsafe-inline'`: the gate
+ * script, the import map and the bundle are the only three, and they are
+ * hashed here after the bundle is spliced in, so a script that found its way
+ * into the page any other way does not run. `connect-src` is the short list of
+ * hosts the editor talks to — mod.io for the library, the two AI providers a
+ * person may connect with their own key, and the one loopback port the OpsForge
+ * link listens on (`LINK_PORT` in src/link.js) — which also means that
+ * anything that did run could not send a token anywhere else.
+ */
+export const CSP_SOURCES = {
+  'default-src': ["'self'"],
+  'script-src': ["'self'", 'https://cdn.jsdelivr.net/npm/three@0.169.0/'],
+  'style-src': ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+  'font-src': ["'self'", 'https://fonts.gstatic.com'],
+  // mod.io serves some thumbnails by redirecting thumb.modcdn.io to its own
+  // resizing worker, so that one host is named as well — not all of workers.dev.
+  'img-src': ["'self'", 'data:', 'blob:', 'https://*.modcdn.io', 'https://modio-web-thumbnail.modapi.workers.dev'],
+  'connect-src': [
+    "'self'", 'blob:', 'data:',
+    'https://g-11054.modapi.io', 'https://*.modcdn.io',
+    'https://api.anthropic.com', 'https://api.openai.com',
+    'http://127.0.0.1:47615',
+  ],
+  'worker-src': ["'self'", 'blob:'],
+  'object-src': ["'none'"],
+  'base-uri': ["'none'"],
+  'form-action': ["'none'"],
+};
+
+export function withContentSecurityPolicy(html) {
+  const hashes = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)]
+    // Browsers hash the text after turning CRLF into LF, so this does too.
+    .map(([, body]) => body.replace(/\r\n?/g, '\n'))
+    .map((body) => `'sha256-${createHash('sha256').update(body, 'utf8').digest('base64')}'`);
+  const policy = Object.entries(CSP_SOURCES)
+    .map(([k, v]) => [k, k === 'script-src' ? [...v, ...hashes] : v])
+    .map(([k, v]) => `${k} ${v.join(' ')}`)
+    .join('; ');
+  const meta = `<meta http-equiv="Content-Security-Policy" content="${policy}">`;
+  // First thing after the charset: a policy only governs what comes after it.
+  return html.replace('<meta charset="utf-8">', () => `<meta charset="utf-8">\n${meta}`);
 }
 
 /**

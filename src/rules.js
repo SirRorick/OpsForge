@@ -627,8 +627,22 @@ export function duplicateRuleSet(ruleSet, existing = []) {
 function uniqueName(base, existing) {
   const taken = new Set(existing.map((r) => r.name));
   if (!taken.has(base)) return base;
-  const stem = base.replace(/\s+\d+$/, '');
+  const stem = withoutCounter(base);
   for (let n = 2; ; n++) if (!taken.has(`${stem} ${n}`)) return `${stem} ${n}`;
+}
+
+/**
+ * `name` with a trailing " 12" taken off. What `/\s+\d+$/` says, walked by hand
+ * instead: that pattern backtracks quadratically on a long run of spaces, and a
+ * rule set's name comes out of whatever file was opened.
+ */
+function withoutCounter(name) {
+  let i = name.length;
+  while (i > 0 && name[i - 1] >= '0' && name[i - 1] <= '9') i--;
+  if (i === name.length) return name;
+  let j = i;
+  while (j > 0 && /\s/.test(name[j - 1])) j--;
+  return j < i ? name.slice(0, j) : name;
 }
 
 /** Back to every setting at the game's default, which is four empty dictionaries. */

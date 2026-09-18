@@ -22,7 +22,7 @@ import {
   convertPosition, unityEulerToQuat, quatToUnityEuler, MODEL_YAW, DEG, wrap360,
   frameFromPlacement, placementFromFrame,
 } from './unity.js';
-import { decodeNavCloud, NAV_SPACING } from './format.js';
+import { decodeNavCloud, navGridFits, NAV_SPACING } from './format.js';
 
 // Scratch, so reading a pose out of the design frame does not allocate a
 // matrix per object per export. `designPose` is the only user.
@@ -1950,6 +1950,11 @@ export class Viewport extends EventTarget {
    */
   seedObjectIds(n) {
     if (Number.isInteger(n) && n > this._nextId) this._nextId = n;
+  }
+
+  /** The id the next new object will get, without taking it. */
+  peekNextId() {
+    return this._nextId;
   }
 
   /**
@@ -4749,7 +4754,9 @@ export class Viewport extends EventTarget {
     this.navGroup.rotation.set(0, 0, 0);
     this.navMask = null;
     this.navGrid = null;
-    if (!navCloud) return;
+    // A grid bigger than any headset writes is left undrawn rather than
+    // allocated: its size comes straight from the file.
+    if (!navCloud || !navGridFits(navCloud.divisions)) return;
     const N = navCloud.divisions.x;
     const M = navCloud.divisions.y;
     let bytes;
@@ -4931,6 +4938,13 @@ export class Viewport extends EventTarget {
   resize() {
     const r = this.canvas.parentElement.getBoundingClientRect();
     if (!r.width || !r.height) return;
+    // Browser zoom and a move to another monitor both change this, and a
+    // renderer still on the old ratio draws a buffer the wrong size for its box.
+    const ratio = Math.min(devicePixelRatio, 2);
+    if (this.renderer.getPixelRatio() !== ratio) {
+      this.renderer.setPixelRatio(ratio);
+      this.composer.setPixelRatio?.(ratio);
+    }
     this.camera.aspect = r.width / r.height;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(r.width, r.height, false);

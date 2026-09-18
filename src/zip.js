@@ -12,6 +12,8 @@
 // zip64, no encryption. A map is 2-4 KB.
 // ---------------------------------------------------------------------------
 
+import { readCapped } from './format.js';
+
 // 1980-01-01 00:00:00 in MS-DOS date/time, the epoch the format starts at.
 const DOS_TIME = 0;
 const DOS_DATE = 0x21;
@@ -32,16 +34,26 @@ function checksum(bytes) {
   return (c ^ -1) >>> 0;
 }
 
-async function pipeThrough(bytes, Ctor, name) {
+/**
+ * Ceilings on what an archive may unpack to. A map is a few kilobytes and a
+ * project of twenty halls a few hundred; these are generous by three orders of
+ * magnitude and exist only so an archive built to inflate forever stops.
+ */
+export const ZIP_MAX_ENTRIES = 1024;
+export const ZIP_MAX_ENTRY_BYTES = 32 * 1048576;
+export const ZIP_MAX_TOTAL_BYTES = 128 * 1048576;
+
+async function pipeThrough(bytes, Ctor, name, limit = Infinity) {
   const stream = new Ctor(name);
   const writer = stream.writable.getWriter();
-  writer.write(bytes);
-  writer.close();
-  return new Uint8Array(await new Response(stream.readable).arrayBuffer());
+  writer.write(bytes).catch(() => {});
+  writer.close().catch(() => {});
+  if (limit === Infinity) return new Uint8Array(await new Response(stream.readable).arrayBuffer());
+  return readCapped(stream.readable, limit, 'archive entry');
 }
 
 const deflateRaw = (bytes) => pipeThrough(bytes, CompressionStream, 'deflate-raw');
-const inflateRaw = (bytes) => pipeThrough(bytes, DecompressionStream, 'deflate-raw');
+const inflateRaw = (bytes, limit) => pipeThrough(bytes, DecompressionStream, 'deflate-raw', limit);
 
 /** The PK\x03\x04 magic every ZIP local file header starts with. */
 export function zipLooksLikeArchive(buf) {
@@ -155,8 +167,10 @@ export async function zipRead(arrayBuffer) {
   const count = view.getUint16(eocd + 10, true);
   const centralOffset = view.getUint32(eocd + 16, true);
   const dec = new TextDecoder();
+  if (count > ZIP_MAX_ENTRIES) throw new Error(`That archive holds ${count} files; the editor opens at most ${ZIP_MAX_ENTRIES}.`);
 
   const entries = [];
+  let unpacked = 0;
   let p = centralOffset;
   for (let i = 0; i < count; i++) {
     if (view.getUint32(p, true) !== 0x02014b50) throw new Error('Malformed central directory');
@@ -179,10 +193,17 @@ export async function zipRead(arrayBuffer) {
     const dataStart = localOffset + 30 + lNameLen + lExtraLen;
     const compData = buf.subarray(dataStart, dataStart + compSize);
 
+    // The declared size is checked first because it is free, and the inflate
+    // is capped as well because the declared size is only a claim.
+    const room = Math.min(ZIP_MAX_ENTRY_BYTES, ZIP_MAX_TOTAL_BYTES - unpacked);
+    if (uncompSize > room) throw new Error('That archive unpacks to more than the editor will hold.');
+
     let bytes;
     if (method === 0) bytes = compData;
-    else if (method === 8) bytes = await inflateRaw(compData);
+    else if (method === 8) bytes = await inflateRaw(compData, room);
     else throw new Error(`Unsupported zip compression method ${method}`);
+    unpacked += bytes.length;
+    if (unpacked > ZIP_MAX_TOTAL_BYTES) throw new Error('That archive unpacks to more than the editor will hold.');
 
     entries.push({ name, bytes });
     p += 46 + nameLen + extraLen + commentLen;

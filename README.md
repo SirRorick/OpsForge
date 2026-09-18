@@ -82,10 +82,15 @@ To work on the editor, use the dev server instead, which serves `src/`
 unbundled:
 
 ```sh
-npm run serve
+npm run serve            # this computer only
+npm run serve -- --lan   # also reachable from other machines on your network
 ```
 
+It serves the editor's own files and nothing else in the folder.
+
 three.js is loaded from a CDN, so the first load needs an internet connection.
+Every three.js file is pinned by hash in the page's import map, so the browser
+refuses anything the CDN serves other than the exact published files.
 
 A clone is about 115 MB, nearly all of it the models in `assets/Prefabs/`. If
 you only want to read the code, `git clone --filter=blob:none` leaves those on
@@ -273,9 +278,10 @@ the inspector has seven digits in it.
   is the same sign-in the game itself uses in-headset — not a personal access
   token from mod.io/me/access, which is bound to your account rather than to
   Spatial Ops and cannot publish here.
-- The token this exchange returns lives only in this browser's storage. It is
-  never written into a map file, never logged, and never sent anywhere but
-  mod.io itself.
+- The token this exchange returns lives only in this browser: for the tab you
+  signed in from, unless you tick **Keep me signed in on this computer** when
+  you enter the code. It is never written into a map file, never logged, and
+  never sent anywhere but mod.io itself.
 - Uploading a map you have published before offers to update that entry
   instead of creating a second one, once mod.io confirms you own it.
 - **A map's ID is checked against the library before a second entry is made.**
@@ -298,6 +304,105 @@ the inspector has seven digits in it.
   reach.
 - The same link works typed by hand: `?map=` and a mod.io map id on the end of
   the editor's address opens that map, signed in or not.
+
+## AI assistant
+
+Describe what you want — "a blue cover wall with a sniper spawner behind it",
+"make this a team deathmatch map with spawns at each end", "save the bunker in
+the corner as a prefab" — and your own Claude or GPT does it, through the same
+editor you are looking at.
+
+**Connecting.** Press **AI** in the top bar, pick **Claude (Anthropic)** or
+**GPT (OpenAI)**, paste an API key from
+[console.anthropic.com](https://console.anthropic.com/settings/keys) or
+[platform.openai.com](https://platform.openai.com/api-keys), and press
+**Connect**. That checks the key and lists the models it can use; Claude Opus 5
+and the newest GPT model are picked by default.
+
+- **Your key goes straight from your browser to the provider.** OpsForge has no
+  server, never sees it, and the page's security policy lets it reach only
+  `api.anthropic.com` and `api.openai.com`. It is kept for the tab you are in
+  unless you tick **Remember the key on this computer**, and **Forget key**
+  removes it. It is never written into a map, a prefab or a checkpoint.
+- **Usage is billed to your own account.** The panel shows how many tokens the
+  conversation has used. A spending limit on the key is a good idea.
+
+**On a Claude subscription instead of an API key.** A web page cannot use a
+Pro or Max plan — Anthropic only allows that from its own apps — so the
+conversation happens in **Claude Desktop** and the editor follows along.
+**Claude Desktop is required**; the Claude website cannot do this. Pick
+**Claude Desktop (subscription)** as the service in the AI panel, then:
+
+1. **Install the extension (once).** Download **OpsForge.mcpb** from the panel.
+   In Claude Desktop open **Settings → Extensions → Advanced settings**, press
+   **Install Extension…** and pick the file. Opening the file from the browser,
+   or dropping it into a conversation, does not install it.
+2. **Link the editor.** Press **Link** in the panel. The first time, the browser
+   asks whether the page may reach apps on this device — allow it. A green dot
+   on the **AI** button means it is linked. Works in Chrome, Edge and Firefox.
+3. **Ask in Claude Desktop.** Start a normal **Chat** (not Code) and ask for
+   changes to your OpsForge map in the browser — "on my OpsForge map, add a row
+   of cover across the middle", or a whole map at once after pressing **New**.
+   When Claude asks permission to use an OpsForge tool, choose **Always allow**;
+   it asks once for each tool.
+
+Changes land in the editor as they happen, and each one is a single Undo,
+exactly as with a key. Prefabs are downloaded by the browser as usual. Claude
+never exports: look the map over and **Export** it yourself.
+
+The link runs on your computer and nowhere else: the editor tab talks to the
+extension over `127.0.0.1`, and the extension answers only the OpsForge editor
+itself or a copy served on your own machine. A copy hosted elsewhere is added
+under the extension's settings in Claude Desktop.
+
+**What it can do, and what it cannot.** The assistant works only through a fixed
+set of editor actions — read the map, list objects, search the catalog, add,
+move, turn, resize, delete, group, change props, rename, resize the arena, add
+and change rule sets, and save prefabs. It is held to the editor's rules:
+
+- It knows every piece in the catalog, its real size, which props it takes and
+  which values they accept, every rule setting and its range, and which modes
+  the map's objectives allow.
+- It cannot go past the **700-object budget** or put anything **entirely outside
+  the 60 × 60 m square** — where you would be warned, it is refused, because it
+  cannot answer the warning.
+- **Enemy spawns stay on the ground**, as they do for you.
+- **Locked and hidden objects are yours.** It can see them and cannot change them.
+- Every request it makes is checked in full before anything changes, and **each
+  one is a single Undo**. What it changed is left selected.
+- Text inside a map (names, signs) is treated as data, never as instructions.
+
+**Prefabs** it makes are downloaded as `.opsprefab` files — bring them in with
+**Import** under Prefab, like any other.
+
+### From Claude Desktop, Claude Code and other MCP clients
+
+The same actions are available to desktop AI apps over the
+[Model Context Protocol](https://modelcontextprotocol.io), editing map files on
+your computer instead of the map in the browser. The server runs locally with
+Node and opens no network connection:
+
+```sh
+node tools/mcp-server.mjs --root "C:\Users\you\Maps"
+```
+
+For Claude Desktop, add it to `claude_desktop_config.json`:
+
+```json
+{ "mcpServers": { "opsforge": {
+    "command": "node",
+    "args": ["C:/path/to/OpsForge/tools/mcp-server.mjs", "--root", "C:/Users/you/Maps"] } } }
+```
+
+For Claude Code: `claude mcp add opsforge -- node C:/path/to/OpsForge/tools/mcp-server.mjs --root C:/Users/you/Maps`.
+VS Code, Cursor and other clients that run stdio MCP servers take the same
+command.
+
+The server hands the client the whole editor guide — the catalog, the rules and
+every rule setting — as its instructions when it connects, and as the
+`opsforge://guide` resource. It adds `open_map`, `new_map`, `save_map` and
+`list_map_files` to the actions above; every path stays inside the `--root`
+folder. Saved maps are byte-faithful exactly as exports from the editor are.
 
 ## One map, several venues
 
@@ -422,6 +527,14 @@ in the browser they were made in.
 | <kbd>End</kbd> / <kbd>Shift</kbd>+<kbd>End</kbd> | To the floor / onto whatever is underneath |
 | <kbd>Ctrl</kbd>+<kbd>End</kbd> | Under the ground, top face on y = 0 |
 | <kbd>Del</kbd> | Delete |
+
+## Notices
+
+Every visit opens with a short notice: OpsForge is a community-made tool used
+with the developers' permission, provided as is. **I Accept** puts it away for
+the rest of that browser tab. On a phone or a touch-only tablet the editor shows
+a notice asking you to use a computer instead, since it needs a mouse or
+trackpad.
 
 ## More
 

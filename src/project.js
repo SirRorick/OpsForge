@@ -75,7 +75,7 @@
 // ---------------------------------------------------------------------------
 
 import { DEG, wrap360 } from './unity.js';
-import { parseMap, serializeMap, NAV_SPACING } from './format.js';
+import { parseMap, serializeMap, isGuidN, newGuid, NAV_SPACING } from './format.js';
 import { zipRead, zipWrite } from './zip.js';
 import { BOUNDARY_TYPES } from './packs.js';
 
@@ -561,10 +561,14 @@ export async function readProjectArchive(arrayBuffer) {
   const layers = (manifest.layers || []).map((l) => {
     const templateText = byName.get(l.template);
     if (!templateText) throw new Error(`the template for "${l.name}" is missing`);
+    // The id and guid both end up in file names on the way back out — the id
+    // as an entry in the next project archive, the guid in every venue's map
+    // file — so anything but their own shapes is replaced rather than trusted.
+    // A project this editor wrote always passes both.
     return {
-      id: l.id,
-      name: l.name,
-      guid: l.guid,
+      id: /^l\d+$/.test(l.id || '') ? l.id : null,
+      name: String(l.name ?? ''),
+      guid: isGuidN(l.guid) ? l.guid : newGuid(),
       template: parseMap(templateText),
       offset: l.offset || { x: 0, y: 0, z: 0 },
       yaw: l.yaw || 0,
@@ -574,6 +578,12 @@ export async function readProjectArchive(arrayBuffer) {
     };
   });
   adoptLayerIds(layers);
+  // Minted after adopting, so a fresh id never collides with a kept one.
+  const seen = new Set();
+  for (const l of layers) {
+    if (!l.id || seen.has(l.id)) l.id = `l${layerSeq++}`;
+    seen.add(l.id);
+  }
 
   return { mapText, ids: manifest.map?.ids || [], editor: manifest.map?.editor || null, layers };
 }

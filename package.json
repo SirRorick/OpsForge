@@ -16,7 +16,8 @@
     "trace-prefabs": "node tools/trace-prefabs.mjs",
     "graft-fbx": "node tools/graft-fbx.mjs",
     "stage-assets": "node tools/stage-assets.mjs",
-    "package": "node tools/package.mjs"
+    "package": "node tools/package.mjs",
+    "mcp": "node tools/mcp-server.mjs"
   },
   "engines": {
     "node": ">=18"

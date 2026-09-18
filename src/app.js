@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import { Viewport, PLAYABLE_SIZE, brandImage } from './scene.js';
 import {
   parseMap, serializeMap, newMap, newGuid, nowStamp, mapFileName,
-  buildNavMask, encodeNavCloud, decodeNavCloud, MAP_VERSION,
+  buildNavMask, encodeNavCloud, decodeNavCloud, navGridFits, MAP_VERSION,
 } from './format.js';
 import {
   getPacks, categoriesOf, packsInGroup, getByKey, iconUrl,
@@ -41,13 +41,15 @@ import {
   saveCheckpoint, removeCheckpoint, clearCheckpoints, checkpointBytes, timeAgo,
 } from './checkpoints.js';
 import { zipWrite } from './zip.js';
+import { convertPosition, unityEulerToQuat } from './unity.js';
+import { wireAssistant } from './assistant.js';
 import {
   modioSearch, modioFetchMod, modioFetchMapText, modioValidateToken, modioMyMods,
   modioFindByGuid,
   modioAddMod, modioEditMod, modioAddModfile, modioAddTags, modioDeleteTags,
   modioToken, modioSaveToken,
   modioForgetToken, modioMineMap, modioRecordMine, modioCachedUsername,
-  modioRequestEmailCode, modioExchangeEmailCode,
+  modioRequestEmailCode, modioExchangeEmailCode, modioUrlOrNull, modioRememberSignIn,
 } from './modio.js';
 
 const $ = (id) => document.getElementById(id);
@@ -90,9 +92,14 @@ let placingLabel = null;    // set while a library pick-up is following the curs
   wireViewport();
   wireAutosave();
   wireLayerPicker();
+  wireAssistant(assistantHost());
   await loadNavCloud();
   resize();
   addEventListener('resize', resize);
+  // The stage can change size without the window doing so — a panel, the
+  // assistant, devtools docking — and the window's own event can arrive before
+  // the grid has settled. Watching the stage itself catches both.
+  if (typeof ResizeObserver === 'function') new ResizeObserver(() => resize()).observe($('stage'));
   current = snapshot();
   refreshAll();
   // A `?map=` link is an instruction, and it outranks both the greeting and the
@@ -100,9 +107,19 @@ let placingLabel = null;    // set while a library pick-up is following the curs
   // link to a map wants that map, not the one they had open on Tuesday.
   if (!(await openLinkedMap())) {
     toast('Ready. Open a map file, or drag objects in from the library.');
+    // After the notice every visit opens with, not underneath it: the offer is a
+    // dialog, and a key pressed at the notice would otherwise answer it.
+    await termsAccepted();
     greetWithCheckpoints();
   }
 })();
+
+/** Resolves once the first-visit notice in index.html has been accepted. */
+function termsAccepted() {
+  const root = document.documentElement;
+  if (root.classList.contains('terms-ok') && !root.classList.contains('mobile')) return Promise.resolve();
+  return new Promise((resolve) => document.addEventListener('opsforge-terms-accepted', resolve, { once: true }));
+}
 
 function resize() {
   vp.resize();
@@ -1071,6 +1088,137 @@ function wirePrefabTool() {
 }
 
 // ---------------------------------------------------------------------------
+// The AI assistant
+// ---------------------------------------------------------------------------
+// The panel and the providers live in assistant.js and the rules in ai.js; what
+// is here is the only part that touches the scene. A tool call runs against a
+// snapshot of the design in map values, and whatever it changed is written
+// back onto the meshes and committed once — so one call is one undo step, and
+// an object the call never touched keeps its original bytes.
+
+function assistantHost() {
+  return {
+    snapshot: aiSnapshot,
+    apply: aiApply,
+    blocked() {
+      if (activeLayer !== null) return 'The person is lining the map up in a venue. Ask them to go back to the map itself first.';
+      if (vp.placing) return 'The person has something on the cursor waiting to be placed. Ask them to place it or press Esc first.';
+      if (vp.previewing) return 'The person is walking around the map in Preview. Ask them to press Esc first.';
+      return null;
+    },
+    saveFile(name, text) {
+      const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      toast(`Saved ${name}. Bring it in with Import in the Prefab section of the Build tab.`);
+    },
+    onToggle(open) {
+      $('stage').classList.toggle('ai-open', open);
+      $('b-ai').classList.toggle('on', open);
+    },
+  };
+}
+
+/** The design as the assistant's engine sees it. */
+function aiSnapshot() {
+  const meshes = vp.designObjects();
+  let highest = 0;
+  const objects = meshes.map((m) => {
+    const mo = vp.toMapObject(m);
+    highest = Math.max(highest, m.userData.id || 0);
+    return {
+      id: m.userData.id,
+      type: mo.type,
+      $type: mo.$type,
+      props: { ...(m.userData.props || {}) },
+      position: mo.position,
+      rotation: mo.rotation,
+      scale: mo.scale,
+      group: m.userData.group || null,
+      locked: !!m.userData.locked,
+      hidden: !!m.userData.hidden,
+    };
+  });
+  if (!map.ruleSets) map.ruleSets = [];
+  return {
+    name: map.name,
+    author: map.author,
+    bounds: { ...map.mapBoundsSize },
+    // The live list: rule edits are not part of undo anywhere in the editor,
+    // and the engine checks everything before it writes anything.
+    ruleSets: map.ruleSets,
+    objects,
+    nextId: Math.max(vp.peekNextId(), highest + 1),
+    mintGroup: () => `g${groupSeq++}`,
+  };
+}
+
+const sameVec = (a, b) => ['x', 'y', 'z'].every((k) => Math.abs(a[k] - b[k]) < 1e-9);
+
+/** Write one call's changes onto the scene. */
+function aiApply(doc, changes) {
+  vp.setSelection([]);
+  const byId = new Map(vp.designObjects().map((m) => [m.userData.id, m]));
+  const docById = new Map(doc.objects.map((o) => [o.id, o]));
+  const touched = [];
+
+  const gone = changes.removed.map((id) => byId.get(id)).filter(Boolean);
+  if (gone.length) vp.removeObjects(gone);
+
+  for (const id of changes.updated) {
+    const m = byId.get(id);
+    const o = docById.get(id);
+    if (!m || !o) continue;
+    for (const [k, v] of Object.entries(o.props || {})) {
+      if (m.userData.props?.[k] !== v) vp.setProp(m, k, v);
+    }
+    const before = vp.toMapObject(m);
+    if (!sameVec(before.position, o.position) || !sameVec(before.rotation, o.rotation) || !sameVec(before.scale, o.scale)) {
+      m.position.fromArray(convertPosition(o.position));
+      m.quaternion.fromArray(unityEulerToQuat(o.rotation));
+      m.scale.set(o.scale.x, o.scale.y, o.scale.z);
+      vp.markDirty(m);
+    }
+    m.userData.group = o.group || null;
+    touched.push(m);
+  }
+
+  let highest = 0;
+  for (const id of changes.added) {
+    const o = docById.get(id);
+    if (!o) continue;
+    const m = vp.addObject({
+      id, $type: o.$type, type: o.type, props: o.props,
+      position: o.position, rotation: o.rotation, scale: o.scale,
+      dirty: true, layer: null,
+    });
+    m.userData.group = o.group || null;
+    highest = Math.max(highest, id);
+    touched.push(m);
+  }
+  if (highest) vp.seedObjectIds(highest + 1);
+
+  const boundsChanged = changes.meta && !sameVec(map.mapBoundsSize, doc.bounds);
+  if (changes.meta) {
+    map.name = doc.name;
+    map.author = doc.author;
+    map.mapBoundsSize = { ...doc.bounds };
+    applyMapMeta();
+  }
+  if (changes.rules) buildRules();
+
+  // Show what changed, the way a paste does: selected, so the next thing the
+  // person does can be to move it or undo it.
+  vp.setSelection(touched);
+  vp.refreshOutside(touched, true);
+  if (gone.length || touched.length || boundsChanged) commit();
+  else { touchEdited(); refreshAll(); }
+}
+
+// ---------------------------------------------------------------------------
 // Toolbar
 // ---------------------------------------------------------------------------
 
@@ -1300,6 +1448,9 @@ function wireInspector() {
 async function regenerateNav() {
   const shape = $('nav-shape').value;
   if (shape === 'keep') return;
+  if (!navGridFits(map.navCloud.divisions)) {
+    return void toast('This map’s bot grid is larger than the editor will draw, so it is left as it is.', true);
+  }
   const mask = buildNavMask({
     shape,
     radius: parseFloat($('nav-r').value) || 5,
@@ -4478,7 +4629,7 @@ function openLibraryBrowser() {
     const row = document.createElement('div');
     row.className = 'libmod';
     const img = document.createElement('img');
-    img.src = mod.logo?.thumb_320x180 || '';
+    img.src = modioUrlOrNull(mod.logo?.thumb_320x180) || '';
     img.alt = '';
     const meta = document.createElement('div');
     meta.className = 'libmeta';
@@ -5357,7 +5508,14 @@ function openCodeDialog() {
   openDialog({
     title: 'Enter the code',
     body: 'Check your email for a 5-digit code from mod.io.',
-    fields: [{ id: 'code', label: 'Code', placeholder: '12345' }],
+    fields: [
+      { id: 'code', label: 'Code', placeholder: '12345' },
+      {
+        id: 'remember', type: 'checkbox', label: 'Keep me signed in on this computer',
+        value: modioRememberSignIn(),
+        title: 'Unticked, the sign-in lasts until this tab is closed. Ticked, it is kept in this browser until you sign out — leave it unticked on a shared computer.',
+      },
+    ],
     actions: [
       { label: 'Cancel', ghost: true, run: () => {} },
       {
@@ -5371,7 +5529,7 @@ function openCodeDialog() {
             ui.status('Checking…');
             const token = await modioExchangeEmailCode(code);
             const me = await modioValidateToken(token);
-            modioSaveToken(token, me.username);
+            modioSaveToken(token, me.username, values.remember === true);
             ui.close();
             chooseExportDestination();
           } catch (err) {
@@ -5529,7 +5687,7 @@ async function openUploadDialog() {
     const note = document.createElement('p');
     note.className = 'hint';
     note.innerHTML = `You have published this map before, as <b>${escapeHtml(plan.update.name)}</b> — `
-      + `${plan.update.subscribers} subscribers.`;
+      + `${Number(plan.update.subscribers) || 0} subscribers.`;
     body.appendChild(note);
 
     const choice = document.createElement('div');
@@ -5696,7 +5854,7 @@ async function openUploadDialog() {
             modioRecordMine(map.guid, modId);
             takeCheckpoint('export');
 
-            const modUrl = modResult?.profile_url || `https://mod.io/g/spatial-ops/m/${modId}`;
+            const modUrl = modioUrlOrNull(modResult?.profile_url) || `https://mod.io/g/spatial-ops/m/${encodeURIComponent(modId)}`;
             ui.close();
             toast(`${updateMode ? 'Updated' : 'Published'} "${values.title}" on mod.io.`);
             showPublishedMap(values.title, updateMode, modId, modUrl);
@@ -5841,6 +5999,21 @@ function openDialog({ title, body, fields = [], actions, wide }) {
 
   const inputs = {};
   for (const f of fields) {
+    // A tick box is its own label, the way `.flagopt` rows are everywhere
+    // else in the editor, and its value comes back as a boolean.
+    if (f.type === 'checkbox') {
+      const row = document.createElement('label');
+      row.className = 'flagopt';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.id = f.id;
+      input.checked = !!f.value;
+      inputs[f.id] = input;
+      row.append(input, document.createTextNode(f.label));
+      if (f.title) row.title = f.title;
+      box.appendChild(row);
+      continue;
+    }
     const row = document.createElement('div');
     row.className = 'field';
     const label = document.createElement('span');
@@ -5870,7 +6043,7 @@ function openDialog({ title, body, fields = [], actions, wide }) {
 
   const acts = document.createElement('div');
   acts.className = 'acts';
-  const values = () => Object.fromEntries(Object.entries(inputs).map(([k, el]) => [k, el.value]));
+  const values = () => Object.fromEntries(Object.entries(inputs).map(([k, el]) => [k, el.type === 'checkbox' ? el.checked : el.value]));
   const buttons = {};
   const run = (a) => {
     if (a.disabled) return;
@@ -6855,8 +7028,10 @@ function refreshStatus() {
     const s = vp.selectionBounds(true).getSize(new THREE.Vector3());
     extra = `<br>SEL <b>${s.x.toFixed(2)} × ${s.y.toFixed(2)} × ${s.z.toFixed(2)}</b> m`;
   }
+  // Number() at the sink as well as in `parseMap`: this is HTML, and the
+  // bounds are the one value here that came out of a file.
   $('readout').innerHTML =
-    `ARENA <b>${b.x} × ${b.y} × ${b.z}</b> m<br>OBJECTS <b>${vp.objects.length}</b>${extra}`;
+    `ARENA <b>${Number(b.x)} × ${Number(b.y)} × ${Number(b.z)}</b> m<br>OBJECTS <b>${vp.objects.length}</b>${extra}`;
 }
 
 // ---------------------------------------------------------------------------

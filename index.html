@@ -109,9 +109,14 @@ button,input,select{font:inherit;color:inherit}
 aside{background:var(--panel);overflow:hidden;display:flex;flex-direction:column;min-height:0}
 #library{border-right:1px solid var(--line)}
 #inspector{border-left:1px solid var(--line)}
-#stage{position:relative;min-width:0;background:
+/* min-height:0 and the absolutely placed canvas are what let the viewport
+   shrink. Without them the grid row sizes itself to the canvas's own pixel
+   height, so making the window smaller left the stage — and the camera's
+   aspect, read off the stage — stuck at the old size until a reload. */
+#stage{position:relative;min-width:0;min-height:0;overflow:hidden;background:
   radial-gradient(120% 90% at 50% 0%, #16222C 0%, #0A0F14 70%)}
 canvas{display:block;width:100%;height:100%;outline:none}
+#stage > #view{position:absolute;inset:0}
 
 /* ---------- brand ---------- */
 /* The wordmark fills the bar rather than sitting in it: at 30px the caps of
@@ -556,10 +561,127 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
 #toast.show{opacity:1;transform:translateX(-50%)}
 #toast.bad{border-left-color:var(--danger)}
 
+/* ---------- AI assistant ---------- */
+/* Docked over the right-hand side of the viewport rather than taking a grid
+   column, so opening it never resizes the canvas under a drag. */
+#ai-panel{position:absolute;top:0;right:0;bottom:0;z-index:40;width:min(380px,100%);
+  display:flex;flex-direction:column;background:var(--panel);border-left:1px solid var(--line);
+  box-shadow:-10px 0 30px rgba(0,0,0,.35)}
+#ai-panel[hidden]{display:none}
+#stage.ai-open #viewbtns{right:400px}
+.ai-head{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line)}
+.ai-head h2{flex:1;margin:0;font-family:var(--hud);font-size:14px;font-weight:600;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--accent);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ai-head h2 span{font-family:var(--mono);font-size:10px;letter-spacing:0;text-transform:none;color:var(--faint);margin-left:6px}
+.ai-head .btn{padding:3px 8px;font-size:11.5px}
+.ai-head .x-close{position:static;width:22px;height:22px;padding:0;background:none;border:0;border-radius:4px;
+  color:var(--dim);font-size:18px;line-height:1;cursor:pointer}
+.ai-head .x-close:hover{background:var(--panel2);color:var(--text)}
+#ai-connect{display:none;padding:10px 12px;border-bottom:1px solid var(--line);background:var(--panel2)}
+#ai-connect.open{display:block}
+#ai-connect .field{grid-template-columns:66px 1fr}
+#ai-connect .field input,#ai-connect .field select{width:100%;min-width:0}
+#ai-connect .hint{margin:8px 0 0;font-size:10.5px;line-height:1.45}
+.ai-acts{display:flex;align-items:center;gap:6px;justify-content:flex-end;margin:8px 0}
+.ai-acts a{margin-right:auto;font-size:11px;color:var(--cyan)}
+.ai-status{margin:6px 0 0;font-size:11px;color:var(--dim)}
+.ai-steps{margin:8px 0 0;padding-left:18px;font-size:11px;line-height:1.5;color:var(--dim)}
+.ai-steps li{margin-bottom:6px}
+.ai-steps b{color:var(--text)}
+.ai-steps a{color:var(--cyan)}
+.ai-steps code{font-family:var(--mono);font-size:10px;color:var(--text);overflow-wrap:anywhere}
+#ai-linked > .hint{margin-top:10px}
+/* The app is linked: a dot on the button, so it shows with the panel closed. */
+#b-ai.linked{position:relative}
+#b-ai.linked::after{content:"";position:absolute;top:3px;right:3px;width:6px;height:6px;border-radius:50%;
+  background:var(--green);box-shadow:0 0 4px var(--green)}
+.ai-status.bad{color:var(--danger)}
+#ai-log{flex:1;min-height:0;overflow-y:auto;padding:10px 12px;display:flex;flex-direction:column;gap:7px}
+.ai-msg{font-size:12.5px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}
+.ai-user{align-self:flex-end;max-width:88%;background:var(--raise);border-radius:8px 8px 2px 8px;padding:6px 10px}
+.ai-bot{color:var(--text)}
+.ai-tool{font-family:var(--mono);font-size:10.5px;color:var(--green);padding-left:10px;border-left:2px solid var(--green)}
+.ai-tool.bad{color:var(--danger);border-left-color:var(--danger)}
+.ai-note{font-size:11px;color:var(--dim);font-style:italic}
+.ai-note.bad{color:var(--danger);font-style:normal}
+.ai-note.working{animation:budgetpulse 1.6s ease-in-out infinite}
+.ai-input{padding:8px 12px 4px;border-top:1px solid var(--line)}
+.ai-input textarea{width:100%;resize:vertical;min-height:54px;max-height:40vh;background:var(--bg);color:var(--text);
+  border:1px solid var(--line);border-radius:4px;padding:6px 8px;font:inherit;font-size:12.5px}
+.ai-input textarea:focus{outline:none;border-color:var(--accent-dim)}
+#ai-usage{margin-right:auto;font-family:var(--mono);font-size:9.5px;color:var(--faint)}
+
+/* ---------- first-visit notices ---------- */
+/* Above everything, the dialog veil included, and shown by CSS alone so they
+   are up before a line of the editor has loaded. The script in <head> sets the
+   two classes that take them down. */
+.gate{position:fixed;inset:0;z-index:1000;display:none;place-items:center;padding:16px;
+  background:rgba(6,10,14,.86);backdrop-filter:blur(3px)}
+html:not(.terms-ok):not(.mobile) #gate-terms{display:grid}
+html.mobile #gate-mobile{display:grid}
+/* Out of layout on a phone, not just behind the veil: the shell's side panels
+   and top bar are wider than the screen, and a mobile browser zooms out to fit
+   whatever is widest — which left the notice somewhere in a page to be panned
+   around rather than filling the screen it was written for. */
+html.mobile #app{display:none}
+.gate .dlg{width:min(480px,100%)}
+.gate .dlg p{font-size:12.5px}
+.gate .dlg p.small{font-size:11px;color:var(--faint)}
+
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style>
+<script>
+/* The two notices every visit starts with. Plain script rather than part of
+   the editor, so they work while three.js is still on its way from the CDN —
+   and on a phone, where the editor has no business loading at all. */
+(function () {
+  var root = document.documentElement;
+  var KEY = 'opsforge.terms';
+  try { if (sessionStorage.getItem(KEY) === 'accepted') root.classList.add('terms-ok'); } catch (e) {}
+  var fine = matchMedia('(any-pointer: fine)').matches;
+  var phone = /iPhone|iPod|Android.+Mobile|Windows Phone|BlackBerry|IEMobile/i.test(navigator.userAgent || '');
+  var touchOnly = matchMedia('(pointer: coarse)').matches && !fine;
+  if (phone || touchOnly) root.classList.add('mobile');
+  document.addEventListener('DOMContentLoaded', function () {
+    var app = document.getElementById('app');
+    var open = function () { return root.classList.contains('mobile') || !root.classList.contains('terms-ok'); };
+    if (app) app.inert = open();
+    var accept = document.getElementById('gate-accept');
+    if (!accept) return;
+    if (open() && !root.classList.contains('mobile')) accept.focus();
+    accept.addEventListener('click', function () {
+      try { sessionStorage.setItem(KEY, 'accepted'); } catch (e) {}
+      root.classList.add('terms-ok');
+      if (app) app.inert = false;
+      document.dispatchEvent(new Event('opsforge-terms-accepted'));
+    });
+  });
+})();
+</script>
 </head>
 <body>
+<div class="gate" id="gate-terms" role="dialog" aria-modal="true" aria-labelledby="gate-terms-title">
+  <div class="dlg">
+    <h3 id="gate-terms-title">Before you start</h3>
+    <p>OpsForge is a free, community-made map editor for Spatial Ops. It is not an official
+      product; it exists with the permission of the game's developers.</p>
+    <p>It is provided <b>"as is"</b>, without warranty of any kind. Neither the developers of
+      Spatial Ops nor the creators of OpsForge accept any liability for lost work, damaged
+      files, or any other loss or issue arising from its use. Keep backups of your maps and
+      use it at your own risk.</p>
+    <p class="small">Signing in to mod.io or connecting an AI service is optional, and each is
+      subject to that provider's own terms. By selecting I Accept you agree to the above.</p>
+    <div class="acts"><button class="btn" id="gate-accept">I Accept</button></div>
+  </div>
+</div>
+<div class="gate" id="gate-mobile" role="dialog" aria-modal="true" aria-labelledby="gate-mobile-title">
+  <div class="dlg">
+    <h3 id="gate-mobile-title">Computer required</h3>
+    <p>OpsForge is intended for use in a computer browser only. It needs a desktop or laptop
+      with a mouse or trackpad.</p>
+    <p>Please visit this site on your computer to use the map editor.</p>
+  </div>
+</div>
 <div id="app">
 
   <header id="topbar">
@@ -614,6 +736,10 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
     </div>
 
     <div class="grp" style="margin-left:auto">
+      <button class="btn ghost" id="b-ai"
+        title="AI assistant: connect your own Claude or GPT account and edit the map by describing what you want">AI</button>
+    </div>
+    <div class="grp">
       <button class="btn ghost" id="b-undo" title="Undo (Ctrl+Z)">Undo</button>
       <button class="btn ghost" id="b-redo" title="Redo (Ctrl+Shift+Z)">Redo</button>
     </div>
@@ -649,6 +775,67 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
       </div>
     </div>
     <div id="drophint">Release to place</div>
+    <aside id="ai-panel" hidden aria-label="AI assistant">
+      <div class="ai-head">
+        <h2>Assistant <span id="ai-model-tag"></span></h2>
+        <button class="btn ghost" id="ai-toggle-connect" title="Choose the AI service, key and model">Connection</button>
+        <button class="x-close" id="ai-close" aria-label="Close the assistant">&times;</button>
+      </div>
+      <div id="ai-connect">
+        <div class="field"><span>Service</span>
+          <select id="ai-provider">
+            <option value="anthropic">Claude (Anthropic)</option>
+            <option value="openai">GPT (OpenAI)</option>
+            <option value="link">Claude Desktop (subscription)</option>
+          </select></div>
+        <div id="ai-keyed">
+        <div class="field"><span>API key</span>
+          <input type="password" id="ai-key" autocomplete="off" spellcheck="false"></div>
+        <label class="flagopt" title="Unticked, the key is forgotten when this tab closes. Leave it unticked on a shared computer."><input type="checkbox" id="ai-remember">Remember the key on this computer</label>
+        <div class="ai-acts">
+          <a id="ai-key-link" target="_blank" rel="noopener noreferrer"></a>
+          <button class="btn ghost" id="ai-forget">Forget key</button>
+          <button class="btn" id="ai-connect-btn">Connect</button>
+        </div>
+        <div class="field"><span>Model</span><select id="ai-model" disabled></select></div>
+        </div>
+        <div id="ai-linked" hidden>
+          <p class="hint">No API key: use the Claude plan you already pay for. You chat in
+            Claude Desktop, and it makes the changes to the map open in this tab.
+            <b>Requires <a href="https://claude.ai/download" target="_blank" rel="noopener noreferrer">Claude Desktop</a></b>
+            &mdash; the Claude website cannot do this.</p>
+          <ol class="ai-steps">
+            <li><b>Install the extension (once).</b> <a href="link/OpsForge.mcpb" download>Download OpsForge.mcpb</a>.
+              In Claude Desktop open <b>Settings &rarr; Extensions &rarr; Advanced settings</b>, press
+              <b>Install Extension&hellip;</b> and pick the file you downloaded. Opening the file
+              directly, or dropping it into a chat, does not install it.</li>
+            <li><b>Link this tab.</b> Press <b>Link</b> below. If the browser asks whether this page
+              may reach apps on this device, allow it. A green dot on the AI button means it is
+              linked. Works in Chrome, Edge and Firefox.</li>
+            <li><b>Ask in Claude Desktop.</b> Start a normal <b>Chat</b> (not Code) and ask for changes
+              to your OpsForge map in the browser &mdash; for example &ldquo;on my OpsForge map, add a
+              row of cover across the middle&rdquo;. When Claude asks permission to use an OpsForge
+              tool, choose <b>Always allow</b>; it asks once per tool.</li>
+          </ol>
+          <div class="ai-acts"><button class="btn" id="ai-link-btn">Link</button></div>
+        </div>
+        <p class="ai-status" id="ai-status"></p>
+        <p class="hint" id="ai-key-hint">Your key goes straight from this browser to the service you pick &mdash;
+          OpsForge has no server and never sees it. Usage is billed to your own account. The
+          assistant follows the editor&rsquo;s rules, leaves locked and hidden objects alone, and
+          every change it makes is one Undo.</p>
+      </div>
+      <div id="ai-log" class="scroll"></div>
+      <div class="ai-input">
+        <textarea id="ai-prompt" rows="3"></textarea>
+        <div class="ai-acts">
+          <span id="ai-usage"></span>
+          <button class="btn ghost" id="ai-new" title="Start a fresh conversation">New chat</button>
+          <button class="btn ghost" id="ai-stop" hidden>Stop</button>
+          <button class="btn" id="ai-send" disabled>Send</button>
+        </div>
+      </div>
+    </aside>
     <div id="preview-hud" hidden>
       <div class="pv"><kbd>&larr;</kbd><kbd>&uarr;</kbd><kbd>&darr;</kbd><kbd>&rarr;</kbd> <b>walk</b>
         &middot; mouse <b>look</b> &middot; <kbd>C</kbd> <b>crouch</b> &middot;
@@ -921,10 +1108,28 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
 <input type="file" id="projectpick" accept=".opsproject" style="display:none">
 <input type="file" id="logopick" accept="image/*" style="display:none">
 
+<!-- Every three.js file the editor loads is pinned by hash as well as by
+     version, so the CDN can serve these bytes or nothing. A new three.js file
+     (a new addon, or a version bump) needs its hash added here: jsDelivr serves
+     the npm package verbatim, so `sha384` of the published file is the value. -->
 <script type="importmap">
 { "imports": {
   "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
   "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+}, "integrity": {
+  "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js": "sha384-qOubuRxWZ0I7rXTjcuhcKNHKvPM7q0ztN8/82sJnxnyKS0OXTeB5FsIcysc2T9EY",
+  "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/utils/BufferGeometryUtils.js": "sha384-wOjwauvHlJO7K6APr7FmMGH2nupQa3Ndzas9bJZhsAMOK055efJud8ns4aYmASKv",
+  "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/controls/OrbitControls.js": "sha384-aJoe4qqS/DgF2jh9njAuvA6QIveJYoCuYOfYjdFY8P3eawzmc9bEQ40jq2TvOyuP",
+  "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/loaders/GLTFLoader.js": "sha384-VoIGt4hjsBN2DcfqRsMnLLSUBl1bpLaVmkZ4MO/qESaCNDuISU6ScEtXt1/j3IyF",
+  "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/postprocessing/EffectComposer.js": "sha384-L+Ns9skCAqjab7aG8LH5VLknBCoENW7p37sOj39jnITwlWZFabWc29JwzgYf6ygy",
+  "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/postprocessing/RenderPass.js": "sha384-JBzMcXwTgF2e9tw3AU4+jg+nVDdl7hTHlT0C5qZVa/1DUUe/KIm4L3e2jorIH28/",
+  "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/postprocessing/OutlinePass.js": "sha384-KL5VtCG1PEW8WXdQwosOJjDFmta0hf3cmX1lXEe898/i00P8hccxyEs8WDw0ZaZ9",
+  "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/postprocessing/OutputPass.js": "sha384-pAQ55aG4oXjA92n2goVLMWU14Ik/bNUs29MfxOM6meGyGzTJoFm7WxEU0D0SqsNI",
+  "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/shaders/CopyShader.js": "sha384-kzVlcj2amFaRNIWZ5zE0PmIN+QTNWWvrgKk31S8N/7w0nf7Qq3xqxHRLbD2UPPSl",
+  "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/postprocessing/ShaderPass.js": "sha384-zetU6HhR/vTtgSvnS9DE+GQPZhVT/ZOSLa/1+DSM6rkM9hvBgQWr9bCEosZt93ch",
+  "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/postprocessing/MaskPass.js": "sha384-SDM80tiGflO8UDV/QzR/mASjcc/+wF7KfRVFNHJUIPcTctwoPI8GoWVTlccZw7V4",
+  "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/postprocessing/Pass.js": "sha384-gSqIFh8vMmp1veyOysIS3KPVUl/A5JPefYvW4b89OeYeW0bwkrjN7qcC1h0XJK/K",
+  "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/shaders/OutputShader.js": "sha384-CdpJL3xlIkjJQAbzgyazSoOx+/oBcwUCsBVSU25SKy8/PEdYEn24U+4mnmx3R4YX"
 } }
 </script>
 <script type="module" src="./src/app.js"></script>

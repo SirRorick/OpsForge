@@ -3,8 +3,13 @@
 // Browsers refuse to load ES modules over file://, so index.html needs to be
 // served over http. Node rather than Python so it works the same everywhere.
 //
-//   npm run serve        -> http://localhost:8000
+//   npm run serve              -> http://localhost:8000
 //   npm run serve -- 9000
+//   npm run serve -- --lan     also answer other machines on the network
+//
+// Loopback only unless asked, and only the files the editor itself loads. The
+// working tree also holds .git, the private reference/ dump and local notes,
+// and none of that is anybody else's business on a shared network.
 
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
@@ -13,7 +18,19 @@ import { dirname, join, normalize, extname, sep } from 'node:path';
 import { spawn } from 'node:child_process';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
-const PORT = Number(process.argv[2]) || 8000;
+const ARGS = process.argv.slice(2);
+const PORT = Number(ARGS.find((a) => /^\d+$/.test(a))) || 8000;
+const HOST = ARGS.includes('--lan') ? '0.0.0.0' : '127.0.0.1';
+
+/** Top-level names the editor fetches. Anything else answers 404. */
+const SERVED = new Set(['index.html', 'src', 'assets', 'packs', 'dist', 'favicon.ico']);
+
+function servable(rel) {
+  const parts = rel.split('/').filter(Boolean);
+  if (!parts.length || !SERVED.has(parts[0])) return false;
+  // No dotfiles anywhere under them either.
+  return !parts.some((p) => p.startsWith('.'));
+}
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -41,6 +58,10 @@ const server = createServer(async (req, res) => {
       res.writeHead(403).end('Forbidden');
       return;
     }
+    if (!servable(target.slice(ROOT.length).split(sep).join('/'))) {
+      res.writeHead(404).end('Not found');
+      return;
+    }
 
     const info = await stat(target);
     const file = info.isDirectory() ? join(target, 'index.html') : target;
@@ -66,9 +87,10 @@ server.on('error', (err) => {
   throw err;
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, HOST, () => {
   const url = `http://localhost:${PORT}/index.html`;
-  console.log(`Serving ${ROOT}\n  ${url}\n  Ctrl+C to stop`);
+  const reach = HOST === '0.0.0.0' ? 'this machine and the network' : 'this machine only (--lan to share)';
+  console.log(`Serving ${ROOT}\n  ${url}\n  reachable from ${reach}\n  Ctrl+C to stop`);
   open(url);
 });
 

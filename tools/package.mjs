@@ -27,7 +27,7 @@ import {
 } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { build } from '../build.mjs';
+import { build, buildLink } from '../build.mjs';
 import { zipDirectory } from './zip.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -131,8 +131,94 @@ export function packageRelease({ out, zip = true } = {}) {
     if (existsSync(join(ROOT, f))) cpSync(join(ROOT, f), join(dest, f));
   }
   writeFileSync(join(dest, 'HOW-TO-RUN.md'), howToRun(), 'utf8');
+  writeFileSync(join(dest, 'vercel.json'), `${JSON.stringify(vercelConfig(), null, 2)}\n`, 'utf8');
+  packageLink(join(dest, 'link'));
 
   return { dest, zip: zip ? zipDirectory(dest, `${dest}.zip`) : null };
+}
+
+/**
+ * The OpsForge link as a Claude Desktop extension, under link/ where the AI
+ * panel's download points: the bundled server with a manifest, zipped, which
+ * Claude Desktop runs on its own Node. The same server works for Codex as a
+ * plain stdio MCP server, but that route is not offered until it is tested.
+ */
+export function packageLink(dir) {
+  emptyDirectory(dir);
+  const server = buildLink();
+  const version = /const LINK_VERSION = '([^']+)'/.exec(server)[1];
+
+  const stage = join(dir, '.mcpb');
+  mkdirSync(join(stage, 'server'), { recursive: true });
+  writeFileSync(join(stage, 'server', 'index.mjs'), server, 'utf8');
+  writeFileSync(join(stage, 'manifest.json'), `${JSON.stringify(linkManifest(version), null, 2)}\n`, 'utf8');
+  const made = zipDirectory(stage, join(dir, 'OpsForge.mcpb'));
+  rmSync(stage, { recursive: true, force: true });
+  return made;
+}
+
+export function linkManifest(version) {
+  return {
+    manifest_version: '0.3',
+    name: 'opsforge',
+    display_name: 'OpsForge',
+    version,
+    description: 'Edit the Spatial Ops map open in the OpsForge editor, in your browser, by asking Claude.',
+    long_description: 'Links Claude to the OpsForge map editor open in your browser. Open the editor, '
+      + 'choose "Claude Desktop (subscription)" in its AI panel and press Link; then ask Claude, in a normal chat, to build or change the map. '
+      + 'Every change appears in the editor as it is made and is one Undo there. Nothing leaves your computer: '
+      + 'the editor tab and this extension talk over 127.0.0.1 only.',
+    author: { name: 'OpsForge' },
+    homepage: 'https://opsforge.roricktech.com',
+    server: {
+      type: 'node',
+      entry_point: 'server/index.mjs',
+      mcp_config: {
+        command: 'node',
+        args: ['${__dirname}/server/index.mjs'],
+        env: { OPSFORGE_LINK_ORIGINS: '${user_config.extra_origins}' },
+      },
+    },
+    user_config: {
+      extra_origins: {
+        type: 'string',
+        title: 'Other editor addresses',
+        description: 'Only if you run your own copy of OpsForge somewhere other than opsforge.roricktech.com or this computer: its address, e.g. https://maps.example.com. Separate several with commas.',
+        default: '',
+        required: false,
+      },
+    },
+    compatibility: {
+      platforms: ['win32', 'darwin', 'linux'],
+      runtimes: { node: '>=18.0.0' },
+    },
+    keywords: ['spatial ops', 'map editor', 'vr'],
+  };
+}
+
+/**
+ * Response headers for a Vercel deployment of the release folder — the ones a
+ * `<meta>` policy cannot set. The script and connection policy is already in
+ * the page (see `withContentSecurityPolicy` in build.mjs); this adds what only
+ * a header can say: that no other site may frame the editor, and that files
+ * are what their type says they are. Harmless anywhere else: a server that is
+ * not Vercel ignores the file.
+ */
+export function vercelConfig() {
+  return {
+    cleanUrls: false,
+    headers: [{
+      source: '/(.*)',
+      headers: [
+        { key: 'Content-Security-Policy', value: "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" },
+        { key: 'X-Frame-Options', value: 'DENY' },
+        { key: 'X-Content-Type-Options', value: 'nosniff' },
+        { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+        { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), payment=(), usb=()' },
+        { key: 'Cross-Origin-Opener-Policy', value: 'same-origin' },
+      ],
+    }],
+  };
 }
 
 function main() {
