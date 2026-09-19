@@ -638,9 +638,15 @@ html.mobile #app{display:none}
   var root = document.documentElement;
   var KEY = 'opsforge.terms';
   try { if (sessionStorage.getItem(KEY) === 'accepted') root.classList.add('terms-ok'); } catch (e) {}
+  var ua = navigator.userAgent || '';
   var fine = matchMedia('(any-pointer: fine)').matches;
-  var phone = /iPhone|iPod|Android.+Mobile|Windows Phone|BlackBerry|IEMobile/i.test(navigator.userAgent || '');
-  var touchOnly = matchMedia('(pointer: coarse)').matches && !fine;
+  var phone = /iPhone|iPod|Android.+Mobile|Windows Phone|BlackBerry|IEMobile/i.test(ua);
+  /* A Surface or a touchscreen laptop is a computer even when the browser
+     reports only touch — Windows in tablet posture, or a Type Cover attached
+     after the browser started, both leave (any-pointer: fine) false. So the
+     touch-only test is kept for tablets and never applied to a desktop OS. */
+  var desktopOS = /Windows NT|CrOS|X11/.test(ua) && !/Android/i.test(ua);
+  var touchOnly = matchMedia('(pointer: coarse)').matches && !fine && !desktopOS;
   if (phone || touchOnly) root.classList.add('mobile');
   document.addEventListener('DOMContentLoaded', function () {
     var app = document.getElementById('app');
