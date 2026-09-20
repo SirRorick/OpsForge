@@ -285,6 +285,13 @@ the inspector has seven digits in it.
   stays in: the weapon and the bot stand in the arena at their own size, the
   way the game puts them there, so they are part of the map rather than a note
   about it. OpsForge is badged in the corner.
+- **A map you have published before keeps the picture it already has.** The
+  upload screen shows the one on mod.io rather than replacing it, so a map
+  republished to fix a typo or ship a new version comes back looking the way it
+  did. **Take a new picture** replaces it with the view as you left it, and only
+  then does a new image go up. A brand new entry still gets a shot straight
+  away, since mod.io will not take one without a picture — and so does
+  **Publish as a separate map**, which is a new entry.
 - Publishing needs a mod.io sign-in: enter your email in the Export dialog,
   mod.io sends a 5-digit code, and entering that code back signs you in. This
   is the same sign-in the game itself uses in-headset — not a personal access

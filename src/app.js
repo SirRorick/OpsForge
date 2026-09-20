@@ -5726,10 +5726,44 @@ async function openUploadDialog(keepAnchors = true) {
   const setLogo = (blob) => { logoBlob = blob; shot.src = URL.createObjectURL(blob); };
   shot.style.margin = '0 0 8px';
 
-  // What the picture is, said once. The shot is taken from wherever the editor
-  // was looking when Export was pressed, and the only way to change it is to
-  // close this, frame the map, and press Export again — so the sentence is
-  // worth the two lines it costs.
+  /**
+   * Render the viewport into the picture, once.
+   *
+   * Every route to a new picture goes through here, so "has this upload got a
+   * picture of its own" is the single question `logoBlob` answers: null means
+   * the entry keeps whatever mod.io already has, and anything else means the
+   * author asked for this one.
+   */
+  const takeShot = async () => { setLogo(await vp.captureMapImage()); showShot(); };
+
+  /**
+   * Put the right picture up and say what it is.
+   *
+   * Three states, and every route between them comes back through here: the
+   * entry's own picture kept as it is, a fresh shot that will replace it, and a
+   * new entry, which has nothing to keep. Called after `updateMode` exists,
+   * which is the one ordering constraint — it reads it.
+   */
+  const showShot = () => {
+    const keeping = updateMode && existingLogo && !logoBlob;
+    if (keeping) shot.src = existingLogo;
+    retake.hidden = !(updateMode && existingLogo);
+    shotNote.textContent = keeping
+      ? 'The picture already on mod.io. It is kept as it is unless you replace it.'
+      : updateMode && existingLogo
+        ? 'This new picture replaces the one on mod.io when you upload.'
+        : customLogoUnlocked
+          ? 'Taken from the view as you left it. Close this and reframe the map to take '
+            + 'another, or use a picture of your own.'
+          : 'Taken from the view as you left it. Close this and reframe the map to take another.';
+  };
+
+  // What the picture is, said once, and rewritten below when the entry already
+  // has one. A new entry's shot is taken from wherever the editor was looking
+  // when Export was pressed, and the only way to change that is to close this,
+  // reframe the map and press Export again — so the sentence is worth the two
+  // lines it costs. An update says something else entirely, because there the
+  // picture is whatever mod.io is already showing and a button replaces it.
   const shotNote = document.createElement('p');
   shotNote.className = 'hint';
   shotNote.style.cssText = 'margin:0 0 14px';
@@ -5738,6 +5772,34 @@ async function openUploadDialog(keepAnchors = true) {
       + 'or use a picture of your own.'
     : 'Taken from the view as you left it. Close this and reframe the map to take another.';
   body.appendChild(shotNote);
+
+  // Only an update ever offers this, because only an update has a picture worth
+  // keeping. Taking a fresh screenshot on every upload meant a map republished
+  // to fix a typo came back with whatever the editor happened to be looking at,
+  // and the author had no way to say "leave the picture alone".
+  const retake = document.createElement('button');
+  retake.className = 'btn ghost';
+  retake.style.cssText = 'margin:0 0 14px';
+  retake.hidden = true;
+  retake.textContent = 'Take a new picture';
+  retake.title = 'Replace the picture on mod.io with the view as you left it. Without this '
+    + 'the entry keeps the picture it already has.';
+  retake.onclick = async () => {
+    retake.disabled = true;
+    const was = retake.textContent;
+    retake.textContent = 'Rendering…';
+    try {
+      await takeShot();
+      retake.textContent = 'Take another';
+    } catch (err) {
+      console.error(err);
+      retake.textContent = was;
+      toast(`Could not render the map: ${err.message}`, true);
+    } finally {
+      retake.disabled = false;
+    }
+  };
+  body.appendChild(retake);
 
   if (customLogoUnlocked) {
     const choose = document.createElement('button');
@@ -5780,6 +5842,11 @@ async function openUploadDialog(keepAnchors = true) {
     libraryHits = await modioFindByGuid(map.guid);
   } catch { /* the library is a bonus; a publish is never blocked on it */ }
 
+  // The picture mod.io already holds, shown in place of a fresh screenshot. The
+  // URL is mod.io's own and reaches the DOM as an `img.src`, so it goes through
+  // the same check every other mod.io URL does.
+  const existingLogo = owned ? modioUrlOrNull(owned.logo?.thumb_640x360 || owned.logo?.original) : null;
+
   const plan = publishPlan({ owned, libraryHits });
 
   // The identity a new entry would go out under, minted now rather than at the
@@ -5789,6 +5856,7 @@ async function openUploadDialog(keepAnchors = true) {
   let titleNow = owned ? owned.name : map.name;
   let renameToTitle = plan.kind !== 'update-or-new';
   let updateMode = !!owned;
+  showShot();
 
   if (plan.kind === 'update-or-new') {
     const note = document.createElement('p');
@@ -5810,7 +5878,16 @@ async function openUploadDialog(keepAnchors = true) {
       + '<span style="opacity:.7">(takes a new ID)</span>';
     choice.append(updateOpt, newOpt);
     body.appendChild(choice);
-    const pick = (on) => { updateMode = on; renameToTitle = !on; refreshIdentity(); };
+    const pick = (on) => {
+      updateMode = on;
+      renameToTitle = !on;
+      refreshIdentity();
+      // A separate map is a new entry, and mod.io will not take one without a
+      // picture. Taken here rather than at the upload so the author sees what
+      // is about to go out while there is still time to reframe it.
+      if (!on && !logoBlob) takeShot().catch((err) => console.error(err));
+      else showShot();
+    };
     updateOpt.querySelector('input').onchange = () => pick(true);
     newOpt.querySelector('input').onchange = () => pick(false);
   }
@@ -5902,7 +5979,12 @@ async function openUploadDialog(keepAnchors = true) {
           const wasNamed = map.name;
           const wasGuid = map.guid;
           try {
-            if (!logoBlob) { ui.status('Rendering a shot of the map…'); logoBlob = await vp.captureMapImage(); shot.src = URL.createObjectURL(logoBlob); }
+            // A new entry has to carry one; an update keeps what it has. The
+            // lazy catch is for the route where nothing above took a shot.
+            if (!logoBlob && !(updateMode && owned)) {
+              ui.status('Rendering a shot of the map…');
+              await takeShot();
+            }
 
             // Applied to the map *before* the archive and the metadata blob are
             // built, because both read it — the file name inside the zip is the
@@ -5932,8 +6014,11 @@ async function openUploadDialog(keepAnchors = true) {
               });
               modId = modResult.id;
             } else {
-              // Always re-sent, even when the title and summary are unchanged —
-              // otherwise a retaken screenshot never reaches mod.io on an update.
+              // Title and summary go every time, cheaply, because neither can
+              // be diffed against what mod.io holds without another round trip.
+              // The picture does not: `logoBlob` is null unless the author asked
+              // for a new one, and `modioEditMod` leaves the field out entirely
+              // when it is, so the entry keeps the picture it already had.
               ui.status('Updating the mod.io entry…');
               modResult = await modioEditMod(modId, {
                 name: values.title, summary: values.summary, logo: logoBlob,
@@ -5985,7 +6070,9 @@ async function openUploadDialog(keepAnchors = true) {
     ],
   });
 
-  setLogo(await vp.captureMapImage());
+  // A new entry needs a picture and gets one straight away; an update already
+  // has one on mod.io and is left alone until the author says otherwise.
+  if (!existingLogo) await takeShot();
 }
 
 /**
