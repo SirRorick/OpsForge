@@ -4956,12 +4956,46 @@ function syncMapObjects() {
   map.mapObjects = vp.designObjects().map((m) => vp.toMapObject(m));
 }
 
-/** The map as the game would read it. Used by both Export and autosave. */
-function currentMapText() {
+// What the export flow has decided about anchors, for this press of Export.
+// Both are reset by `exportMap`, so every export starts from "keep them" and
+// asks again rather than carrying a decision forward from an hour ago.
+let exportKeepAnchors = true;
+let exportArUcoWarned = false;
+
+/**
+ * Is this map tied to a printed marker?
+ *
+ * The flag and the anchor are two expressions of one thing, and a file that
+ * has been through another tool could carry either alone, so both are asked.
+ */
+function mapHasArUcoAnchor() {
+  return !!map.hasArUcoAnchor
+    || (map.anchors || []).some((a) => a && a.$type === 'ArUcoSpatialAnchor');
+}
+
+/** Is there an anchor here at all — anything an export could offer to drop? */
+function mapIsAnchored() {
+  return (map.anchors || []).length > 0 || !!map.hasArUcoAnchor;
+}
+
+/**
+ * The map as the game would read it. Used by both Export and autosave.
+ *
+ * `keepAnchors` is the one thing an export may leave behind. An anchor is a
+ * fixed point in the room the map was built in; dropping it costs whoever
+ * opens the file nothing but an alignment by hand, which is what the game asks
+ * for anyway when it cannot find the anchor.
+ *
+ * It comes off in the bytes written out and nowhere else. `map` keeps its
+ * anchors, so the checkpoint taken on the same press still has them, undo has
+ * nothing to undo, and an export never quietly empties the map on screen.
+ */
+function currentMapText({ keepAnchors = true } = {}) {
   map.editedTime = nowStamp();
   map.version = map.version || MAP_VERSION;
   syncMapObjects();
-  return serializeMap(map);
+  if (keepAnchors) return serializeMap(map);
+  return serializeMap({ ...map, anchors: [], hasArUcoAnchor: false });
 }
 
 /** A map still wearing the name it was born with has not been named. */
@@ -5001,6 +5035,8 @@ function exportGaps() {
 }
 
 function exportMap() {
+  exportKeepAnchors = true;
+  exportArUcoWarned = false;
   const gaps = exportGaps();
   if (tipsOn() && (gaps.name || gaps.author || gaps.rules)) {
     promptForMapDetails(gaps);
@@ -5025,9 +5061,9 @@ function downloadMapFile(text, name) {
   setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
-function writeMapFile() {
+function writeMapFile(keepAnchors = true) {
   try {
-    const text = currentMapText();
+    const text = currentMapText({ keepAnchors });
     const name = mapFileName(map.name, map.guid);
     downloadMapFile(text, name);
     $('st-file').textContent = name;
@@ -5425,6 +5461,14 @@ function chooseExportDestination() {
   // venues in it yet is still on its way to one.
   if (lbeOn()) return void openVenueExport();
 
+  // Said once per export, and only for ArUco. A Meta anchor in a stranger's
+  // living room is survived cheerfully — the game asks the player to realign —
+  // but the evidence from the library is that a printed marker is not: the
+  // download is refused outright. Nothing in the editor draws an anchor and
+  // nothing in the library says why a map would not come down, so this is the
+  // only place the person can find out.
+  if (!exportArUcoWarned && mapHasArUcoAnchor()) return void warnAboutArUcoAnchor();
+
   const token = modioToken();
   const username = modioCachedUsername();
   const signedIn = !!(token && username);
@@ -5449,18 +5493,81 @@ function chooseExportDestination() {
     body.appendChild(row);
   }
 
+  // Offered wherever there is an anchor to drop, warned about only for ArUco,
+  // and ticked unless the warning has just unticked it. Keeping them is what
+  // every export did before this existed, and is still what happens if nobody
+  // touches it.
+  const fields = mapIsAnchored() ? [{
+    id: 'keep-anchors',
+    type: 'checkbox',
+    label: 'Keep spatial anchors',
+    value: exportKeepAnchors,
+    title: 'An anchor ties the map to a fixed point in the room it was built in. '
+      + 'Untick to write the file without one — the game then asks whoever opens it '
+      + 'to align the map by hand.',
+  }] : [];
+
   openDialog({
     title: 'Export',
     body,
+    fields,
     actions: signedIn
       ? [
-        { label: 'Export to Mod.io Library', run: () => openUploadDialog() },
-        { label: 'Export to computer', run: () => writeMapFile() },
+        { label: 'Export to Mod.io Library', run: (v) => openUploadDialog(keepAnchorsFrom(v)) },
+        { label: 'Export to computer', run: (v) => writeMapFile(keepAnchorsFrom(v)) },
       ]
       : [
         { label: 'Sign in to mod.io', ghost: true, run: () => openSignInDialog() },
-        { label: 'Export to computer', run: () => writeMapFile() },
+        { label: 'Export to computer', run: (v) => writeMapFile(keepAnchorsFrom(v)) },
       ],
+  });
+}
+
+/**
+ * The tick, remembered, or "keep them" where there was no tick to read.
+ *
+ * Written back to `exportKeepAnchors` so the choice survives the routes that
+ * re-open this dialog — signing in, signing out — rather than springing back
+ * to ticked underneath somebody who has just unticked it.
+ */
+function keepAnchorsFrom(values) {
+  const keep = values['keep-anchors'];
+  exportKeepAnchors = keep === undefined ? true : !!keep;
+  return exportKeepAnchors;
+}
+
+/**
+ * The one warning an export does not let you turn off.
+ *
+ * A map aligned to a printed ArUco marker is aligned to a wall in one
+ * building. Published, it reaches headsets that have never seen that marker,
+ * and what they do is refuse the download rather than offer to realign — which
+ * reads to the player as a broken map and to the author as a broken editor.
+ *
+ * Dismissing it clears the tick, not the anchor. The map on screen is
+ * untouched, and the next screen still shows what is about to happen with the
+ * anchor a click away from being put back — because an author who printed that
+ * marker and hung it on their own wall may well mean it.
+ */
+function warnAboutArUcoAnchor() {
+  exportArUcoWarned = true;
+  openDialog({
+    title: 'This map is aligned to a printed marker',
+    body: 'It carries an ArUco anchor — a marker printed and hung in the room the map '
+      + 'was built in. A headset that has never seen that marker can refuse the download '
+      + 'outright instead of asking to realign, so a published map carrying one may not '
+      + 'reach anybody. Clearing it costs an alignment by hand and nothing else.',
+    actions: [
+      {
+        label: 'Keep the anchor',
+        ghost: true,
+        run: () => { exportKeepAnchors = true; chooseExportDestination(); },
+      },
+      {
+        label: 'Clear it and continue',
+        run: () => { exportKeepAnchors = false; chooseExportDestination(); },
+      },
+    ],
   });
 }
 
@@ -5607,7 +5714,7 @@ function pickCustomLogo(done) {
   input.click();
 }
 
-async function openUploadDialog() {
+async function openUploadDialog(keepAnchors = true) {
   const body = document.createElement('div');
 
   const shot = document.createElement('img');
@@ -5812,7 +5919,7 @@ async function openUploadDialog() {
             if (next.guid !== wasGuid || next.name !== wasNamed) refreshMeta();
 
             ui.status('Zipping the map…');
-            const zip = await modfileArchive(currentMapText(), mapFileName(map.name, map.guid));
+            const zip = await modfileArchive(currentMapText({ keepAnchors }), mapFileName(map.name, map.guid));
             const tags = modeTags;
 
             let modId = updateMode && owned ? owned.id : null;

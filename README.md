@@ -260,6 +260,18 @@ the inspector has seven digits in it.
   never touched are written back exactly as they arrived, and edited ones go
   through a float writer that matches .NET's output.
 - Object types the editor has never seen still load, and export unchanged.
+- **Keep spatial anchors** is ticked in the Export dialog whenever the map has
+  one. An anchor is a fixed point in the room the map was built in; untick it to
+  write the file without one, and the game asks whoever opens it to align the
+  map by hand. The map on screen keeps its anchors either way — only the file
+  leaves them behind.
+- A map aligned to a **printed ArUco marker** says so before it goes anywhere.
+  That kind of anchor is a marker hung on a wall in one particular building, and
+  a headset that has never seen it can refuse the download outright rather than
+  offer to realign — so a published map carrying one may reach nobody. Clearing
+  it and continuing is the default; keeping it is one click away.
+- In LBE mode none of this applies. A venue's map is tied to its hall on
+  purpose, so the anchors travel with it and there is nothing to ask.
 
 **Publishing to mod.io**
 
