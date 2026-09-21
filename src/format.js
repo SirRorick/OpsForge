@@ -146,18 +146,38 @@ function dict(o) {
  * - `EditorSpatialAnchor` adds `position` and `rotation` — a pose, in map
  *   space — and those were dropped on the floor.
  *
- * A vector gets the .NET float treatment, because all four keys that have ever
- * been seen in here are vectors and every one of them is float. Anything else
- * goes back as plain JSON, which is the same choice `dict` and the unknown
- * object props make, and for the same reason: `f32` would have to know whether
- * an unseen scalar was an int or a float, and on a key nothing has ever written
- * there is nothing to know it from. Plain JSON at least gives back the number
- * as it was written — a marker id stays `7` rather than becoming `7.0`.
+ * And a third way, which is the one below. There are three *shapes* of value in
+ * here, not two, and asking whether a value has a `z` only tells two of them
+ * apart:
+ *
+ * - **A list.** `ArUcoSpatialAnchor` — a map tied to two printed markers on a
+ *   wall — carries `"ids":[0,1]`, and a list has neither an `x` nor a `z`, so
+ *   it fell to the `vec2` branch and came out as `{"x":0.0,"y":0.0}`. Not the
+ *   ids, not even the right kind of value, and a file the game reads as the
+ *   marker pair zero and zero. Any map carrying one re-exported with its
+ *   markers destroyed, and no reference export has an ArUco anchor in it to
+ *   have caught it.
+ * - **A vector**, which gets the .NET float treatment, because every vector
+ *   key ever seen in here is float.
+ * - **A scalar.** `size` and `height` on an ArUco anchor are the two known
+ *   lengths and are floats, so they get the decimal point Newtonsoft leaves on
+ *   one. Anything else goes back as plain JSON, which is the same choice
+ *   `dict` and the unknown object props make, and for the same reason: `f32`
+ *   would have to know whether an unseen scalar was an int or a float, and on
+ *   a key nothing has ever written there is nothing to know it from. Plain
+ *   JSON at least gives back the number as it was written — a marker id stays
+ *   `7` rather than becoming `7.0`.
  */
+const ANCHOR_FLOAT_KEYS = new Set(['size', 'height']);
+
 function anchor(a) {
   const fields = Object.keys(a).map((k) => {
     const v = a[k];
-    const json = v && typeof v === 'object' ? ('z' in v ? vec3(v) : vec2(v)) : J(v);
+    let json;
+    if (Array.isArray(v)) json = JSON.stringify(v);
+    else if (v && typeof v === 'object') json = 'z' in v ? vec3(v) : vec2(v);
+    else if (ANCHOR_FLOAT_KEYS.has(k) && typeof v === 'number') json = f32(v);
+    else json = J(v);
     return `${J(k)}:${json}`;
   });
   return `{${fields.join(',')}}`;
