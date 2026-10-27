@@ -309,6 +309,32 @@ rather than being flattened to the only value the library has ever shown.
 - `rotation` is Euler **degrees** in `[0, 360)`, applied in Unity's Z→X→Y order.
 - `scale` multiplies the base mesh.
 
+### `label`
+
+```json
+{"$type":"MapObject","type":"DestructibleCrate","position":{...},"rotation":{...},"scale":{...},"label":"blue-door"}
+```
+
+The base record has a sixth field, written **after `scale`**, last of all, on
+every `$type` — the subtypes below included, whose extra keys still come before
+`type`. It is the object's name for scenario files: a scenario finds the objects
+it acts on by this exact text, capitals included, for instance where to place
+the bots it spawns. Several objects may share a label.
+
+Builds that have the field write `"label":null` for an object nobody named.
+Maps from builds before it carry no key at all, which the game reads the same
+way. Confirmed by running objects through the game's own map serializer:
+
+```json
+{"$type":"MapObject","type":"DestructibleCrate", ... ,"scale":{...},"label":"blue-door"}
+{"$type":"MapObject","type":"Crate", ... ,"scale":{...},"label":null}
+{"$type":"DamageBox","style":"Invisible","type":"DamageBox", ... ,"scale":{...},"label":"laser-1"}
+```
+
+The editor keeps whatever an object arrived with: no key stays no key and
+`null` stays `null`. A label set here is written after `scale`, and clearing
+one writes `null`, as the game does.
+
 ### Subtypes
 
 Four `$type` values carry extra fields, written **between `$type` and
@@ -349,7 +375,8 @@ about Y, which is what a sign angled down towards a player looks like.
 
 The list of values above is what has been observed, not necessarily the whole
 enum, so the parser collects **any** key that is not one of the five base keys
-and writes it back in place. A field added by a future game update survives a
+and writes it back in place: before `type`, except `label`, which goes after
+`scale` (see `label` above). A field added by a future game update survives a
 round trip without this module knowing it exists.
 
 ### `enemyTypes`

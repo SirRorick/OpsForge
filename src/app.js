@@ -796,9 +796,11 @@ function mirrorSelection(axis, into = null) {
     const copy = vp.addObject({
       type: def.type,
       $type: target ? (def.objectType || 'MapObject') : m.userData.objectType,
-      // Props belong to the subtype, so they only carry over within it.
+      // Props belong to the subtype, so they only carry over within it — all
+      // but the label, which names the object, so a mirrored copy keeps it as
+      // a duplicate does.
       props: target && target.type !== m.userData.def.type
-        ? { ...(def.props || {}) } : { ...m.userData.props },
+        ? withLabel({ ...(def.props || {}) }, m.userData.props) : { ...m.userData.props },
       position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 },
       dirty: true,
     });
@@ -1952,10 +1954,11 @@ const PROP_LABELS = {
   style: 'Style',
   content: 'Message',
   showInGame: 'Show in game',
+  label: 'Label',
 };
 
 /** Props with a row of their own; `propRows` leaves these to the builders below. */
-const SPECIAL_PROPS = ['specificWeapon', 'enemyTypes', 'behaviour', 'content', 'showInGame'];
+const SPECIAL_PROPS = ['specificWeapon', 'enemyTypes', 'behaviour', 'content', 'showInGame', 'label'];
 
 /** Every value the catalog has ever seen for a property, for the datalist. */
 function propSuggestions(key) {
@@ -2040,12 +2043,27 @@ function showInGameRow(value) {
     <span>Show in game</span></label>`;
 }
 
+/**
+ * The object's own name, which scenario files use to find it. Every object can
+ * have one, whatever its type, so the row is always there; empty means none.
+ * The game matches it exactly, capitals included, and several objects may
+ * share one — that is how a scenario acts on a group.
+ */
+function labelRow(value) {
+  return `<div class="field"><span>Label</span>
+    <input type="text" id="f-label" maxlength="80" placeholder="none"
+      title="The name a scenario file uses to find this object. The game matches it exactly, capitals included, and several objects may share one. Leave empty for none."
+      value="${escapeHtml(typeof value === 'string' ? value : '')}"></div>`;
+}
+
 function propRows(mesh) {
   const props = mesh.userData.props || {};
   const keys = Object.keys(props);
-  if (!keys.length) return '';
-  return keys
+  return labelRow(props.label) + keys
     .map((key, i) => {
+      // Drawn first, above, for every object; `i` still counts it so the ids
+      // below stay in step with `wirePropRows`.
+      if (key === 'label') return '';
       if (key === 'specificWeapon') return weaponRow(props[key]);
       if (key === 'enemyTypes') return enemyTypesRow(props[key]);
       if (key === 'behaviour') return behaviourRow(props[key]);
@@ -2151,7 +2169,30 @@ function wireMessageRows(mesh) {
   }
 }
 
+/**
+ * Clearing a label writes it back as null, which is how the game itself writes
+ * an object nobody named. An object that never had the key and is left empty
+ * gains nothing, so opening and closing the panel changes no bytes.
+ */
+function wireLabelRow(mesh) {
+  const input = $('f-label');
+  if (!input) return;
+  input.onchange = () => {
+    const before = mesh.userData.props?.label ?? null;
+    const next = input.value.trim() || null;
+    if (next === before) {
+      input.value = before ?? '';
+      return;
+    }
+    vp.setProp(mesh, 'label', next);
+    buildSelectionPanel();
+    commit();
+    toast(next ? `Label set to "${next}".` : 'Label cleared.');
+  };
+}
+
 function wirePropRows(mesh) {
+  wireLabelRow(mesh);
   wireSpawnerRows(mesh);
   wireMessageRows(mesh);
   const keys = Object.keys(mesh.userData.props || {});
@@ -2970,6 +3011,15 @@ function objectRow(m, child) {
   const t = document.createElement('span');
   t.className = 't';
   t.textContent = m.userData.def.label;
+  // The object's own label beside the catalog name, so a named piece can be
+  // found in the list without clicking through every crate.
+  const named = m.userData.props?.label;
+  if (typeof named === 'string' && named) {
+    const lbl = document.createElement('span');
+    lbl.className = 'lbl';
+    lbl.textContent = named;
+    t.append(lbl);
+  }
   if (away) {
     row.title = unseen
       ? 'Hidden. Click to bring the hidden objects into view, then right-click for Show.'
@@ -3293,12 +3343,22 @@ function alignShapeYaw(q, from, to) {
 }
 
 /**
+ * A piece's props with the label of the object it replaces. A label names the
+ * object rather than describing the piece it is drawn with, so it survives a
+ * change of piece; an object that never had one gains nothing.
+ */
+function withLabel(props, from) {
+  if (!from || !Object.prototype.hasOwnProperty.call(from, 'label')) return props;
+  return { ...(props || {}), label: from.label };
+}
+
+/**
  * Stand a new object where an old one was, for each `[mesh, def]` pair, and
  * take the old ones away. Returns how many were swapped.
  *
  * Shared by Replace, which points every one at the same entry, and by Swap
  * theme, which gives each its own — the same operation, differing only in how
- * the target is chosen.
+ * the target is chosen. Both keep the object's label.
  */
 function swapInPlace(pairs) {
   const live = pairs.filter(([m, def]) => def && vp.objects.includes(m));
@@ -3310,7 +3370,7 @@ function swapInPlace(pairs) {
     const next = vp.addObject({
       $type: def.objectType,
       type: def.type,
-      props: def.props ? { ...def.props } : undefined,
+      props: withLabel(def.props ? { ...def.props } : undefined, m.userData.props),
       position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 },
       dirty: true,
     });

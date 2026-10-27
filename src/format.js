@@ -171,6 +171,16 @@ function anchor(a) {
 
 export const BASE_OBJECT_KEYS = ['$type', 'type', 'position', 'rotation', 'scale'];
 
+// The base record has one more field, `label`, and the game writes it after
+// "scale", last of all — on every subtype, the four below included. It is the
+// object's name for scenario files: a scenario finds the objects it acts on by
+// this exact text. Builds that have the field write `"label":null` for an
+// object nobody named; maps from builds before it carry no key at all. So it
+// rides in `props` with the extras, which is what lets every copy, prefab and
+// checkpoint carry it, but it is written at the end rather than with them, and
+// only when the object came with one or was given one here. See docs/FORMAT.md.
+export const TRAILING_OBJECT_KEYS = ['label'];
+
 export const OBJECT_PROP_KEYS = {
   WeaponSpawnPoint: ['specificWeapon'],
   DamageBox: ['style'],
@@ -203,7 +213,8 @@ export const OBJECT_PROP_KEYS = {
  */
 export function propKeysFor($type, props) {
   const known = OBJECT_PROP_KEYS[$type];
-  const carried = Object.keys(props || {});
+  // A trailing key belongs to the base record, and has its own place after "scale".
+  const carried = Object.keys(props || {}).filter((k) => !TRAILING_OBJECT_KEYS.includes(k));
   if (!known) return carried;
   return [...known, ...carried.filter((k) => !known.includes(k))];
 }
@@ -240,10 +251,16 @@ export function serializeMap(map) {
       .filter((k) => o.props?.[k] !== undefined)
       .map((k) => `${J(k)}:${JSON.stringify(o.props[k])},`)
       .join('');
+    // null is written, since it is what the game itself writes for an object
+    // nobody named; a key the object never had (undefined) is not.
+    const trailing = TRAILING_OBJECT_KEYS
+      .filter((k) => o.props?.[k] !== undefined)
+      .map((k) => `,${J(k)}:${JSON.stringify(o.props[k])}`)
+      .join('');
     return (
       `{"$type":${J($type)},${extras}"type":${J(o.type)},` +
       `"position":${vec3(o.position)},"rotation":${vec3(o.rotation)},` +
-      `"scale":${vec3(o.scale)}}`
+      `"scale":${vec3(o.scale)}${trailing}}`
     );
   });
   parts.push(`"mapObjects":[${mo.join(',')}]`);

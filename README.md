@@ -240,6 +240,9 @@ the inspector has seven digits in it.
 - Per-object settings where the game has them: which weapon a spawner holds,
   which of 13 enemy types an enemy spawn produces and how it behaves, which
   team a damage box belongs to.
+- A **label** on any object: the name scenario files use to find it. The game
+  matches it exactly, capitals included, and several objects may share one. A
+  labelled object shows its label beside its name in the outliner.
 - Paint the bot grid — the ground bots are allowed to walk on — and set the
   arena size.
 
