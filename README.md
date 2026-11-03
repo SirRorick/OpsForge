@@ -256,9 +256,13 @@ the inspector has seven digits in it.
 - <kbd>F</kbd> lets go of the floor for a free camera: the arrows fly the way
   you are looking, <kbd>E</kbd> and <kbd>Q</kbd> go up and down, and
   <kbd>Shift</kbd> goes faster. <kbd>F</kbd> again lands you where you are.
-- <kbd>H</kbd> hides the one line of keys left on screen, and <kbd>P</kbd> saves
-  the view as a PNG at twice the size of the window — a clean picture for a
-  mod page or a team chat.
+- <kbd>H</kbd> hides the one line of keys left on screen. <kbd>G</kbd> is the
+  clean view, walking or flying: the keys, the floor grid, the boundaries and
+  the scale figure all go, leaving only what a headset would show, and
+  <kbd>G</kbd> again brings them back.
+- <kbd>P</kbd> saves the view as a PNG at twice the size of the window — a clean
+  picture for a mod page or a team chat, with or without the grid, whichever
+  you are looking at.
 
 **Rules editor**
 

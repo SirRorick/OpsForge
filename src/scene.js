@@ -2227,7 +2227,8 @@ export class Viewport extends EventTarget {
     const away = !!mesh.userData.hidden;
     mesh.visible = !(this.hideBoundaries && isBoundary(mesh.userData.def))
       && !(away && !this.showHidden)
-      && !this.replacedHere(mesh);
+      && !this.replacedHere(mesh)
+      && !(this.preview?.clean && this._notInHeadset(mesh.userData.def));
     this._applyFade(mesh);
   }
 
@@ -3034,10 +3035,10 @@ export class Viewport extends EventTarget {
     this.emit('change');
   }
 
-  /** The hall's walls answer the boundaries switch, the way the map's do. */
+  /** The hall's walls answer the boundaries switch, the way the map's do, and the clean view. */
   _refreshVenueVisibility() {
     for (const m of this.venueGroup.children) {
-      m.visible = !(this.hideBoundaries && m.userData.boundary);
+      m.visible = !((this.hideBoundaries || this.preview?.clean) && m.userData.boundary);
     }
   }
 
@@ -5349,6 +5350,9 @@ export class Viewport extends EventTarget {
       // Free camera: where the eye is, all three axes, with nothing holding it
       // to the floor. Null while walking.
       fly: null,
+      // Clean view (G): the grid and the rest of what no headset draws, gone too.
+      clean: false,
+      gridWas: this.grid.visible,
       listeners: [],
     };
 
@@ -5398,6 +5402,13 @@ export class Viewport extends EventTarget {
     this.orbit.target.copy(p.restore.target);
     this.orbit.enabled = true;
 
+    if (p.clean) {
+      // `this.preview` is already gone, so these come back to what the
+      // editor's own switches say rather than to what the clean view said.
+      this.grid.visible = p.gridWas;
+      for (const mesh of this.objects) this.applyVisibility(mesh);
+      this._refreshVenueVisibility();
+    }
     this.centreLines.visible = p.restore.centre;
     this.boundsGroup.visible = p.restore.bounds;
     this.navGroup.visible = p.restore.nav;
@@ -5427,13 +5438,15 @@ export class Viewport extends EventTarget {
       e.preventDefault();
       return;
     }
-    // Three switches, all on the press: walk or fly, the hint on or off, and a
-    // picture of the view. The last two are what photo mode is — the editor's
-    // panels are already gone, so the hint is the only thing left on screen.
-    if (key === 'f' || key === 'h' || key === 'p') {
+    // Four switches, all on the press: walk or fly, the hint on or off, the
+    // clean view, and a picture of the view. The last three are what photo mode
+    // is — the editor's panels are already gone, so the hint, the grid and the
+    // editor's drawings of invisible things are all that is left to take away.
+    if (key === 'f' || key === 'h' || key === 'g' || key === 'p') {
       e.preventDefault();
       if (!down || e.repeat) return;
       if (key === 'f') this.setPreviewFly(!p.fly);
+      else if (key === 'g') this.setPreviewClean(!p.clean);
       else this.emit(key === 'h' ? 'preview-hint' : 'preview-photo', {});
       return;
     }
@@ -5488,6 +5501,36 @@ export class Viewport extends EventTarget {
     }
     p.velocity.set(0, 0, 0);
     this.emit('preview-mode', { fly: !!p.fly });
+  }
+
+  /**
+   * The clean view: what the walkaround keeps on purpose goes as well, so that
+   * what is left is what a headset would draw. The floor grid, which stays
+   * otherwise so that a step has something to be measured against; the
+   * boundaries, which the game never draws at all; and the scale figure, which
+   * is a ruler rather than anybody standing there. The line of keys goes too —
+   * that half is app.js, on `preview-clean`.
+   *
+   * By rule rather than by flipping `visible` on each mesh, so nothing has to
+   * remember what it found: `applyVisibility` asks, and leaving the preview
+   * asks again with the preview gone. Nothing leaves the selection on the way —
+   * the walkaround has the gizmo down already, and coming back to the editor
+   * with a different selection than you left would be a surprise.
+   */
+  setPreviewClean(on) {
+    const p = this.preview;
+    if (!p || p.clean === !!on) return;
+    p.clean = !!on;
+    if (p.clean) p.gridWas = this.grid.visible;
+    this.grid.visible = p.clean ? false : p.gridWas;
+    for (const mesh of this.objects) this.applyVisibility(mesh);
+    this._refreshVenueVisibility();
+    this.emit('preview-clean', { clean: p.clean });
+  }
+
+  /** What the clean view takes away: what a headset would not draw at all. */
+  _notInHeadset(def) {
+    return isBoundary(def) || def?.editorOnly === true;
   }
 
   /** One frame of the free camera: along the gaze, pitch and all. */

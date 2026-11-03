@@ -173,7 +173,8 @@ function placePreviewButton() {
 /**
  * The one line of keys shown along the bottom of the preview, for whichever of
  * the two ways of moving is on. It is the only thing left on screen once the
- * editor's panels have gone, so it is also the only thing H has to hide.
+ * editor's panels have gone, so it is also the only thing H has to hide; G
+ * hides it along with the grid and everything else no headset would draw.
  */
 function previewHint(fly) {
   const keys = (...k) => k.map((x) => `<kbd>${x}</kbd>`).join('');
@@ -185,6 +186,7 @@ function previewHint(fly) {
        ${keys('C')} <b>crouch</b> &middot; ${keys('F')} <b>free camera</b>`;
   $('preview-hud').querySelector('.pv').innerHTML = `${move} &middot; mouse <b>look</b> &middot;
     ${keys('P')} <b>save picture</b> &middot; ${keys('H')} <b>hide this</b> &middot;
+    ${keys('G')} <b>clean view</b> &middot;
     ${keys('Esc')} <b>back to the editor</b>`;
 }
 
@@ -201,8 +203,9 @@ function downloadBlob(blob, name) {
  * Preview is also photo mode. The editor's panels — the bars, the library, the
  * inspector, the assistant — all go for the duration and the view takes the
  * whole window, so what is on screen is the map and one line of keys, and H
- * takes that line away too. P saves what you are looking at as a PNG at twice
- * the size of the window.
+ * takes that line away too. G is the clean view: the line, the floor grid, the
+ * boundaries and the scale figure all go, leaving what a headset would show.
+ * P saves what you are looking at as a PNG at twice the size of the window.
  */
 function wirePreviewButton() {
   $('b-preview').onclick = () => vp.togglePreview();
@@ -211,7 +214,7 @@ function wirePreviewButton() {
     $('b-preview').classList.toggle('on', on);
     $('b-preview').textContent = on ? 'Previewing' : 'Preview';
     $('preview-hud').hidden = !on;
-    $('preview-hud').classList.remove('pv-off');
+    $('preview-hud').classList.remove('pv-off', 'pv-clean');
     $('stage').classList.toggle('previewing', on);
     document.documentElement.classList.toggle('previewing', on);
     hideContextMenu();
@@ -222,11 +225,17 @@ function wirePreviewButton() {
     if (on) {
       tip('preview',
         'You are standing in the map at six feet. The arrow keys walk, the mouse looks, C crouches to '
-        + 'three feet, F lets go of the floor, P saves a picture and Escape puts you back where you were.');
+        + 'three feet, F lets go of the floor, G hides the grid and every guide, P saves a picture and '
+        + 'Escape puts you back where you were.');
     }
   });
   vp.addEventListener('preview-mode', (e) => previewHint(e.detail.fly));
   vp.addEventListener('preview-hint', () => $('preview-hud').classList.toggle('pv-off'));
+  vp.addEventListener('preview-clean', (e) => {
+    $('preview-hud').classList.toggle('pv-clean', e.detail.clean);
+    // With the line of keys gone, the one thing worth saying is how to get it back.
+    if (e.detail.clean) toast('Clean view. G brings the grid and the keys back.');
+  });
   vp.addEventListener('preview-photo', async () => {
     try {
       const blob = await vp.capturePhoto(2);
