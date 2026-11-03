@@ -14,6 +14,7 @@
     "measure-prefabs": "node tools/measure-prefabs.mjs",
     "match-assets": "node tools/match-assets.mjs",
     "trace-prefabs": "node tools/trace-prefabs.mjs",
+    "measure-looks": "node tools/measure-looks.mjs",
     "graft-fbx": "node tools/graft-fbx.mjs",
     "stage-assets": "node tools/stage-assets.mjs",
     "package": "node tools/package.mjs",

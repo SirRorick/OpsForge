@@ -69,6 +69,20 @@ const DERIVED_ICONS = {
     crop: { x: 29, y: 29, width: 312, height: 312 },
     size: 256,
   },
+  // The scale figure is the editor's, not the game's, and has no library icon
+  // of its own. The game's loadout screen has a picture of a player standing,
+  // which is exactly what the figure is; it is taller than it is wide, and the
+  // library draws every icon into a square, so it is padded rather than
+  // stretched. It is a pale ghost drawn to sit on a bright screen, so it is
+  // dyed the magenta the figure wears and made solid enough to read on the
+  // library's dark panel.
+  Icon_ScaleFigure: {
+    from: 'Campaign_loadout_player_silhouette',
+    square: true,
+    tint: [224, 64, 251],
+    alphaGain: 2.2,
+    size: 128,
+  },
 };
 
 /**
@@ -89,6 +103,7 @@ export function requiredAssets() {
       if (o.icon) icons.add(o.icon);
       if (o.model) models.add(o.model);
       if (o.screen?.image) derived.add(o.screen.image);
+      if (o.icon && DERIVED_ICONS[o.icon]) { icons.delete(o.icon); derived.add(o.icon); }
     }
   }
   for (const v of Object.values(WEAPON_ICONS ?? {})) icons.add(v);
@@ -96,6 +111,27 @@ export function requiredAssets() {
   for (const v of Object.values(ENEMY_MODELS ?? {})) models.add(v);
   for (const v of Object.values(WEAPON_MODELS ?? {})) models.add(v.model);
   return { icons: [...icons].sort(), models: [...models].sort(), derived: [...derived].sort() };
+}
+
+/** Multiply decoded RGBA by a colour, and its alpha by `gain` (capped). */
+export function tintImage({ width, height, data }, rgb, gain = 1) {
+  const out = Buffer.from(data);
+  for (let i = 0; i < width * height; i++) {
+    for (let c = 0; c < 3; c++) out[i * 4 + c] = Math.round((data[i * 4 + c] * rgb[c]) / 255);
+    out[i * 4 + 3] = Math.min(255, Math.round(data[i * 4 + 3] * gain));
+  }
+  return { width, height, data: out };
+}
+
+/** Centre decoded RGBA in a transparent square as wide as its longer side. */
+export function padSquare({ width, height, data }) {
+  const n = Math.max(width, height);
+  const out = Buffer.alloc(n * n * 4);
+  const ox = Math.floor((n - width) / 2), oy = Math.floor((n - height) / 2);
+  for (let y = 0; y < height; y++) {
+    data.copy(out, ((y + oy) * n + ox) * 4, y * width * 4, (y + 1) * width * 4);
+  }
+  return { width: n, height: n, data: out };
 }
 
 /** Cut a rectangle out of decoded RGBA. */
@@ -235,7 +271,11 @@ function stageIcons(icons, derived, size) {
     if (!spec) { missing.push(name); continue; }
     const src = join(SOURCE, 'Icons', `${spec.from}.png`);
     if (!existsSync(src)) { missing.push(name); continue; }
-    write(name, encodePng(downscale(crop(decodePng(readFileSync(src)), spec.crop), spec.size)));
+    let img = decodePng(readFileSync(src));
+    if (spec.crop) img = crop(img, spec.crop);
+    if (spec.square) img = padSquare(img);
+    if (spec.tint) img = tintImage(img, spec.tint, spec.alphaGain ?? 1);
+    write(name, encodePng(downscale(img, spec.size)));
   }
   writeFileSync(join(dir, 'NOTICE.md'), ICON_NOTICE);
   return { count: icons.length + derived.length - missing.length, bytes, missing };

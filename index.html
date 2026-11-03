@@ -152,6 +152,10 @@ canvas{display:block;width:100%;height:100%;outline:none}
 .btn:active{transform:translateY(1px)}
 .btn.on{background:var(--accent);border-color:var(--accent);color:#14181C}
 .btn.ghost{background:transparent}
+/* Switched on, a ghost button fills like any other. Without this the rule
+   above won on order alone and left dark text on no background — the AI
+   button went blank whenever its panel was open. */
+.btn.ghost.on{background:var(--accent)}
 .btn:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .btn[disabled]{opacity:.35;cursor:not-allowed}
 select,input[type=text],input[type=number],input[type=password],textarea{
@@ -340,6 +344,14 @@ label.sw + .pswitch{margin-left:9px}
 .mfield{grid-template-columns:1fr}
 .mfield textarea{width:100%;box-sizing:border-box;margin-top:3px;resize:vertical;
   min-height:52px;line-height:1.4;font-family:inherit}
+/* Copy and paste of one object's numbers, under the three rows they copy. */
+.xfrow{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:4px}
+/* A cylinder that came in oval: the game will draw it round, so say so beside
+   the numbers that are wrong, with the one button that puts them right. */
+.ovalnote{border:1px solid var(--accent-dim);border-radius:5px;padding:7px 9px;margin:2px 0 8px;
+  background:rgba(232,197,71,.07)}
+.ovalnote p{margin:0 0 6px;font-size:11px;line-height:1.45;color:var(--text)}
+.ovalnote .btn{width:100%}
 .mtick{display:flex;align-items:center;gap:7px;margin:6px 0 2px;cursor:pointer;
   font-size:11.5px;color:var(--dim);user-select:none}
 .mtick input{accent-color:var(--accent);width:13px;height:13px;flex:none}
@@ -447,6 +459,10 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
 #readout b{color:var(--accent);font-weight:500}
 #viewbtns{position:absolute;top:16px;right:20px;display:flex;gap:3px;pointer-events:auto}
 #viewbtns .btn{padding:3px 8px;font-size:11.5px}
+#viewtoggles{position:absolute;top:46px;right:20px;display:flex;flex-wrap:wrap;justify-content:flex-end;
+  gap:4px 12px;max-width:calc(100% - 40px);pointer-events:auto;
+  padding:4px 9px;border:1px solid var(--line-soft);border-radius:5px;background:rgba(10,15,20,.62)}
+#viewtoggles label.sw{font-size:11.5px;white-space:nowrap}
 #marquee{position:fixed;border:1px solid var(--accent);background:rgba(232,197,71,.09);
   pointer-events:none;display:none;z-index:50}
 #drophint{position:absolute;inset:0;display:none;place-items:center;
@@ -474,8 +490,17 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
 #preview-hud .pv{background:rgba(10,15,20,.72);border:1px solid var(--line);
   border-radius:5px;padding:7px 14px;font-family:var(--mono);font-size:11px;
   color:var(--dim);letter-spacing:.03em;backdrop-filter:blur(2px)}
-#preview-hud .pv b{color:var(--fg);font-weight:500}
+#preview-hud .pv b{color:var(--text);font-weight:500}
 #stage.previewing #hud{display:none}
+#preview-hud.pv-off .pv{display:none}
+#preview-hud .pv kbd{font-size:10px}
+/* Preview is photo mode as well: every panel of the editor goes and the view
+   takes the window, so what is on screen is the map and one line of keys. */
+html.previewing #topbar,html.previewing #library,html.previewing #inspector,
+html.previewing #statusbar,html.previewing #ai-panel,html.previewing #drophint{display:none}
+html.previewing #app{grid-template-rows:1fr;grid-template-columns:1fr}
+html.previewing #stage{grid-column:1/-1;grid-row:1/-1}
+html.previewing #toast{bottom:64px}
 
 /* ---------- checkpoints ---------- */
 .cprow{display:grid;grid-template-columns:1fr auto auto;gap:6px;align-items:center;
@@ -568,7 +593,7 @@ kbd{font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px s
   display:flex;flex-direction:column;background:var(--panel);border-left:1px solid var(--line);
   box-shadow:-10px 0 30px rgba(0,0,0,.35)}
 #ai-panel[hidden]{display:none}
-#stage.ai-open #viewbtns{right:400px}
+#stage.ai-open #viewbtns,#stage.ai-open #viewtoggles{right:400px}
 .ai-head{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line)}
 .ai-head h2{flex:1;margin:0;font-family:var(--hud);font-size:14px;font-weight:600;letter-spacing:.14em;
   text-transform:uppercase;color:var(--accent);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -708,11 +733,6 @@ html.mobile #app{display:none}
     </div>
 
     <div class="grp">
-      <label class="sw" title="Take the invisible walls out of the view. They are placed around the real furniture in the room, so they stand exactly where you want to look. Hidden ones cannot be clicked or dragged over either, and nothing about the map changes"><input type="checkbox" id="hide-boundaries">Hide boundaries</label>
-      <label class="sw" title="Bring back everything hidden with the right-click menu, drawn faded so you can pick out the one you want. Right-click a faded object and choose Show to bring it back for good."><input type="checkbox" id="show-hidden">Show hidden<span class="cnt" id="hidden-count"></span></label>
-    </div>
-
-    <div class="grp">
       <!-- Both of these are settings of how the camera behaves, which is why
            they are here together rather than with the two visibility switches
            the orbit one used to sit with. The tick comes first and the switch
@@ -731,7 +751,7 @@ html.mobile #app{display:none}
          beside Mouse/Trackpad when it has not. `placePreviewButton` decides,
          on every resize. -->
     <button class="btn accent" id="b-preview"
-      title="Stand in the map at a player's height and walk about. Arrow keys move, the mouse looks, C crouches, Esc comes back">Preview</button>
+      title="Stand in the map at a player's height and walk about, with the editor's panels out of the way. Arrow keys move, the mouse looks, C crouches, F flies a free camera, P saves a picture, H hides the hint, Esc comes back">Preview</button>
 
     <div class="grp" id="layer-grp" hidden>
       <select id="layer-pick" title="Which of the venues you are looking at. The map itself, or one of its halls — picking a hall stands the map in it, to be lined up against its walls."></select>
@@ -763,7 +783,6 @@ html.mobile #app{display:none}
         <p class="hint" style="margin:0">Click an object and it comes out on the cursor; left click drops it,
           <kbd>Esc</kbd> puts it back. The view still orbits, pans and zooms while it is in hand, so you can
           look for the spot before you commit to it. Dragging one straight into the view places it there.</p>
-        <label class="flagopt" style="margin-top:8px" title="Draw the built-in stand-in shapes instead of the game's own models, to check them against each other"><input type="checkbox" id="placeholders">Stand-ins</label>
       </div>
     </div>
   </aside>
@@ -778,6 +797,15 @@ html.mobile #app{display:none}
         <button class="btn ghost" data-view="top" title="Look straight down">Top</button>
         <button class="btn ghost" data-view="front" title="Look along Z">Front</button>
         <button class="btn ghost" data-view="side" title="Look along X">Side</button>
+      </div>
+      <!-- What the view shows, beside how it looks at it. These two used to sit
+           in the top bar, which they pushed past the edge of a 1366-pixel
+           laptop screen, taking Redo with them; and they were the only two
+           things up there that change nothing but the view. -->
+      <div id="viewtoggles">
+      <label class="sw" title="Take the invisible walls out of the view. They are placed around the real furniture in the room, so they stand exactly where you want to look. Hidden ones cannot be clicked or dragged over either, and nothing about the map changes"><input type="checkbox" id="hide-boundaries">Hide boundaries</label>
+      <label class="sw" title="Bring back everything hidden with the right-click menu, drawn faded so you can pick out the one you want. Right-click a faded object and choose Show to bring it back for good."><input type="checkbox" id="show-hidden">Show hidden<span class="cnt" id="hidden-count"></span></label>
+        <label class="sw" title="Draw the built-in stand-in shapes instead of the game's own models, to check them against each other. Nothing about the map changes"><input type="checkbox" id="placeholders">Stand-ins</label>
       </div>
     </div>
     <div id="drophint">Release to place</div>
@@ -842,10 +870,10 @@ html.mobile #app{display:none}
         </div>
       </div>
     </aside>
+    <!-- Filled in by previewHint in app.js, for whichever of walking and
+         flying is on. -->
     <div id="preview-hud" hidden>
-      <div class="pv"><kbd>&larr;</kbd><kbd>&uarr;</kbd><kbd>&darr;</kbd><kbd>&rarr;</kbd> <b>walk</b>
-        &middot; mouse <b>look</b> &middot; <kbd>C</kbd> <b>crouch</b> &middot;
-        <kbd>Esc</kbd> <b>back to the editor</b></div>
+      <div class="pv"></div>
     </div>
   </div>
 
@@ -1071,9 +1099,15 @@ html.mobile #app{display:none}
             of the distance to it each notch: metres at a time across the arena,
             millimetres up against a crate. Point at something further off to
             cover ground again.<br><br>
-            <b>Preview</b>, in the middle of the top bar, stands you in the map at six feet.
-            The arrow keys walk, the mouse looks, <kbd>C</kbd> crouches to three feet and
+            <b>Preview</b>, in the middle of the top bar, stands you in the map at six feet
+            with every panel out of the way. The arrow keys walk, the mouse looks, <kbd>C</kbd>
+            crouches to three feet, <kbd>F</kbd> lets go of the floor for a free camera
+            (<kbd>E</kbd>/<kbd>Q</kbd> up and down, <kbd>Shift</kbd> faster), <kbd>H</kbd> hides
+            the line of keys for a clean shot, <kbd>P</kbd> saves the view as a picture, and
             <kbd>Esc</kbd> brings you back to the view you left.<br><br>
+            <b>Copy transform</b> in the inspector or on the right-click menu remembers one
+            object's position, rotation and scale; <b>Paste&hellip;</b> puts all three, or any one
+            of them, onto whatever is selected.<br><br>
             One gizmo does all three jobs: arrows move, the three coloured
             circles turn about X, Y and Z, the cubes scale, and the disc in the
             middle slides the selection across the view. Scaling holds the far

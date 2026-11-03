@@ -36,6 +36,13 @@
 //                 the game spawns its bots on the floor under the pad wherever
 //                 the pad is put, so a spawner on a rooftop delivers enemies
 //                 into whatever stands beneath it
+//   look          what the piece looks like in the game, in a few words — "tall
+//                 wooden bookshelf with cupboard doors". For the assistant,
+//                 which cannot see the art and was choosing by `color` below,
+//                 which is the stand-in's and not the game's. Set on a pack for
+//                 the theme as a whole and on an entry wherever its label does
+//                 not say what it is. Written by hand from the library icons;
+//                 the colours beside it are measured, in looks.js
 //   color         placeholder tint. Normally set once on the **pack** and used
 //                 by everything in it, which is what makes a theme read as a
 //                 theme when the real art is absent. An entry may override it,
@@ -90,6 +97,13 @@
 //   opacity       < 1 draws the object translucent, for volumes you need to
 //                 see through — the damage boxes mark a region, not a solid
 //   uncertain     `size` is an estimate, not a confirmed mesh dimension
+//   fitHeight     metres the loaded model is stretched to, evenly, when the
+//                 prefab is a stand-in for something of another size. Only
+//                 the scale figure, which borrows a 1.72 m bot to be a 1.8 m
+//                 person
+//   editorOnly    drawn, moved and undone like anything else and never written
+//                 to a map file, counted against the budget, or shown to the
+//                 assistant. The scale figure; see EDITOR_PACK
 //   hidden        loads and exports normally but is not offered in the library
 //   facing        'x' or 'z' — the object reads differently along that local
 //                 axis and is its own reflection across the other one, whatever
@@ -150,12 +164,46 @@
 
 export const PACK_SCHEMA_VERSION = 2;
 
-/** Top-level library sections, in the order the game shows them. */
+/**
+ * Top-level library sections, in the order the game shows them — and then one
+ * the game does not have. `editor` holds what the editor draws to help you
+ * build and never writes to a file; see EDITOR_PACK below.
+ */
 export const PACK_GROUPS = [
   { id: 'virtual', name: 'Virtual Objects' },
   { id: 'gameplay', name: 'Gameplay Objects' },
   { id: 'objectives', name: 'Mode Objectives' },
+  { id: 'editor', name: 'Editor Only' },
 ];
+
+// ---------------------------------------------------------------------------
+// How each piece may be resized
+// ---------------------------------------------------------------------------
+// The map file stores a free scale for every object, and the in-game editor
+// does not offer one. Read across 527 maps from the public library saved
+// before OpsForge existed, every type falls into one of four habits with next
+// to no exceptions: walls, boxes, tunnels and damage boxes stretch on each axis
+// alone; props scale evenly or not at all; and **every cylinder keeps its X and
+// Z equal** — 1,519 of them, none oval. Grounded or not, solid or boundary.
+//
+// The other habits are what the in-game editor offers, and maps written here
+// break them freely — stretched barriers, breach panels cut from scaled
+// destructible crates — and those play. Cylinders are the one with a report
+// from a headset: stretched oval here, drawn round there. So a cylinder is
+// held round, and nothing else is held to anything.
+//
+// `round` is derived from the shape rather than written on each entry, so a
+// cylinder in an extra pack under packs/ is held round too.
+export const ROUND_SHAPES = new Set(['cylinder', 'cylinderBoundary']);
+
+// ---------------------------------------------------------------------------
+// Damage box styles
+// ---------------------------------------------------------------------------
+// A damage box's `style` is its colour — Red, Blue or Orange, one per key — or
+// "Invisible", which is the game's own spelling for a box that hurts and is not
+// drawn. 68 of them in maps the game wrote, on all three keys: the type keeps
+// saying whose box it is and the style stops saying anything at all.
+export const DAMAGE_STYLE_INVISIBLE = 'Invisible';
 
 // ---------------------------------------------------------------------------
 // Weapon spawners
@@ -527,9 +575,44 @@ export const BOUNDARY_PACK = 'boundaries';
 /** Every type it owns, for the tests and for anything counting them. */
 export const BOUNDARY_TYPES = BOUNDARIES.map((o) => o.type);
 
+// ---------------------------------------------------------------------------
+// Editor only
+// ---------------------------------------------------------------------------
+// Things the editor draws to help you build, which are not part of the map and
+// never go into a file. One so far: a person, 1.8 m tall, to size a doorway or
+// a wall against. Every number in a map is a scale multiplier on a mesh nobody
+// can see the size of, and a crate next to a figure answers what a table of
+// metres does not.
+//
+// It is the game's own handgun bot — a 1.72 m humanoid already in the assets —
+// stretched to 1.8 m by `fitHeight` and dyed a magenta no game object wears,
+// so it cannot be mistaken for an enemy or a spawner. The stand-in is a
+// mannequin of the same height (`figure` in placeholders.js).
+//
+// `editorOnly` is what keeps it out of everything that describes the map: the
+// exported file, the object budget, the published thumbnail, the assistant's
+// view of the map. It is kept through undo like any object, and through a
+// checkpoint beside the map text, the way grouping and locks are. Its `type`
+// is a string the game has never written, so a copy that somehow escaped into
+// a file would load as an unknown marker rather than as something real.
+export const SCALE_FIGURE_TYPE = 'OpsForgeScaleFigure';
+export const SCALE_FIGURE_HEIGHT = 1.8;
+
+const EDITOR_PACK = {
+  id: "editor", name: "Editor Only", group: "editor", schema: PACK_SCHEMA_VERSION,
+  color: "#E040FB",
+  objects: [
+  { type: SCALE_FIGURE_TYPE, label: "Scale Figure (1.8 m)", category: "Reference",
+    shape: "figure", size: [0.6, SCALE_FIGURE_HEIGHT, 0.25], pivot: "base", rotationAxes: "y",
+    floor: true, defaultScale: [1, 1, 1], model: "HandgunBotSpawner", keepParts: "Model",
+    tintModel: true, fitHeight: SCALE_FIGURE_HEIGHT, editorOnly: true, icon: "Icon_ScaleFigure" },
+  ],
+};
+
 export const BUILTIN_PACKS = [
   {
     id: "default", name: "Default", group: "virtual", schema: PACK_SCHEMA_VERSION,
+    look: "Sci-fi metal panels painted olive green on grey bases with hazard stripes; plain olive shapes",
     color: "#6E7A48",
     objects: [
     { type: "BarrierCorner", label: "Barrier Corner", category: "Objects",
@@ -563,6 +646,7 @@ export const BUILTIN_PACKS = [
       floor: true, defaultScale: [1, 1, 1], icon: "Icon_CrateDestructable",
       model: "DestructibleCrate", texture: "WoodenCrateBreakable_Diffuse.png" },
     { type: "DefaultElectricityBox", label: "Electricity Box", category: "Objects",
+      look: "upright electrical cabinet with glowing lights",
       shape: "electricityBox", size: [0.545, 0.714, 0.44], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], icon: "Icon_ElectricityBoxDefault",
       model: "ElectricityBoxDefaultVisual", texture: "ElectricityBoxGreen_Diffuse.png" },
@@ -590,6 +674,7 @@ export const BUILTIN_PACKS = [
   },
   {
     id: "blue", name: "Blue", group: "virtual", schema: PACK_SCHEMA_VERSION,
+    look: "The Default panels painted bright blue; plain blue shapes",
     color: "#3E7BB8",
     objects: [
     { type: "BlueBarrierCorner", label: "Barrier Corner", category: "Objects",
@@ -625,6 +710,7 @@ export const BUILTIN_PACKS = [
       floor: true, defaultScale: [1, 1, 1], model: "BlueDestructibleCrate",
       texture: "WoodenCrateBreakableBlue.png", icon: "icon_DefaultCrateDestructableBlue" },
     { type: "BlueElectricityBox", label: "Electricity Box", category: "Objects",
+      look: "upright electrical cabinet with glowing lights",
       shape: "electricityBox", size: [0.545, 0.714, 0.44], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], model: "ElectricityBoxBlue",
       texture: "ElectricityBoxBlue_Diffuse.png", icon: "Icon_ElectricityBoxBlue" },
@@ -653,6 +739,7 @@ export const BUILTIN_PACKS = [
   },
   {
     id: "orange", name: "Orange", group: "virtual", schema: PACK_SCHEMA_VERSION,
+    look: "The Default panels painted rust orange; plain rust-brown shapes",
     color: "#D5822F",
     objects: [
     { type: "OrangeBarrierCorner", label: "Barrier Corner", category: "Objects",
@@ -689,6 +776,7 @@ export const BUILTIN_PACKS = [
       floor: true, defaultScale: [1, 1, 1], model: "OrangeDestructibleCrate",
       texture: "WoodenCrateBreakableOrange.png", icon: "icon_DefaultCrateDestructableOrange" },
     { type: "OrangeElectricityBox", label: "Electricity Box", category: "Objects",
+      look: "upright electrical cabinet with glowing lights",
       shape: "electricityBox", size: [0.545, 0.714, 0.44], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], model: "ElectricityBoxOrange",
       texture: "ElectricityBoxOrange.png", icon: "Icon_ElectricityBoxOrange" },
@@ -717,6 +805,7 @@ export const BUILTIN_PACKS = [
   },
   {
     id: "purple", name: "Purple", group: "virtual", schema: PACK_SCHEMA_VERSION,
+    look: "The Default panels painted violet; plain purple-blue shapes",
     color: "#7C5CB0",
     objects: [
     { type: "PurpleBarrierCorner", label: "Barrier Corner", category: "Objects",
@@ -753,6 +842,7 @@ export const BUILTIN_PACKS = [
       floor: true, defaultScale: [1, 1, 1], model: "PurpleDestructibleCrate",
       texture: "WoodenCrateBreakablePurple.png", icon: "icon_DefaultCrateDestructablePurple" },
     { type: "PurpleElectricityBox", label: "Electricity Box", category: "Objects",
+      look: "upright electrical cabinet with glowing lights",
       shape: "electricityBox", size: [0.545, 0.714, 0.44], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], model: "ElectricityBoxPurple",
       texture: "ElectricityBoxPurple_Diffuse.png", icon: "Icon_ElectricityBoxPurple" },
@@ -781,33 +871,41 @@ export const BUILTIN_PACKS = [
   },
   {
     id: "camo", name: "Camo", group: "virtual", schema: PACK_SCHEMA_VERSION,
+    look: "Military: tan brick walls capped with sandbags, dark green ammunition crates, and shapes in a grey-green camouflage pattern",
     color: "#8B99A6",
     objects: [
     { type: "CamoBarrierCorner", label: "Barrier Corner", category: "Objects",
+      look: "L-shaped tan brick wall capped with sandbags",
       shape: "barrierCorner", size: [1.107, 2.002, 1.107], pivot: "base",
       anchor: [0.911, 0.911], rotationAxes: "y", floor: true, defaultScale: [1, 1, 1],
       model: "CamoBarrier90CornerVisual", texture: "CamoBarrier_Diffuse.png",
       icon: "icon_MilitaryBarrier90Corner" },
     { type: "CamoBarrierFull", label: "Barrier Full", category: "Objects",
+      look: "tall tan brick wall capped with sandbags",
       shape: "barrierFullSlab", size: [1.01, 2.002, 0.196], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], model: "CamoBarrierFullVisual",
       texture: "CamoBarrier_Diffuse.png", icon: "icon_MilitaryBarrierFull" },
     { type: "CamoBarrierLow", label: "Barrier Low", category: "Objects",
+      look: "low brick wall with sandbags on top",
       shape: "barrierLowSlab", size: [1.01, 1.041, 0.189], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], model: "CamoBarrierHalfVisual",
       texture: "CamoBarrier_Diffuse.png", icon: "icon_MilitaryBarrierHalf" },
     { type: "CamoBarrierWindow", label: "Barrier Window", category: "Objects",
+      look: "tall brick wall with a square window, sandbags on top",
       shape: "barrierWindowWide", size: [1.01, 2.002, 0.2], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], model: "CamoBarrierWindowVisual",
       texture: "CamoBarrier_Diffuse.png", icon: "icon_MilitaryBarrierWindow" },
     { type: "CamoBarrierX", label: "Barrier X", category: "Objects", shape: "barrierX",
+      look: "tall brick barrier with two cut-outs, sandbags on top",
       size: [1.01, 2.002, 0.196], pivot: "base", rotationAxes: "y", floor: true,
       defaultScale: [1, 1, 1], model: "CamoBarrierUVisual", texture: "CamoBarrier_Diffuse.png",
       icon: "icon_MilitaryBarrierU" },
     { type: "CamoTunnel", label: "Tunnel", category: "Objects", shape: "tunnel",
+      look: "arch in grey-green camouflage",
       size: [1, 1, 1], pivot: "center", rotationAxes: "y", floor: true, defaultScale: [1, 2, 1],
       model: "CamoTunnel", texture: "CamoWall_Diffuse.png", icon: "icon_MilitaryTunel" },
     { type: "CamoCrate", label: "Crate", category: "Objects", shape: "crate",
+      look: "dark green military ammunition crate",
       size: [0.59, 0.506, 0.55], pivot: "base", rotationAxes: "y", floor: true,
       defaultScale: [1, 1, 1], model: "CamoCrate", texture: "CamoCrateCombined_Diffuse.png",
       icon: "icon_MilitaryCrate" },
@@ -817,10 +915,12 @@ export const BUILTIN_PACKS = [
     // and a bit long; the only other piece like it is Graffiti's crate, and the
     // two now swap with each other and with nothing else.
     { type: "CamoCrateBig", label: "Crate Big", category: "Objects", shape: "longCrateSkids",
+      look: "long dark green military crate",
       size: [1.187, 0.556, 0.55], pivot: "base", rotationAxes: "y", floor: true,
       defaultScale: [1, 1, 1], model: "CamoCrateBig", texture: "CamoCrateCombined_Diffuse.png",
       icon: "icon_MilitaryCrateBig" },
     { type: "CamoBoxSolid", label: "Solid Box", category: "Shapes", shape: "box",
+      look: "block in grey-green camouflage",
       size: [1, 1, 1], pivot: "center", rotationAxes: "xyz", floor: false,
       defaultScale: [1, 1, 1], model: "CamoBoxSolid", texture: "CamoWall_Diffuse.png",
       icon: "icon_MilitaryCube" },
@@ -829,6 +929,7 @@ export const BUILTIN_PACKS = [
       defaultScale: [1, 1, 1], hidden: true, model: "CamoBoxSolidGrounded",
       texture: "CamoWall_Diffuse.png", icon: "icon_MilitaryCube_grounded" },
     { type: "CamoCylinderSolid", label: "Solid Cylinder", category: "Shapes",
+      look: "drum in grey-green camouflage",
       shape: "cylinder", size: [1, 1, 1], pivot: "center", rotationAxes: "xyz", floor: false,
       defaultScale: [0.5, 2, 0.5], model: "CamoCylinderSolid", texture: "CamoWall_Diffuse.png",
       icon: "icon_MilitaryCilinder" },
@@ -838,6 +939,7 @@ export const BUILTIN_PACKS = [
       model: "CamoCylinderSolidGrounded", texture: "CamoWall_Diffuse.png",
       icon: "icon_MilitaryCilinder_grounded" },
     { type: "CamoWallSolid", label: "Solid Wall", category: "Shapes", shape: "wallLayered",
+      look: "wall in grey-green camouflage",
       size: [1, 1, 0.236], pivot: "center", rotationAxes: "y", floor: true,
       defaultScale: [2, 2.5, 1], model: "CamoWallSolid", texture: "Trimsheet_basecolor.png",
       icon: "icon_MilitaryWall" },
@@ -845,38 +947,47 @@ export const BUILTIN_PACKS = [
   },
   {
     id: "mykea", name: "Mykea", group: "virtual", schema: PACK_SCHEMA_VERSION,
+    look: "A furnished room: wooden bookshelves and cabinets, a blue sofa corner, a brown sofa, a blue floor cushion, and shapes in dark red upholstery",
     color: "#C9A97A",
     objects: [
     { type: "MYKEABarrierCorner", label: "Barrier Corner", category: "Objects",
+      look: "tall-backed blue upholstered sofa corner (L-shaped)",
       shape: "barrierCornerRound", size: [1.213, 2.075, 1.224], pivot: "base",
       anchor: [0.87, 0.833], rotationAxes: "y", floor: true, defaultScale: [1, 1, 1],
       model: "IndoorBarrierCornerVisual", texture: "IndoorBarrierCorner_Diffuse.png",
       icon: "Image_MYKEA_barrier_corner_icon" },
     { type: "MYKEABarrierFull", label: "Barrier Full", category: "Objects",
+      look: "tall wooden bookshelf with cupboard doors",
       shape: "barrierFullSlab", size: [1.002, 1.975, 0.218], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], model: "IndoorBarrierFullVisual",
       texture: "Mykea_Diffuse.png", icon: "Image_MYKEA_barrier_full_icon" },
     { type: "MYKEABarrierLow", label: "Barrier Low", category: "Objects",
+      look: "low wooden sideboard with a shelf of books",
       shape: "barrierLowSlab", size: [1.002, 1.044, 0.218], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], model: "IndoorBarrierLowVisual",
       texture: "Mykea_Diffuse.png", icon: "Image_MYKEA_barrier_low_icon" },
     { type: "MYKEABarrierU", label: "Barrier U", category: "Objects", shape: "barrierUCouch",
+      look: "tall dark entertainment unit, open through the middle",
       size: [1.002, 1.987, 0.266], pivot: "base", rotationAxes: "y", floor: true,
       defaultScale: [1, 1, 1], model: "IndoorBarrierUVisualCouch",
       texture: "MykeaObjects_Diffuse.png", icon: "Image_MYKEA_barrier_U_icon" },
     { type: "MYKEABarrierWindow", label: "Barrier Window", category: "Objects",
+      look: "tall wooden shelving unit with a gap through the middle",
       shape: "barrierWindowWide", size: [1.012, 2.037, 0.273], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1.2337, 1.2337, 1.2337], model: "IndoorBarrierWindowVisual",
       texture: "Mykea_Diffuse.png", icon: "Image_MYKEA_barrier_window_icon" },
     { type: "MYKEATunnel", label: "Tunnel", category: "Objects", shape: "tunnel",
+      look: "arch in dark red upholstery",
       size: [1, 1, 1], pivot: "center", rotationAxes: "y", floor: true, defaultScale: [1, 2, 1],
       model: "MYKEATunnel", texture: "IndoorPrimitives_Diffuse.png",
       icon: "Image_MYKEA_Tunel" },
     { type: "MYKEASofa", label: "Sofa", category: "Objects", shape: "sofa",
+      look: "brown three-seat sofa",
       size: [1.66, 1.038, 0.97], pivot: "base", rotationAxes: "y", floor: true,
       defaultScale: [1, 1, 1], model: "IndoorBarrierGroundedVisualCouch",
       icon: "Image_MYKEA_sofa_icon" },
     { type: "MYKEACushion", label: "Cushion", category: "Objects", shape: "cushion",
+      look: "flat blue floor cushion",
       size: [1.002, 0.174, 0.502], pivot: "base", rotationAxes: "y", floor: true,
       defaultScale: [1, 1, 1], model: "IndoorBarrierCrateVisual",
       texture: "MikeaPillow_Diffuse.png", icon: "Image_MYKEA_crate_icon" },
@@ -894,10 +1005,12 @@ export const BUILTIN_PACKS = [
     // crate to Mykea therefore finds nothing and leaves the piece alone, which
     // is right — an ottoman does not come apart when it is shot.
     { type: "MYKEAOttoman", label: "Ottoman", category: "Objects", shape: "crateOttoman",
+      look: "dark red upholstered ottoman",
       size: [0.5, 0.51, 0.5], pivot: "base", rotationAxes: "y", floor: true,
       defaultScale: [1, 1, 1], model: "IndoorCover1x1", texture: "MikeaPillow_Diffuse.png",
       icon: "Image_MYKEA_cover_icon" },
     { type: "MYKEABoxSolid", label: "Solid Box", category: "Shapes", shape: "box",
+      look: "block in dark red upholstery",
       size: [1, 1, 1], pivot: "center", rotationAxes: "xyz", floor: false,
       defaultScale: [1, 1, 1], model: "MYKEABoxSolid", texture: "IndoorPrimitives_Diffuse.png",
       icon: "Image_MYKEA_Solid_box" },
@@ -906,6 +1019,7 @@ export const BUILTIN_PACKS = [
       defaultScale: [1, 1, 1], hidden: true, model: "MYKEABoxSolidGrounded",
       texture: "IndoorPrimitives_Diffuse.png", icon: "Image_MYKEA_Solid_box_grounded" },
     { type: "MYKEACylinderSolid", label: "Solid Cylinder", category: "Shapes",
+      look: "drum in dark red upholstery",
       shape: "cylinder", size: [1, 1, 1], pivot: "center", rotationAxes: "xyz", floor: false,
       defaultScale: [0.5, 2, 0.5], model: "MYKEACylinderSolid",
       texture: "IndoorPrimitives_Diffuse.png", icon: "Image_MYKEA_Solid_cilinder" },
@@ -915,6 +1029,7 @@ export const BUILTIN_PACKS = [
       model: "MYKEACylinderSolidGrounded", texture: "IndoorPrimitives_Diffuse.png",
       icon: "Image_MYKEA_Solid_cilinder_grounded" },
     { type: "MYKEAWallSolid", label: "Solid Wall", category: "Shapes", shape: "wallPlain",
+      look: "wooden wall panel with a pale inset",
       size: [1, 1, 0.185], pivot: "center", rotationAxes: "y", floor: true,
       defaultScale: [2, 2.5, 1], model: "MYKEAWallSolid", texture: "IndoorWoodWall_Diffuse.png",
       icon: "Image_MYKEA_Wall" },
@@ -922,30 +1037,37 @@ export const BUILTIN_PACKS = [
   },
   {
     id: "graffiti", name: "Graffiti", group: "virtual", schema: PACK_SCHEMA_VERSION,
+    look: "City street: red-brown brick walls sprayed with graffiti, a black flight case, a teal oil drum, a pigeon, and shapes in sandy brick",
     color: "#7F8B97",
     objects: [
     { type: "GraffitiBarrierCorner", label: "Barrier Corner", category: "Objects",
+      look: "L-shaped concrete wall covered in graffiti",
       shape: "barrierCorner", size: [1.104, 2.048, 1.08], pivot: "base", anchor: [0.915, 0.912],
       rotationAxes: "y", floor: true, defaultScale: [1, 1, 1],
       model: "BarrierStreetStyleCorner90", texture: "GraffitiBarrier_Diffuse.png",
       icon: "icon_Grafitti_CornerBarrier" },
     { type: "GraffitiBarrierFull", label: "Barrier Full", category: "Objects",
+      look: "tall red brick wall covered in graffiti",
       shape: "barrierFullSlab", size: [1.014, 2.043, 0.187], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], model: "BarrierStreetStyle2x1",
       texture: "GraffitiBarrier_Diffuse.png", icon: "icon_Grafitti_Barrier" },
     { type: "GraffitiBarrierLow", label: "Barrier Low", category: "Objects",
+      look: "low red brick wall on a concrete base",
       shape: "barrierLow", size: [1.014, 1.199, 0.187], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], model: "BarrierStreetStyleLow1m",
       texture: "GraffitiBarrier_Diffuse.png", icon: "icon_Grafitti_ShortBarrier" },
     { type: "GraffitiBarrierWindow", label: "Barrier Window", category: "Objects",
+      look: "tall red brick wall with a window",
       shape: "barrierWindowWide", size: [1.014, 2.043, 0.194], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], model: "BarrierStreetStyleWindow2x1m",
       texture: "GraffitiBarrier_Diffuse.png", icon: "icon_Grafitti_WindowBarrier" },
     { type: "GraffitiBarrierBroken", label: "Barrier Broken", category: "Objects",
+      look: "red brick wall with one corner broken away",
       shape: "barrierBroken", size: [1.016, 2.043, 0.187], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], model: "BarrierStreetStyleBroken2x1m",
       texture: "GraffitiBarrier_Diffuse.png", icon: "icon_Grafitti_LBarrier" },
     { type: "GraffitiTunnel", label: "Tunnel", category: "Objects", shape: "tunnel",
+      look: "arch in sandy brick",
       size: [1, 1, 1], pivot: "center", rotationAxes: "y", floor: true, defaultScale: [1, 2, 1],
       model: "GraffitiTunnel", texture: "Graffiti_Diffuse.png", icon: "icon_Grafitti_Tunel" },
     // The game calls it a crate and it is shaped like one, but at 1.028 m it is
@@ -958,11 +1080,13 @@ export const BUILTIN_PACKS = [
     // crate, modelled a quarter turn apart. Without it the two lie across each
     // other on the floor and a theme swap turns every one of them.
     { type: "GraffitiCrate", label: "Big Crate", category: "Objects", shape: "longCrate",
+      look: "black flight case with metal corners",
       shapeYaw: 90,
       size: [0.522, 0.519, 1.028], pivot: "base", rotationAxes: "y", floor: true,
       defaultScale: [1, 1, 1], model: "StreetStyleCrate",
       texture: "StreetStyleBarrelCrate_Diffuse.png", icon: "icon_Grafitti_Crate" },
     { type: "GraffitiBarrel", label: "Barrel", category: "Objects", shape: "barrel",
+      look: "teal oil drum",
       size: [0.522, 0.671, 0.522], pivot: "base", rotationAxes: "y", floor: true,
       defaultScale: [1, 1, 1], model: "StreetStyleBarrel",
       texture: "StreetStyleBarrelCrate_Diffuse.png", icon: "icon_Grafitti_Barrel" },
@@ -971,10 +1095,12 @@ export const BUILTIN_PACKS = [
     // prefab had, which was the hologram shell — and that is the pigeon scaled
     // by 1.1, so every guess taken from it was a tenth too big.
     { type: "GraffitiPigeon", label: "Pigeon", category: "Objects", shape: "pigeon",
+      look: "a large pigeon",
       size: [0.183, 0.263, 0.297], pivot: "base", anchor: [0.5, 0.348], rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], model: "StreetStylePigeon",
       icon: "icon_Grafitti_Pidgeon" },
     { type: "GraffitiBoxSolid", label: "Solid Box", category: "Shapes", shape: "box",
+      look: "block in sandy brick",
       size: [1, 1, 1], pivot: "center", rotationAxes: "xyz", floor: false,
       defaultScale: [1, 1, 1], model: "GraffitiBoxSolid", texture: "Graffiti_Diffuse.png",
       icon: "icon_Grafitti_Box_crate" },
@@ -983,6 +1109,7 @@ export const BUILTIN_PACKS = [
       defaultScale: [1, 1, 1], hidden: true, model: "GraffitiBoxSolidGrounded",
       texture: "Graffiti_Diffuse.png", icon: "icon_Grafitti_Box_crate_grounded" },
     { type: "GraffitiCylinderSolid", label: "Solid Cylinder", category: "Shapes",
+      look: "column in sandy brick",
       shape: "cylinder", size: [1, 1, 1], pivot: "center", rotationAxes: "xyz", floor: false,
       defaultScale: [0.5, 2, 0.5], model: "GraffitiCylinderSolid",
       texture: "Graffiti_Diffuse.png", icon: "icon_Grafitti_Cilinder_crate" },
@@ -992,6 +1119,7 @@ export const BUILTIN_PACKS = [
       model: "GraffitiCylinderSolidGrounded", texture: "Graffiti_Diffuse.png",
       icon: "icon_Grafitti_Cilinder_crate_grounded" },
     { type: "GraffitiWallSolid", label: "Solid Wall", category: "Shapes", shape: "wall",
+      look: "sandy brick wall in a green frame",
       size: [1, 1, 0.119], pivot: "center", rotationAxes: "y", floor: true,
       defaultScale: [2, 2.5, 1], model: "GraffitiWallSolid", texture: "Trimsheet_basecolor.png",
       icon: "icon_Grafitti_Wall" },
@@ -999,30 +1127,37 @@ export const BUILTIN_PACKS = [
   },
   {
     id: "paintball", name: "Paintball", group: "virtual", schema: PACK_SCHEMA_VERSION,
+    look: "Paintball field: plywood and pallet-board walls splashed with red paint, a blue barrel, and shapes in pale cork board",
     color: "#34A57C",
     objects: [
     { type: "PaintballBarrierCorner", label: "Barrier Corner", category: "Objects",
+      look: "L-shaped plywood wall marked with red crosses",
       shape: "barrierCorner", size: [1.194, 2.01, 1.2], pivot: "base", anchor: [0.838, 0.888],
       rotationAxes: "y", floor: true, defaultScale: [1, 1, 1],
       model: "PaintBallBarrierCornerVisual", texture: "PaintBarrierX2x1_Diffuse.png",
       icon: "icon_PaintBallBarrierCorner" },
     { type: "PaintballBarrierFull", label: "Barrier Full", category: "Objects",
+      look: "tall plywood wall splashed with paint",
       shape: "barrierFullFeet", size: [1, 2.01, 0.268], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], model: "PaintBallBarrierFullVisual",
       texture: "PaintBallBarrier2x1_Diffuse.png", icon: "icon_PaintBallBarrierFull" },
     { type: "PaintballBarrierLow", label: "Barrier Low", category: "Objects",
+      look: "low wooden pallet board with a stencilled logo",
       shape: "barrierLowFeet", size: [1, 1.024, 0.268], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], model: "PaintBallBarrierLowVisual",
       texture: "PaintBallBarrier_Diffuse.png", icon: "icon_PaintBallBarrierLow" },
     { type: "PaintballBarrierWindow", label: "Barrier Window", category: "Objects",
+      look: "tall plywood wall with a window slot",
       shape: "barrierWindowSlot", size: [1, 2.01, 0.268], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], model: "PaintBallBarrierWindowVisual",
       texture: "PaintBallBarrier_Diffuse.png", icon: "icon_PaintBallBarrierWindow" },
     { type: "PaintballBarrierD", label: "Barrier D", category: "Objects", shape: "barrierD",
+      look: "tall plank wall with a red chevron",
       size: [1.009, 2.01, 0.268], pivot: "base", rotationAxes: "y", floor: true,
       defaultScale: [1, 1, 1], model: "PaintBallBarrierUVisual",
       texture: "PaintBarrierU2x1_Diffuse.png", icon: "icon_PaintBallBarrierU" },
     { type: "PaintballTunnel", label: "Tunnel", category: "Objects", shape: "tunnel",
+      look: "arch in plywood",
       size: [1, 1, 1], pivot: "center", rotationAxes: "y", floor: true, defaultScale: [1, 2, 1],
       model: "PaintBallTunnel", texture: "Chipboard_basecolor.png",
       icon: "icon_PaintBallSolidTunel" },
@@ -1037,10 +1172,12 @@ export const BUILTIN_PACKS = [
     // ten centimetres shorter than either. Those two are within three
     // centimetres of each other and go on swapping between themselves.
     { type: "PaintballCrate", label: "Barrel", category: "Objects", shape: "drum",
+      look: "blue plastic barrel",
       size: [0.518, 0.597, 0.518], pivot: "base", rotationAxes: "y", floor: true,
       defaultScale: [1, 1, 1], model: "PaintBallCrateVisual",
       texture: "PaintBallCover1x1_Diffuse.png", icon: "icon_PaintBallCrate" },
     { type: "PaintballBoxSolid", label: "Solid Box", category: "Shapes", shape: "box",
+      look: "block in pale cork board",
       size: [1, 1, 1], pivot: "center", rotationAxes: "xyz", floor: false,
       defaultScale: [1, 1, 1], model: "PaintBallBoxSolid", texture: "Chipboard_basecolor.png",
       icon: "icon_PaintBallSolidCrate" },
@@ -1049,6 +1186,7 @@ export const BUILTIN_PACKS = [
       defaultScale: [1, 1, 1], hidden: true, model: "PaintBallBoxSolidGrounded",
       texture: "Chipboard_basecolor.png", icon: "icon_PaintBallSolidCrate_grounded" },
     { type: "PaintballCylinderSolid", label: "Solid Cylinder", category: "Shapes",
+      look: "drum in pale cork board",
       shape: "cylinder", size: [1, 1, 1], pivot: "center", rotationAxes: "xyz", floor: false,
       defaultScale: [0.5, 2, 0.5], model: "PaintBallCylinderSolid",
       texture: "Chipboard_basecolor.png", icon: "icon_PaintBallSolidCilinder" },
@@ -1058,6 +1196,7 @@ export const BUILTIN_PACKS = [
       model: "PaintBallCylinderSolidGrounded", texture: "Chipboard_basecolor.png",
       icon: "icon_PaintBallSolidCilinder_grounded" },
     { type: "PaintballWallSolid", label: "Solid Wall", category: "Shapes", shape: "wall",
+      look: "dark wooden slatted wall",
       size: [1, 1, 0.134], pivot: "center", rotationAxes: "y", floor: true,
       defaultScale: [2, 2.5, 1], model: "PaintBallWallSolid",
       texture: "PaintBallWall_Diffuse.png", icon: "icon_PaintBallSolidWall" },
@@ -1065,42 +1204,52 @@ export const BUILTIN_PACKS = [
   },
   {
     id: "wildwest", name: "Wild West", group: "virtual", schema: PACK_SCHEMA_VERSION,
+    look: "Frontier town: dark reddish-brown wooden saloon doors, plank walls and fences, a wooden barrel, a green cactus, and shapes in dark wood planks",
     color: "#9E7346",
     objects: [
     { type: "WildWestBarrierCorner", label: "Barrier Corner", category: "Objects",
+      look: "L-shaped wooden saloon front",
       shape: "barrierCornerPost", size: [1.112, 2.389, 1.167], pivot: "base",
       anchor: [0.948, 0.843], rotationAxes: "y", floor: true, defaultScale: [1, 1, 1],
       model: "WildWestBarrierCorner90", texture: "WildWestBarrier02_Diffuse.png",
       icon: "Image_WildWest_barrier_corner_icon" },
     { type: "WildWestBarrierFull", label: "Barrier Full", category: "Objects",
+      look: "tall wooden door with a wagon-wheel window",
       shape: "barrierFullPost", size: [1.077, 2.389, 0.299], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], model: "WildWestBarrierTall",
       texture: "WildWestBarrier02_Diffuse.png", icon: "Image_WildWest_barrier_full_icon" },
     { type: "WildWestBarrierLow", label: "Barrier Low", category: "Objects",
+      look: "low wooden plank fence",
       shape: "barrierLowCap", size: [1.179, 1.212, 0.207], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], model: "WildWestBarrierShort",
       texture: "WildWestBarrier02_Diffuse.png", icon: "Image_WildWest_barrier_short_icon" },
     { type: "WildWestBarrierDoor", label: "Barrier Door", category: "Objects",
+      look: "saloon swing doors in a wooden frame",
       shape: "barrierDoor", size: [1.18, 2.1, 0.319], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], model: "WildWestBarrierDoor",
       texture: "WildWestBarrier01_Diffuse.png", icon: "Image_WildWest_barrier_door_icon" },
     { type: "WildWestBarrierBroken", label: "Barrier Broken", category: "Objects",
+      look: "broken wooden plank wall",
       shape: "barrierBrokenPlanks", size: [1.18, 2.1, 0.319], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], model: "WildWestBarrierBroken",
       texture: "WildWestBarrier01_Diffuse.png", icon: "Image_WildWest_barrier_broken_icon" },
     { type: "WildWestTunnel", label: "Tunnel", category: "Objects", shape: "tunnel",
+      look: "arch in dark wood",
       size: [1, 1, 1], pivot: "center", rotationAxes: "y", floor: true, defaultScale: [1, 2, 1],
       model: "WildWestTunnel", texture: "WildWestWood_Diffuse.png",
       icon: "Image_WildWest_tunel" },
     { type: "WildWestBarrel", label: "Barrel", category: "Objects", shape: "barrel",
+      look: "wooden barrel with iron hoops",
       size: [0.545, 0.696, 0.551], pivot: "base", rotationAxes: "y", floor: true,
       defaultScale: [1, 1, 1], model: "WildWestBarrel",
       texture: "WildWestCactiBarrel_Diffuse.png", icon: "Image_WildWest_barrel_icon" },
     { type: "WildWestCacti", label: "Cacti", category: "Objects", shape: "cacti",
+      look: "green saguaro cactus",
       size: [0.84, 1.544, 0.629], pivot: "base", rotationAxes: "y", floor: true,
       defaultScale: [1, 1, 1], model: "WildWestCacti",
       texture: "WildWestCactiBarrel_Diffuse.png", icon: "Image_WildWest_barrier_cactus_icon" },
     { type: "WildWestBoxSolid", label: "Solid Box", category: "Shapes", shape: "box",
+      look: "block in dark wood planks",
       size: [1, 1, 1], pivot: "center", rotationAxes: "xyz", floor: false,
       defaultScale: [1, 1, 1], model: "WildWestBoxSolid", texture: "WildWestWood_Diffuse.png",
       icon: "Image_WildWest_cube" },
@@ -1109,6 +1258,7 @@ export const BUILTIN_PACKS = [
       defaultScale: [1, 1, 1], hidden: true, model: "WildWestBoxSolidGrounded",
       texture: "WildWestWood_Diffuse.png", icon: "Image_WildWest_cube_grounded" },
     { type: "WildWestCylinderSolid", label: "Solid Cylinder", category: "Shapes",
+      look: "drum in dark wood planks",
       shape: "cylinder", size: [1, 1, 1], pivot: "center", rotationAxes: "xyz", floor: false,
       defaultScale: [0.5, 2, 0.5], model: "WildWestCylinderSolid",
       texture: "WildWestWood_Diffuse.png", icon: "Image_WildWest_cilinder" },
@@ -1118,6 +1268,7 @@ export const BUILTIN_PACKS = [
       model: "WildWestCylinderSolidGrounded", texture: "WildWestWood_Diffuse.png",
       icon: "Image_WildWest_cilinder_grounded" },
     { type: "WildWestWallSolid", label: "Solid Wall", category: "Shapes",
+      look: "dark wooden plank wall with green trim",
       shape: "wallPlank", size: [1, 1, 0.15], pivot: "center", rotationAxes: "y", floor: true,
       defaultScale: [2, 2.5, 1], model: "WildWestWallSolid",
       texture: "WildWestWood_Diffuse.png", icon: "Image_WildWest_wall" },
@@ -1125,27 +1276,33 @@ export const BUILTIN_PACKS = [
   },
   {
     id: "hatchetcorp", name: "Hatchet Corp", group: "virtual", schema: PACK_SCHEMA_VERSION,
+    look: "Corporate sci-fi: glossy cyan-blue panels with orange accent strips, and a dark blue crate",
     color: "#56708C",
     objects: [
     { type: "HatchetCorpBarrierCorner", label: "Barrier Corner", category: "Objects",
+      look: "L-shaped cyan sci-fi panel",
       shape: "barrierCorner", size: [1.075, 2, 1.077], pivot: "base", anchor: [0.93, 0.878],
       rotationAxes: "y", floor: true, defaultScale: [1, 1, 1],
       model: "HatCoBarrierCornerVisual", texture: "HatCoBarriersTextureUpdated_Diffuse.png",
       icon: "icon_HatCoBarrierCorner" },
     { type: "HatchetCorpBarrierFull", label: "Barrier Full", category: "Objects",
+      look: "tall cyan sci-fi panel",
       shape: "barrierFull", size: [1.04, 2, 0.261], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], model: "HatCoBarrierFullVisual",
       texture: "HatCoBarriersTextureUpdated_Diffuse.png",
       icon: "icon_HatCoBarrierSmallWindow" },
     { type: "HatchetCorpBarrierWindow", label: "Barrier Window", category: "Objects",
+      look: "tall cyan panel with a window",
       shape: "barrierWindowTall", size: [1.036, 1.998, 0.25], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], model: "HatCoBarrierWallWindow",
       texture: "HatCoBarriersTextureUpdated_Diffuse.png", icon: "icon_HatCoBarrierWallWindow" },
     { type: "HatchetCorpBarrierL", label: "Barrier L", category: "Objects", shape: "barrierL",
+      look: "cyan panel stepped down on one side",
       size: [1.028, 1.996, 0.335], pivot: "base", rotationAxes: "y", floor: true,
       defaultScale: [1, 1, 1], model: "HatCoBarrierUVisual",
       texture: "HatCoBarriersTextureUpdated_Diffuse.png", icon: "icon_HatCoBarrierU" },
     { type: "HatchetCorpBarrierDoorway", label: "Barrier Doorway", category: "Objects",
+      look: "cyan frame with a doorway through it",
       shape: "barrierDoorway", size: [1.053, 1.998, 0.262], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], model: "HatCoBarrierDoorwayVisual",
       texture: "HatCoBarriersTextureUpdated_Diffuse.png", icon: "icon_HatCoBarrierDoorway" },
@@ -1156,18 +1313,22 @@ export const BUILTIN_PACKS = [
     // under that name. A variant rather than the family, so it reaches the
     // plain `barrierLow` and not Camo's or Mykea's slab.
     { type: "HatchetCorpBarrierSlope", label: "Barrier Slope", category: "Objects",
+      look: "cyan panel with a sloping top",
       shape: "barrierLowSlope", size: [1.028, 1.198, 0.262], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], model: "HatCoBarrierSlopeVisual",
       texture: "HatCoBarriersTextureUpdated_Diffuse.png", icon: "icon_HatCoBarrierSlope" },
     { type: "HatchetCorpTunnel", label: "Tunnel", category: "Objects", shape: "tunnel",
+      look: "arch in cyan-blue metal",
       size: [1, 1, 1], pivot: "center", rotationAxes: "y", floor: true, defaultScale: [1, 2, 1],
       model: "HatchetCorpTunnel", texture: "HatchetCorpWall_Diffuse.png",
       icon: "icon_HatCoTunel" },
     { type: "HatchetCorpPillar", label: "Pillar", category: "Objects", shape: "pillar",
+      look: "tall cyan pillar",
       size: [0.638, 1.999, 0.526], pivot: "base", rotationAxes: "y", floor: true,
       defaultScale: [1, 1, 1], model: "HatCoBarrierPillarVisual",
       texture: "HatCoBarriersTextureUpdated_Diffuse.png", icon: "icon_HatCoBarrierPillar" },
     { type: "HatchetCorpCrate", label: "Crate", category: "Objects", shape: "crate",
+      look: "dark blue sci-fi crate",
       size: [0.553, 0.486, 0.505], pivot: "base", rotationAxes: "y", floor: true,
       defaultScale: [1, 1, 1], model: "HatCoBarrierCrateVisual",
       texture: "HatCoBarrierCrate_Diffuse.png", icon: "icon_HatCoBarrierCrate" },
@@ -1189,6 +1350,7 @@ export const BUILTIN_PACKS = [
       model: "HatchetCorpCylinderSolidGrounded", texture: "HatchetCorpWall_Diffuse.png",
       icon: "icon_HatCoCilinderSolid_grounded" },
     { type: "HatchetCorpWallSolid", label: "Solid Wall", category: "Shapes", shape: "wall",
+      look: "cyan wall panel with orange strips",
       size: [1, 1, 0.154], pivot: "center", rotationAxes: "y", floor: true,
       defaultScale: [2, 2.5, 1], model: "HatchetCorpWallSolid",
       texture: "HatchetCorpWall_Diffuse.png", icon: "icon_HatCoWall" },
@@ -1196,6 +1358,7 @@ export const BUILTIN_PACKS = [
   },
   {
     id: "corrupted", name: "Corrupted Technology", group: "virtual", schema: PACK_SCHEMA_VERSION,
+    look: "Industrial sci-fi: grey machines, consoles and vehicles with small glowing lights, and clusters of pink-purple crystals (the Dark ones are duller)",
     color: "#6B7784",
     objects: [
     { type: "WireContainer", label: "Wire Container", category: "Objects",
@@ -1240,28 +1403,34 @@ export const BUILTIN_PACKS = [
       floor: true, defaultScale: [1, 1, 1], model: "Tank", texture: "TankArena_Diffuse.png",
       icon: "Icon_Campaign_Tank" },
     { type: "CrystalSmall", label: "Crystal Small", category: "Objects", shape: "crystalSmall",
+      look: "small cluster of glowing pink-purple crystals",
       size: [1.001, 1.65, 0.903], pivot: "base", rotationAxes: "y", floor: true,
       defaultScale: [1, 1, 1], model: "Crystal03", texture: "CrystalsArena_Emissive.png",
       icon: "Icon_Campaign_Crystal03" },
     { type: "DarkCrystalSmall", label: "Dark Crystal Small", category: "Objects",
+      look: "small cluster of dull purple crystals",
       shape: "crystalSmall", size: [1.001, 1.65, 0.903], pivot: "base", rotationAxes: "y",
       floor: true, defaultScale: [1, 1, 1], model: "CrystalDark03",
       texture: "DarkCrystalsArena_Emissive.png", icon: "Icon_Campaign_CrystalDark03" },
     { type: "CrystalCircle", label: "Crystal Circle", category: "Objects",
+      look: "ring of glowing pink-purple crystals",
       shape: "crystalCircle", size: [1.611, 1.205, 1.364], pivot: "base",
       anchor: [0.468, 0.534], rotationAxes: "y", floor: true, defaultScale: [1, 1, 1],
       model: "Crystal02", texture: "CrystalsArena_Emissive.png",
       icon: "Icon_Campaign_Crystal02" },
     { type: "DarkCrystalCircle", label: "Dark Crystal Circle", category: "Objects",
+      look: "ring of dull purple crystals",
       shape: "crystalCircle", size: [1.611, 1.205, 1.364], pivot: "base",
       anchor: [0.468, 0.534], rotationAxes: "y", floor: true,
       defaultScale: [0.9195, 0.9195, 0.9195], model: "CrystalDark02",
       texture: "DarkCrystalsArena_Emissive.png", icon: "Icon_Campaign_CrystalDark02" },
     { type: "CrystalHalfCircle", label: "Crystal Half Circle", category: "Objects",
+      look: "half ring of glowing pink-purple crystals",
       shape: "crystalHalf", size: [1.831, 0.994, 1.152], pivot: "base", anchor: [0.472, 0.464],
       rotationAxes: "y", floor: true, defaultScale: [1, 1, 1], model: "Crystal01",
       texture: "CrystalsArena_Emissive.png", icon: "Icon_Campaign_Crystal01" },
     { type: "DarkCrystalHalfCircle", label: "Dark Crystal Half Circle", category: "Objects",
+      look: "half ring of dull purple crystals",
       shape: "crystalHalf", size: [1.831, 0.994, 1.152], pivot: "base", anchor: [0.472, 0.464],
       rotationAxes: "y", floor: true, defaultScale: [1, 1, 1], model: "CrystalDark01",
       texture: "DarkCrystalsArena_Emissive.png", icon: "Icon_Campaign_CrystalDark01" },
@@ -1269,6 +1438,7 @@ export const BUILTIN_PACKS = [
   },
   {
     id: BOUNDARY_PACK, name: "Boundaries", group: "virtual", schema: PACK_SCHEMA_VERSION,
+    look: "Not drawn in the game at all: invisible walls that stop players and bullets. The editor shows them as faint cyan glass",
     color: "#4FC3E8",
     objects: BOUNDARIES,
   },
@@ -1277,26 +1447,31 @@ export const BUILTIN_PACKS = [
     objects: [
     { type: "WeaponSpawnPoint", objectType: "WeaponSpawnPoint",
       props: { specificWeapon: "All" }, label: "Weapon Spawn", category: "Weapon Spawns",
+      look: "green ammunition crate with the weapon floating above it",
       shape: "spawnAll", size: [0.449, 0.344, 0.222], pivot: "base", rotationAxes: "y",
       floor: true, facing: "z", color: "#E8C547", defaultScale: [1, 1, 1], model: "WeaponSpawnPoint",
       weapon: true,
       texture: "initialShadingGroup_Diffuse.png", icon: "icon_weapons_Shotgunspawner" },
     { type: "DamageBox", objectType: "DamageBox", props: { style: "Red" }, label: "Damage Box",
+      look: "cube of crackling red electricity, or nothing at all when its style is Invisible",
       category: "Hazards", shape: "damageBox", size: [1, 1, 1], pivot: "center",
       rotationAxes: "xyz", floor: false, color: "#E0574B", defaultScale: [1, 1, 1],
       opacity: 0.12, model: "DamageBox", icon: "Icon_DamageBox",
       team: "Neutral", teamFamily: "damageBox", field: true },
     { type: "DamageBoxTeam1", objectType: "DamageBox", props: { style: "Blue" },
       label: "Damage Box Blue Team", category: "Hazards", shape: "damageBox", size: [1, 1, 1],
+      look: "cube of crackling blue electricity, or nothing at all when its style is Invisible",
       pivot: "center", rotationAxes: "xyz", floor: false, color: "#4A90D9",
       defaultScale: [1, 1, 1], opacity: 0.12, model: "DamageBoxTeam1",
       icon: "Icon_DamageBoxTeam1", team: "Blue", teamFamily: "damageBox", field: true },
     { type: "DamageBoxTeam2", objectType: "DamageBox", props: { style: "Orange" },
       label: "Damage Box Orange Team", category: "Hazards", shape: "damageBox", size: [1, 1, 1],
+      look: "cube of crackling orange electricity, or nothing at all when its style is Invisible",
       pivot: "center", rotationAxes: "xyz", floor: false, color: "#E08A3C",
       defaultScale: [1, 1, 1], opacity: 0.12, model: "DamageBoxTeam2",
       icon: "Icon_DamageBoxTeam2", team: "Orange", teamFamily: "damageBox", field: true },
     { type: "ExplosiveBarrel", label: "Explosive Barrel", category: "Hazards",
+      look: "grey barrel with yellow hazard stripes",
       shape: "explosiveBarrel", size: [0.61, 0.81, 0.61], pivot: "base", rotationAxes: "y",
       floor: true, color: "#C4452F", defaultScale: [1, 1, 1], model: "ExplosiveBarrel",
       texture: "ExplosiveBarrel_Diffuse.png", icon: "Icon_ExplosiveBarrel" },
@@ -1307,11 +1482,13 @@ export const BUILTIN_PACKS = [
     // opening. See `_refreshScreen` in scene.js and DERIVED_ICONS in
     // tools/stage-assets.mjs.
     { type: "Jumbotron", label: "Jumbotron", category: "Emplacements", shape: "jumbotron",
+      look: "black scoreboard screen in a frame",
       size: [1.4, 1, 0.057], pivot: "center", rotationAxes: "xyz", floor: false, facing: "z",
       color: "#3A4C5A", defaultScale: [1, 1, 1], model: "Jumbotron",
       screen: { image: "Image_JumbotronScreen", inset: 0.065 },
       icon: "Icon_JumbotronSingleScreen" },
     { type: "Minigun", label: "Minigun", category: "Emplacements", shape: "minigun",
+      look: "dark grey mounted minigun",
       size: [0.643, 0.501, 1.206], pivot: "base", anchor: [0.569, 0.59], rotationAxes: "y",
       floor: true, color: "#6E7C8A", defaultScale: [0.9, 0.9, 0.9], model: "Minigun",
       texture: "lambert1_Diffuse_0.png", icon: "Icon_Minigun" },
@@ -1333,6 +1510,7 @@ export const BUILTIN_PACKS = [
     { type: "CustomMessage", objectType: "CustomMessage",
       props: { content: "New message", showInGame: true },
       label: "Custom Text Message", category: "Emplacements", shape: "messagePane",
+      look: "flat pane showing a line of text",
       size: [1, 1, 0.01], pivot: "center", rotationAxes: "xyz", floor: false, facing: "z",
       color: "#8FA6B8", defaultScale: [1, 1, 1], model: "CustomMessage",
       text: { prop: "content", inset: 0.06 }, icon: "icon_text_obj" },
@@ -1400,4 +1578,5 @@ export const BUILTIN_PACKS = [
       team: "Orange", teamFamily: "captureFlag" },
     ],
   },
+  EDITOR_PACK,
 ];

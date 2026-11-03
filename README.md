@@ -104,20 +104,33 @@ the server until something asks for them.
   objects and mode objectives, drawn with the game's own meshes. Boxes, walls,
   cylinders and tunnels tile their texture as they are stretched, so four metres
   of wall is four metres of brick rather than one smeared one. Every object
-  also has a built-in stand-in shape, and the **Stand-ins** switch at the foot
-  of the Library panel draws those instead at any time.
+  also has a built-in stand-in shape, and the **Stand-ins** switch in the top
+  right corner of the view draws those instead at any time.
+- **Cylinders stay round.** The game draws every cylinder round whatever the
+  file says — 527 maps from the public library saved before OpsForge existed
+  hold over 1,500 of them and not one is oval — so stretching one along X
+  stretches it along Z as well, whether by the gizmo, the inspector or the
+  assistant. A map that already has an oval cylinder in it is told so when it
+  opens, and selecting one offers **Make round**.
+- **Scale Figure**, under **Editor Only** at the bottom of the library, is a
+  1.8 m person to build against — the game's own bot, dyed magenta so it cannot
+  be mistaken for anything real. Move it, turn it and copy it like any other
+  piece. It is never written to the map, never counted against the 700, left
+  out of published thumbnails and invisible to the assistant; checkpoints keep
+  it beside the map.
 - **Hide** on the right-click menu puts finished work out of the way — a roof
   over the room you are building, an outer wall between the camera and
   everything behind it. Hidden objects stay on the map and export exactly as
   they would have done; what they stop doing is being *there*, so a click, a
   marquee, a drop, the wheel and **Orbit at cursor** all pass straight through
-  where they used to be. **Show hidden** in the toolbar brings them back faded
-  so you can pick one out and restore it for good.
+  where they used to be. **Show hidden**, in the top right corner of the view,
+  brings them back faded so you can pick one out and restore it for good.
 - **Boundaries** are the game's invisible walls, the AR half of the library: a
   box, a cylinder and a wall that give collision without being drawn, so a real
   coffee table becomes cover and a real sofa becomes something to hide behind.
   The editor draws them at a tenth opacity with their edges picked out, and
-  **Hide boundaries** in the toolbar takes them out of the view entirely.
+  **Hide boundaries** in the top right corner of the view takes them out of it
+  entirely.
 - **Custom Text Message** puts a line of your own text on a pane in the arena,
   with a tick for whether players see it or only you.
 - **Weapon spawners** are drawn holding the weapon they would produce, at the
@@ -127,7 +140,11 @@ the server until something asks for them.
   against a wall spawns it with its tube through the wall.
 - **Damage boxes** are drawn as the crackling volume they are in the headset
   rather than as a solid slab, so you can see what is standing inside the
-  region they mark.
+  region they mark. Untick **Visible to players** in the inspector (or choose
+  **Invisible to players** on the right-click menu, for several at once) and the
+  box still does damage but the game does not draw it — the game's own
+  `"Invisible"` style. The editor draws those greyed, with the arcs all but
+  gone. Mirroring one into the other team keeps it invisible.
 - **Swap theme** on the right-click menu rebuilds a selection in another theme
   where it stands, keeping every position, angle and size.
 - **Flip across X** and **Flip across Z**, also on the right-click menu, turn a
@@ -140,6 +157,11 @@ the server until something asks for them.
   and Z, cubes scale from the far side, and the centre disc slides across the
   floor.
 - Click or drag-box to select, group, duplicate, copy and paste, undo and redo.
+- **Copy transform** and **Paste…**, under the numbers in the inspector and on
+  the right-click menu, carry one object's position, rotation and scale onto
+  another — all three, or any one of them. Pasted onto several objects, rotation
+  and scale go onto each piece, and position moves the selection as one across
+  the floor, keeping its height.
 - Grid and angle snapping, and arrow keys that nudge the selection a grid step
   at a time, the way the view is facing. Angle snap rounds the angle you arrive
   at rather than the turn you make, so a piece left at 43 degrees squares up
@@ -225,13 +247,20 @@ the inspector has seven digits in it.
 - Both show their work first: translucent copies stand where the current
   settings would put real ones, so the numbers need no guessing.
 
-**First-person preview**
+**First-person preview, and pictures**
 
 - **Preview** stands you in the map at a player's height and lets you walk
   about — the only way to find out whether a doorway is generous or a squeeze,
-  and whether a crate is cover or scenery.
+  and whether a crate is cover or scenery. Every panel of the editor goes for
+  the duration and the view takes the whole window.
 - Arrow keys walk, the mouse looks, <kbd>C</kbd> crouches from six feet to
   three, and <kbd>Esc</kbd> puts you back exactly where you were in the editor.
+- <kbd>F</kbd> lets go of the floor for a free camera: the arrows fly the way
+  you are looking, <kbd>E</kbd> and <kbd>Q</kbd> go up and down, and
+  <kbd>Shift</kbd> goes faster. <kbd>F</kbd> again lands you where you are.
+- <kbd>H</kbd> hides the one line of keys left on screen, and <kbd>P</kbd> saves
+  the view as a PNG at twice the size of the window — a clean picture for a
+  mod page or a team chat.
 
 **Rules editor**
 
@@ -239,7 +268,7 @@ the inspector has seven digits in it.
   mode becomes available once the map holds the objectives to play it.
 - Per-object settings where the game has them: which weapon a spawner holds,
   which of 13 enemy types an enemy spawn produces and how it behaves, which
-  team a damage box belongs to.
+  team a damage box belongs to and whether players can see it.
 - Paint the bot grid — the ground bots are allowed to walk on — and set the
   arena size.
 
@@ -382,6 +411,14 @@ and change rule sets, and save prefabs. It is held to the editor's rules:
 - It knows every piece in the catalog, its real size, which props it takes and
   which values they accept, every rule setting and its range, and which modes
   the map's objectives allow.
+- **It chooses pieces by how they look in the game.** Each theme and each piece
+  is described in words — Mykea's Barrier Full is a wooden bookshelf, Camo's
+  walls are tan brick with sandbags on top — along with the colours measured off
+  the game's own render of it, so "a red brick wall" or "something wooden" finds
+  the right piece whatever its theme is called. (`npm run measure-looks`
+  remeasures them from the library icons.)
+- **Cylinders stay round** and **the scale figure is not its to place**, for the
+  same reasons they are not yours.
 - It cannot go past the **700-object budget** or put anything **entirely outside
   the 60 × 60 m square** — where you would be warned, it is refused, because it
   cannot answer the warning.

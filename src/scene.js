@@ -12,7 +12,7 @@ import { OutlinePass } from 'three/addons/postprocessing/OutlinePass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { geometryFor } from './placeholders.js';
-import { defFor, modelUrl, iconUrl, sameShapeFamily } from './catalog.js';
+import { defFor, modelUrl, iconUrl, sameShapeFamily, damageBoxVisible } from './catalog.js';
 import {
   WEAPON_ICONS, WEAPON_ANY, WEAPON_MODELS, WEAPON_HOVER, parseWeapons, longestWeapon,
   ENEMY_ICONS, ENEMY_MODELS, ENEMY_TYPES, ENEMY_ANY, parseEnemyTypes,
@@ -95,7 +95,18 @@ const PREVIEW_FOV = 70;          // wider than the editor's 50: a face, not a le
 const PREVIEW_KEYS = {
   ArrowUp: 'forward', ArrowDown: 'back', ArrowLeft: 'left', ArrowRight: 'right',
   w: 'forward', s: 'back', a: 'left', d: 'right',
+  // Free camera only: straight up and down, and a burst of speed. Walking
+  // ignores all three — a player in the room has a floor under them.
+  e: 'up', ' ': 'up', q: 'down', Shift: 'fast',
 };
+
+// The free camera is for looking at a map rather than for standing in it —
+// lining up a picture, checking a roof from above — so it moves faster than a
+// walk and leaves the floor behind. Not below it, though: the underside of the
+// ground plane is not a view anybody wants a photograph of.
+const FLY_SPEED = 3.5;           // m/s
+const FLY_FAST = 3;              // Shift multiplies by this
+const FLY_FLOOR = 0.05;          // lowest the camera goes, metres
 
 /**
  * The half turn every mesh carries relative to the map's own frame — see
@@ -206,6 +217,21 @@ function seatOnFloor(geometry, def) {
   if (def.pivot === 'center') geometry.translate(0, -def.size[1] / 2, 0);
   geometry.computeBoundingBox();
   if (def.hover) geometry.boundingBox.min.y = 0;
+}
+
+/**
+ * Stretch a seated model evenly until it stands `height` metres tall, or leave
+ * it alone when no height is asked for. Only the scale figure asks: it borrows
+ * a 1.72 m bot to stand in for a 1.8 m person. About the origin, so the feet
+ * stay on the floor where `seatOnFloor` put them.
+ */
+function fitToHeight(geometry, height) {
+  if (!(height > 0)) return;
+  geometry.computeBoundingBox();
+  const { min, max } = geometry.boundingBox;
+  const span = max.y - Math.min(min.y, 0);
+  if (span > 1e-6) geometry.scale(height / span, height / span, height / span);
+  geometry.computeBoundingBox();
 }
 
 /**
@@ -399,6 +425,7 @@ const FIELD_VERTEX = /* glsl */`
 const FIELD_FRAGMENT = /* glsl */`
 	uniform float uTime;
 	uniform vec3 uColour;
+	uniform float uArc;
 	varying vec3 vCell;
 	varying vec3 vLocal;
 
@@ -439,7 +466,7 @@ const FIELD_FRAGMENT = /* glsl */`
 		vec3 e = smoothstep( 0.44, 0.5, abs( vLocal ) );
 		float edge = max( min( e.x, e.y ), max( min( e.y, e.z ), min( e.x, e.z ) ) );
 
-		float glow = arc * 0.9 + edge * 0.5;
+		float glow = arc * 0.9 * uArc + edge * 0.5;
 		// A haze thin enough to see a crate through and thick enough to say the
 		// volume is there at all.
 		float alpha = 0.05 + glow;
@@ -2221,9 +2248,24 @@ export class Viewport extends EventTarget {
     return this.objects.filter((m) => m.visible);
   }
 
-  /** The map: everything on screen that is not one venue's own. */
+  /**
+   * The map: everything on screen that is not one venue's own, and not one of
+   * the editor's own helpers. This is the list an export writes, a checkpoint
+   * indexes and the assistant is shown, so leaving the scale figure out of it
+   * is what keeps it out of all three.
+   */
   designObjects() {
-    return this.objects.filter((m) => !m.userData.layer);
+    return this.objects.filter((m) => !m.userData.layer && !m.userData.def?.editorOnly);
+  }
+
+  /** What the editor stands in the scene to build against, and never writes. */
+  editorObjects() {
+    return this.objects.filter((m) => m.userData.def?.editorOnly);
+  }
+
+  /** How many objects the game will be handed — the number the budget counts. */
+  mapObjectCount() {
+    return this.objects.reduce((n, m) => n + (m.userData.def?.editorOnly ? 0 : 1), 0);
   }
 
   /** What belongs to the venue being looked at, and to no other. */
@@ -2742,7 +2784,7 @@ export class Viewport extends EventTarget {
       // below depends on both.
       const cacheKey = `${def.model}|${def.pivot}|${def.size[1]}|${def.color}|${def.opacity ?? 1}` +
         `|${def.tintModel}|${def.fixedParts ?? ''}|${def.keepParts ?? ''}|${def.cutout}|${def.hover}` +
-        `|${JSON.stringify(def.area ?? null)}|${tilesWithScale(def)}`;
+        `|${JSON.stringify(def.area ?? null)}|${tilesWithScale(def)}|${def.fitHeight ?? ''}`;
       let model = this._modelCache.get(cacheKey);
       if (!model) {
         const found = keepParts(def, await this._prefabParts(url));
@@ -2756,6 +2798,7 @@ export class Viewport extends EventTarget {
         const before = new THREE.Box3().setFromBufferAttribute(
           whole.geometry.getAttribute('position')).min.y;
         seatOnFloor(whole.geometry, def);
+        fitToHeight(whole.geometry, def.fitHeight);
         const after = new THREE.Box3().setFromBufferAttribute(
           whole.geometry.getAttribute('position')).min.y;
         model = { ...whole, fixed, dropY: after - before };
@@ -3566,7 +3609,72 @@ export class Viewport extends EventTarget {
     // selection of two hundred pieces would otherwise be walked sixty times a
     // second to be told the same thing.
     this._perAxisExact = this._perAxisScaleIsExact();
+    this._scaleTies = this._perAxisExact ? this._roundScaleTies() : [];
     this.emit('commit-begin');
+  }
+
+  /**
+   * Which of the pivot's axes have to scale together so that no round piece in
+   * the selection comes out oval.
+   *
+   * A cylinder's own X and Z are its two radii, and the game draws it round
+   * whatever the file says — see ROUND_SHAPES in packs.js. Which *pivot* axes
+   * those are depends on how the piece is turned: standing up they are the
+   * pivot's X and Z, lying along X they are Y and Z. So each round piece ties
+   * two pivot axes together, and ties chain — a standing cylinder and a lying
+   * one in the same selection tie all three, which is a uniform scale, which is
+   * the only stretch that leaves both of them round.
+   *
+   * Only asked when every piece is square to the pivot. When one is not, the
+   * drag is uniform already and there is nothing to tie.
+   */
+  _roundScaleTies() {
+    const axes = ['x', 'y', 'z'];
+    const root = { x: 'x', y: 'y', z: 'z' };
+    const find = (a) => (root[a] === a ? a : (root[a] = find(root[a])));
+    const pivotInv = this.pivot.getWorldQuaternion(new THREE.Quaternion()).invert();
+    const q = new THREE.Quaternion();
+    const along = (v) => {
+      // The pivot axis a square-turned local axis lands on.
+      const c = [Math.abs(v.x), Math.abs(v.y), Math.abs(v.z)];
+      return axes[c.indexOf(Math.max(...c))];
+    };
+    let any = false;
+    for (const m of this.selection) {
+      if (!m.userData.def?.round) continue;
+      any = true;
+      q.copy(pivotInv).multiply(m.getWorldQuaternion(new THREE.Quaternion()));
+      const a = along(new THREE.Vector3(1, 0, 0).applyQuaternion(q));
+      const b = along(new THREE.Vector3(0, 0, 1).applyQuaternion(q));
+      root[find(a)] = find(b);
+    }
+    if (!any) return [];
+    const classes = new Map();
+    for (const a of axes) {
+      const r = find(a);
+      if (!classes.has(r)) classes.set(r, []);
+      classes.get(r).push(a);
+    }
+    return [...classes.values()].filter((c) => c.length > 1);
+  }
+
+  /**
+   * Give every axis in each tie the same multiplier. The axis being dragged
+   * leads when it is one of them; otherwise whichever has moved furthest.
+   */
+  _applyScaleTies() {
+    if (!this._scaleTies?.length || !this._dragStartScale) return;
+    const s0 = this._dragStartScale;
+    const s = this.pivot.scale;
+    const dragged = this.gizmo.axis;
+    for (const tie of this._scaleTies) {
+      let lead = tie.includes(dragged) ? dragged : tie[0];
+      if (!tie.includes(dragged)) {
+        for (const a of tie) if (Math.abs(s[a] / s0[a] - 1) > Math.abs(s[lead] / s0[lead] - 1)) lead = a;
+      }
+      const r = s[lead] / s0[lead];
+      for (const a of tie) s[a] = s0[a] * r;
+    }
   }
 
   _constrainDuringDrag() {
@@ -3583,6 +3691,7 @@ export class Viewport extends EventTarget {
         s.set(s0.x * best, s0.y * best, s0.z * best);
       }
       this._snapScaleToGrid(force);
+      if (!force) this._applyScaleTies();
       this._applyScaleAnchor();
     }
   }
@@ -4190,7 +4299,11 @@ export class Viewport extends EventTarget {
     const box = mesh.geometry.boundingBox;
     const size = box.getSize(new THREE.Vector3());
     const centre = box.getCenter(new THREE.Vector3());
-    const child = new THREE.Mesh(UNIT_BOX, this._fieldMaterial(def.color));
+    // A box with `style: Invisible` still hurts and is not drawn in the
+    // headset, so it is drawn here the way a hidden message is: greyed, with
+    // the arcs all but gone and the edges left to say where it is.
+    const seen = damageBoxVisible(mesh.userData.props);
+    const child = new THREE.Mesh(UNIT_BOX, this._fieldMaterial(def.color, !seen));
     child.scale.copy(size);
     child.position.copy(centre);
     child.renderOrder = 2;
@@ -4211,12 +4324,16 @@ export class Viewport extends EventTarget {
    * bargain `materialFor` makes, and for the same reason. The clock is a
    * uniform on each, wound on once a frame by `_frame`.
    */
-  _fieldMaterial(colour) {
-    if (!this._fieldMaterials.has(colour)) {
-      this._fieldMaterials.set(colour, new THREE.ShaderMaterial({
+  _fieldMaterial(colour, unseen = false) {
+    const key = `${colour}|${unseen}`;
+    if (!this._fieldMaterials.has(key)) {
+      const tint = new THREE.Color(colour);
+      if (unseen) tint.lerp(new THREE.Color(0x8a9099), 0.65);
+      this._fieldMaterials.set(key, new THREE.ShaderMaterial({
         uniforms: {
           uTime: { value: 0 },
-          uColour: { value: new THREE.Color(colour) },
+          uColour: { value: tint },
+          uArc: { value: unseen ? 0.12 : 1 },
         },
         vertexShader: FIELD_VERTEX,
         fragmentShader: FIELD_FRAGMENT,
@@ -4226,7 +4343,7 @@ export class Viewport extends EventTarget {
         blending: THREE.AdditiveBlending,
       }));
     }
-    return this._fieldMaterials.get(colour);
+    return this._fieldMaterials.get(key);
   }
 
   // -- objects outside the playable square ------------------------------------
@@ -4244,6 +4361,9 @@ export class Viewport extends EventTarget {
 
   /** Is this object's whole footprint outside the square the headset draws? */
   isOutside(mesh) {
+    // The scale figure is never drawn in the headset anywhere, so there is no
+    // edge for it to fall off.
+    if (mesh.userData.def?.editorOnly) return false;
     const box = expandByMapExtent(new THREE.Box3(), mesh);
     if (box.isEmpty()) return false;
     return box.min.x > PLAYABLE_HALF || box.max.x < -PLAYABLE_HALF
@@ -5008,6 +5128,9 @@ export class Viewport extends EventTarget {
     return [
       this.grid, this.centreLines, this.navGroup, this.ghostGroup, this.gizmo,
       ...this._objectFurniture(),
+      // The scale figure is a ruler, not a resident: the map it is measuring
+      // has nobody standing in it.
+      ...this.editorObjects(),
     ].filter((o) => o?.visible);
   }
 
@@ -5188,6 +5311,9 @@ export class Viewport extends EventTarget {
       at: new THREE.Vector3(feet.x, 0, feet.z),
       velocity: new THREE.Vector3(),
       bob: 0,
+      // Free camera: where the eye is, all three axes, with nothing holding it
+      // to the floor. Null while walking.
+      fly: null,
       listeners: [],
     };
 
@@ -5262,8 +5388,18 @@ export class Viewport extends EventTarget {
       // On the press, not the release, and a toggle rather than a hold: you
       // crouch to look at something, and holding a key while you look at it is
       // a third hand nobody has.
-      if (down && !e.repeat) p.crouched = !p.crouched;
+      if (down && !e.repeat && !p.fly) p.crouched = !p.crouched;
       e.preventDefault();
+      return;
+    }
+    // Three switches, all on the press: walk or fly, the hint on or off, and a
+    // picture of the view. The last two are what photo mode is — the editor's
+    // panels are already gone, so the hint is the only thing left on screen.
+    if (key === 'f' || key === 'h' || key === 'p') {
+      e.preventDefault();
+      if (!down || e.repeat) return;
+      if (key === 'f') this.setPreviewFly(!p.fly);
+      else this.emit(key === 'h' ? 'preview-hint' : 'preview-photo', {});
       return;
     }
     const move = PREVIEW_KEYS[key];
@@ -5298,8 +5434,107 @@ export class Viewport extends EventTarget {
    * while you are moving, so a stop leaves the head wherever the last step put
    * it rather than snapping it level.
    */
+  /**
+   * Walk, or fly. Taking off starts from wherever the eye is, and landing puts
+   * the feet under wherever the camera was and lets the eye settle back to
+   * standing height on the same spring a crouch uses — so neither switch is a
+   * jump cut.
+   */
+  setPreviewFly(on) {
+    const p = this.preview;
+    if (!p || !!p.fly === !!on) return;
+    if (on) {
+      p.fly = this.camera.position.clone();
+      p.crouched = false;
+    } else {
+      p.at.set(p.fly.x, 0, p.fly.z);
+      p.eye = Math.max(p.fly.y, EYE_CROUCHED);
+      p.fly = null;
+    }
+    p.velocity.set(0, 0, 0);
+    this.emit('preview-mode', { fly: !!p.fly });
+  }
+
+  /** One frame of the free camera: along the gaze, pitch and all. */
+  _stepFly(dt) {
+    const p = this.preview;
+    const h = p.held;
+    const wish = new THREE.Vector3(
+      (h.has('right') ? 1 : 0) - (h.has('left') ? 1 : 0),
+      0,
+      (h.has('back') ? 1 : 0) - (h.has('forward') ? 1 : 0),
+    );
+    wish.applyEuler(new THREE.Euler(p.pitch, p.yaw, 0, 'YXZ'));
+    wish.y += (h.has('up') ? 1 : 0) - (h.has('down') ? 1 : 0);
+    if (wish.lengthSq() > 0) wish.normalize().multiplyScalar(FLY_SPEED * (h.has('fast') ? FLY_FAST : 1));
+    const chase = dt > 0 ? 1 - Math.exp(-dt / WALK_EASE) : 1;
+    p.velocity.lerp(wish, chase);
+    if (p.velocity.lengthSq() < 1e-8) p.velocity.set(0, 0, 0);
+    p.fly.addScaledVector(p.velocity, dt);
+    p.fly.y = Math.max(FLY_FLOOR, p.fly.y);
+    this.camera.position.copy(p.fly);
+    this.camera.rotation.set(p.pitch, p.yaw, 0);
+  }
+
+  /**
+   * The view as a PNG, at `scale` times the size it is on screen, with none of
+   * the page around it. Rendered again rather than read back off the canvas,
+   * which is cleared as soon as it is composited; everything the walkaround
+   * hides is already hidden, so what comes out is what you are looking at.
+   */
+  capturePhoto(scale = 2) {
+    const { clientWidth: cw, clientHeight: ch } = this.canvas;
+    const w = Math.max(1, Math.round(cw * scale));
+    const h = Math.max(1, Math.round(ch * scale));
+    const canvas = document.createElement('canvas');
+    // With an alpha channel, as the editor's own renderer has, so the background
+    // painted underneath below shows through where nothing was drawn.
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer: true });
+    renderer.setSize(w, h, false);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = this.renderer.toneMapping;
+    renderer.toneMappingExposure = this.renderer.toneMappingExposure;
+    renderer.outputColorSpace = this.renderer.outputColorSpace;
+    const camera = this.camera.clone();
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld(true);
+    // Outside the walkaround the editor's furniture is still up; a picture
+    // taken from the editor gets the same treatment a published thumbnail does.
+    const hidden = this.preview ? [] : this._editorFurniture();
+    for (const o of hidden) o.visible = false;
+    try {
+      renderer.render(this.scene, camera);
+    } finally {
+      for (const o of hidden) o.visible = true;
+    }
+    // The renderer clears to nothing, and what shows through on screen is the
+    // stage's own background — `#stage` in index.html, a glow from the top
+    // middle fading to the page colour. Painted under the render here, or the
+    // sky comes out as transparent and most viewers show that as black.
+    const out = document.createElement('canvas');
+    out.width = w;
+    out.height = h;
+    const ctx = out.getContext('2d');
+    ctx.save();
+    ctx.translate(w / 2, 0);
+    ctx.scale(1.2 * w, 0.9 * h);
+    const sky = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+    sky.addColorStop(0, '#16222C');
+    sky.addColorStop(0.7, '#0A0F14');
+    sky.addColorStop(1, '#0A0F14');
+    ctx.fillStyle = sky;
+    ctx.fillRect(-1, 0, 2, 2);
+    ctx.restore();
+    ctx.drawImage(canvas, 0, 0, w, h);
+    renderer.dispose();
+    return new Promise((resolve) => out.toBlob(resolve, 'image/png'));
+  }
+
   _stepPreview(dt) {
     const p = this.preview;
+    if (p.fly) return void this._stepFly(dt);
     const forward = (p.held.has('back') ? 1 : 0) - (p.held.has('forward') ? 1 : 0);
     const strafe = (p.held.has('right') ? 1 : 0) - (p.held.has('left') ? 1 : 0);
 

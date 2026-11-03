@@ -32,17 +32,18 @@
 // the MCP server runs it with no browser at all.
 // ---------------------------------------------------------------------------
 
-import { getPacks, getByKey, defFor } from './catalog.js';
+import { getPacks, getByKey, defFor, isOval } from './catalog.js';
 import {
   PACK_GROUPS, WEAPONS, WEAPON_ANY, parseWeapons, formatWeapons,
   ENEMY_TYPES, ENEMY_LABELS, ENEMY_BEHAVIOURS, ENEMY_ANY, parseEnemyTypes, formatEnemyTypes,
-  BOUNDARY_PACK,
+  BOUNDARY_PACK, DAMAGE_STYLE_INVISIBLE,
 } from './packs.js';
 import {
   MODES, fieldsFor, keysFor, missingRequirements, newRuleSet, setValue, clampInt,
   joinFlags, parseFlags, overrideCount, INT, BOOL, ENUM, FLAGS, FLAG_ALL, FLAG_NONE, DICT_FOR_KIND,
 } from './rules.js';
 import { unityEulerToQuat, convertPosition } from './unity.js';
+import { LOOK_COLOURS } from './looks.js';
 import { nowStamp } from './format.js';
 
 // The same three numbers the viewport and the budget bar use. Kept here as
@@ -146,10 +147,29 @@ function catalogEntries({ includeHidden = false } = {}) {
     for (const raw of pack.objects) {
       const def = getByKey(raw.key || raw.type);
       if (!def || (def.hidden && !includeHidden)) continue;
+      // The scale figure never reaches a file, so it is no part of a map a
+      // model could be asked to build.
+      if (def.editorOnly) continue;
       out.push(def);
     }
   }
   return out;
+}
+
+/**
+ * The colours a piece really is, largest first, as plain names — measured off
+ * the game's own render of it (see tools/measure-looks.mjs). Never the
+ * catalog's `color`, which is the stand-in's tint and describes the art badly:
+ * that is what the assistant used to be told, and why it chose a bookshelf for
+ * "a red wall".
+ */
+export function aiColours(def) {
+  return (LOOK_COLOURS[def.key] || []).map(([name]) => name);
+}
+
+/** What a piece looks like in the game, in words: its own, or its theme's. */
+function lookOf(def) {
+  return def.look || null;
 }
 
 /** One catalog entry, as a model needs to see it. */
@@ -160,6 +180,7 @@ export function aiDescribeEntry(def) {
   if (def.pivot === 'center') notes.push('origin at its centre');
   if (def.anchor && (def.anchor[0] !== 0.5 || def.anchor[1] !== 0.5)) notes.push('origin at a corner, not the middle');
   if (def.rotationAxes === 'y') notes.push('the headset editor turns it about Y only');
+  if (def.round) notes.push('round: scale x and z must be equal (the game draws it round)');
   if (def.uncertain) notes.push('size is an estimate');
   if (def.hidden) notes.push('not offered in the library');
   return {
@@ -173,6 +194,8 @@ export function aiDescribeEntry(def) {
     pivot: def.pivot,
     ...(def.props ? { props: def.props } : {}),
     ...(def.team ? { team: def.team } : {}),
+    ...(lookOf(def) ? { looks_like: lookOf(def) } : {}),
+    ...(aiColours(def).length ? { colours: aiColours(def) } : {}),
     ...(notes.length ? { notes } : {}),
   };
 }
@@ -204,9 +227,9 @@ export function aiIndex() {
       playable_square_m: AI_PLAYABLE_HALF * 2,
       arena_size_m: AI_ARENA_LIMITS,
     },
-    packs: getPacks().map((p) => ({
+    packs: getPacks().filter((p) => p.group !== 'editor').map((p) => ({
       id: p.id, name: p.name, section: PACK_GROUPS.find((g) => g.id === (p.group || 'virtual'))?.name,
-      ...(p.color ? { colour: p.color } : {}),
+      ...(p.look ? { looks_like: p.look } : {}),
     })),
     catalog: catalogEntries().map(aiDescribeEntry),
     props: {
@@ -215,6 +238,7 @@ export function aiIndex() {
       behaviour: { values: ENEMY_BEHAVIOURS },
       content: { max_length: MAX_TEXT },
       showInGame: { values: [true, false] },
+      style: { values: ["the damage box key's own colour", DAMAGE_STYLE_INVISIBLE] },
     },
     modes: MODES.map(describeMode),
   };
@@ -276,15 +300,21 @@ export function aiIndexText() {
     '- Boundaries are the game\'s invisible walls: they stop players and bullets but are not drawn in game.',
     '- Themes (packs) share shapes: a Blue Barrier Full and a Camo Barrier Full are the same piece in different',
     '  art. Keep a map to one or two themes unless asked otherwise.',
+    '- Choose pieces by how they look in the game, which is what each theme and piece below says and what its',
+    '  colours are: measured off the game\'s own render of it, largest share first. A theme\'s name is not its',
+    '  colour (Camo is tan brick and grey-green camouflage; Mykea is wooden furniture and dark red upholstery),',
+    '  and a label is not what a piece is (a Mykea Barrier Full is a bookshelf). Ask for "a red wall" and the',
+    '  answer is the piece whose colours say red, whatever its theme is called.',
     '- Team pieces come in pairs: Team1 is Blue, Team2 is Orange. Team modes need one spawn zone per team.',
     '',
     '## Themes (packs)',
   );
   for (const p of getPacks()) {
+    if (p.group === 'editor') continue;
     const section = PACK_GROUPS.find((g) => g.id === (p.group || 'virtual'))?.name || '';
-    push(`- ${p.id}: ${p.name} (${section})${p.color ? `, stand-in colour ${p.color}` : ''}`);
+    push(`- ${p.id}: ${p.name} (${section})${p.look ? ` — ${p.look}` : ''}`);
   }
-  push('', '## Catalog', 'key | label | category | size_m at scale 1 | notes (default scale if not 1,1,1)');
+  push('', '## Catalog', 'key | label | category | size_m at scale 1 | looks like; colours; notes (default scale if not 1,1,1)');
   let pack = null;
   for (const def of catalogEntries()) {
     if (def.pack !== pack) {
@@ -292,7 +322,10 @@ export function aiIndexText() {
       push('', `### ${getPacks().find((p) => p.id === pack)?.name || pack}`);
     }
     const d = aiDescribeEntry(def);
-    const extra = [...(d.notes || [])];
+    const extra = [];
+    if (d.looks_like) extra.push(d.looks_like);
+    if (d.colours) extra.push(`colours ${d.colours.join(', ')}`);
+    extra.push(...(d.notes || []));
     if (def.defaultScale.some((n) => n !== 1)) extra.push(`default scale ${def.defaultScale.join(',')}`);
     if (def.props) extra.push(`props ${JSON.stringify(def.props)}`);
     if (def.team) extra.push(`team ${def.team}`);
@@ -305,7 +338,8 @@ export function aiIndexText() {
     `- EnemySpawnPoint.enemyTypes: "${ENEMY_ANY}" or a list of ${ENEMY_TYPES.join(', ')}.`,
     `- EnemySpawnPoint.behaviour: one of ${ENEMY_BEHAVIOURS.join(', ')} (the game spells it "Aggresive").`,
     `- CustomMessage.content: the sign's text, up to ${MAX_TEXT} characters. CustomMessage.showInGame: true or false.`,
-    '- A damage box\'s team is its key (DamageBox, DamageBoxTeam1, DamageBoxTeam2), not a prop.',
+    '- A damage box\'s team is its key (DamageBox, DamageBoxTeam1, DamageBoxTeam2), not a prop. Its style is',
+    `  that key's own colour, or "${DAMAGE_STYLE_INVISIBLE}" for a box that still does damage but is not drawn in game.`,
     '',
     '## Modes and rule settings',
     'Durations are whole seconds. Flags take a list of options. null clears a setting back to the game default.',
@@ -354,6 +388,7 @@ const PROPS = {
     behaviour: { type: 'string', enum: ENEMY_BEHAVIOURS },
     content: { type: 'string', maxLength: MAX_TEXT },
     showInGame: { type: 'boolean' },
+    style: { type: 'string', description: `Damage boxes only: the key's own colour, or "${DAMAGE_STYLE_INVISIBLE}" to do damage without being drawn.` },
   },
 };
 
@@ -406,7 +441,7 @@ export const AI_TOOLS = [
   },
   {
     name: 'find_catalog',
-    description: 'Search the catalog of placeable pieces by words in the key, label or category, or by pack.',
+    description: 'Search the catalog of placeable pieces by words in the key, label, category, what it looks like in the game (e.g. "bookshelf", "brick", "wooden") or its colours (e.g. "red", "blue"), or by pack.',
     input_schema: {
       type: 'object',
       properties: {
@@ -650,6 +685,12 @@ function mergeProps(def, current, given, where) {
         if (typeof v !== 'boolean') fail(`${where}: showInGame must be true or false.`);
         props[k] = v;
         break;
+      case 'style':
+        // A damage box's colour is its key; the one other thing its style can
+        // say is that the game should not draw it at all.
+        if (def.field && (v === def.props.style || v === DAMAGE_STYLE_INVISIBLE)) { props[k] = v; break; }
+        fail(`${where}: style must be "${def.props.style}" (drawn) or "${DAMAGE_STYLE_INVISIBLE}" (does damage, not drawn).`);
+        break;
       default:
         // A prop the entry carries but no one has taught this module about
         // (a damage box's style). It is part of what the key means, so it is
@@ -664,6 +705,7 @@ function scaleFrom(def, spec, current, where) {
   if (spec.scale && spec.size) fail(`${where}: give scale or size, not both.`);
   const [lo, hi] = SCALE_LIMITS;
   const out = { ...current };
+  const given = spec.scale || spec.size;
   if (spec.scale) {
     for (const a of ['x', 'y', 'z']) {
       const v = optNum(spec.scale[a], `${where}: scale.${a}`, { min: lo, max: hi });
@@ -678,6 +720,17 @@ function scaleFrom(def, spec, current, where) {
       if (s < lo || s > hi) fail(`${where}: size.${a} of ${v} m needs a scale of ${r3(s)}, outside ${lo}–${hi}.`);
       out[a] = s;
     });
+  }
+  // A cylinder is round in the game whatever the file says. One width given is
+  // both widths; two that differ is a shape the headset will not draw.
+  if (def.round && given && typeof given === 'object') {
+    const hasX = given.x !== undefined && given.x !== null;
+    const hasZ = given.z !== undefined && given.z !== null;
+    if (hasX && !hasZ) out.z = out.x;
+    if (hasZ && !hasX) out.x = out.z;
+    if (hasX && hasZ && isOval(def, out)) {
+      fail(`${where}: ${def.label} is round — its x and z must be equal (the game draws it round, so an oval shows as a circle).`);
+    }
   }
   return out;
 }
@@ -732,6 +785,7 @@ function buildObject(spec, where, notes) {
   const def = getByKey(spec.key);
   if (!def) fail(`${where}: no catalog key "${spec.key}". Use find_catalog to look one up.`);
   if (def.hidden) fail(`${where}: "${spec.key}" is not offered in the library. Use the entry without "Grounded".`);
+  if (def.editorOnly) fail(`${where}: "${spec.key}" is the editor's own and never part of a map. Leave it to the person.`);
   const p = spec.position;
   if (!p || typeof p !== 'object') fail(`${where}: position {x, z} is required.`);
   const obj = {
@@ -786,6 +840,7 @@ function getMap(doc) {
   const warnings = [];
   const outside = [];
   const floating = [];
+  const ovals = [];
   let lo = null;
   let hi = null;
   for (const o of doc.objects) {
@@ -795,6 +850,7 @@ function getMap(doc) {
     const box = worldBox(o, def);
     if (isOutsidePlayable(box)) outside.push(o.id);
     if (def.groundOnly && Math.abs(box.min.y) > 0.01) floating.push(o.id);
+    if (isOval(def, o.scale)) ovals.push(o.id);
     lo = lo ? { x: Math.min(lo.x, box.min.x), y: Math.min(lo.y, box.min.y), z: Math.min(lo.z, box.min.z) } : { ...box.min };
     hi = hi ? { x: Math.max(hi.x, box.max.x), y: Math.max(hi.y, box.max.y), z: Math.max(hi.z, box.max.z) } : { ...box.max };
   }
@@ -803,6 +859,7 @@ function getMap(doc) {
   if (n > AI_OBJECT_BUDGET) warnings.push(`${n} objects is over the ${AI_OBJECT_BUDGET} budget; the headset's frame rate will suffer.`);
   if (outside.length) warnings.push(`Objects entirely outside the playable square (the headset will not draw them): ${outside.join(', ')}.`);
   if (floating.length) warnings.push(`Enemy spawns off the ground: ${floating.join(', ')}.`);
+  if (ovals.length) warnings.push(`Cylinders stretched oval, which the game draws round — give each equal x and z: ${ovals.join(', ')}.`);
   if (!(doc.ruleSets || []).length) warnings.push('No rule sets: the game has no mode to offer on this map.');
   for (const [i, rs] of (doc.ruleSets || []).entries()) {
     const missing = missingRequirements(rs.type, present);
@@ -865,7 +922,10 @@ function findCatalog(input) {
   const hits = catalogEntries().filter((def) => {
     if (input.pack && def.pack !== input.pack) return false;
     if (input.category && def.category.toLowerCase() !== String(input.category).toLowerCase()) return false;
-    const hay = `${def.key} ${def.label} ${def.category} ${def.pack}`.toLowerCase();
+    // What it looks like and the colours it is, as well as what it is called:
+    // "red", "wooden" and "brick" are words people build with.
+    const pack = getPacks().find((p) => p.id === def.pack);
+    const hay = `${def.key} ${def.label} ${def.category} ${def.pack} ${def.look || pack?.look || ''} ${aiColours(def).join(' ')}`.toLowerCase();
     return q.every((w) => hay.includes(w));
   });
   return { total: hits.length, entries: hits.slice(0, 80).map(aiDescribeEntry) };

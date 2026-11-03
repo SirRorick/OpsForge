@@ -1138,6 +1138,27 @@ const builders = {
     ]),
 
   // Deliberately odd so an unrecognised type is impossible to mistake.
+  // The scale figure, 0.6 x 1.8 x 0.25. The one builder here that is not
+  // traced from a prefab, because it does not stand in for one: the figure is
+  // the editor's own, and what it has to get right is a person's proportions —
+  // legs to the hip at 0.86 m, shoulders at 1.48 m, the crown at 1.8 m. Authored
+  // in metres and divided into the cell, so the numbers read as a body.
+  figure: () => {
+    const W = 0.6, H = 1.8, D = 0.25;
+    const g = merge([
+      box(0.13, 0.86, 0.15, -0.09, 0.43, 0),
+      box(0.13, 0.86, 0.15, 0.09, 0.43, 0),
+      box(0.36, 0.56, 0.2, 0, 1.14, 0),
+      box(0.44, 0.1, 0.21, 0, 1.43, 0),
+      box(0.09, 0.64, 0.1, -0.255, 1.15, 0),
+      box(0.09, 0.64, 0.1, 0.255, 1.15, 0),
+      cyl(0.05, 0.09, 1.52),
+      ball(0.115, 0, 1.685, 0),
+    ]);
+    g.scale(1 / W, 1 / H, 1 / D);
+    return g;
+  },
+
   unknown: () => octa(0.5, 0, 0.5, 0),
 };
 

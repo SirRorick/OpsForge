@@ -11,11 +11,13 @@ import {
 import {
   getPacks, categoriesOf, packsInGroup, getByKey, iconUrl,
   equivalentIn, teamVariants, teamVariant,
+  holdRound, isOval, damageBoxVisible, damageStyleFor,
 } from './catalog.js';
 import {
   PACK_GROUPS, WEAPONS, WEAPON_ICONS, WEAPON_ANY, parseWeapons, formatWeapons,
   ENEMY_TYPES, ENEMY_ICONS, ENEMY_LABELS, ENEMY_BEHAVIOURS, ENEMY_ANY,
   parseEnemyTypes, formatEnemyTypes, BOUNDARY_PACK,
+  DAMAGE_STYLE_INVISIBLE, SCALE_FIGURE_TYPE,
 } from './packs.js';
 import {
   MODES, layoutFor, unknownKeys, setValue, parseFlags, joinFlags, overrideCount,
@@ -64,6 +66,7 @@ let activeRuleSet = 0;                         // rule set tab
 let undoStack = [], redoStack = [], current = null;
 let groupSeq = 1;
 let clipboard = [];         // copied objects as values, independent of the meshes
+let transformClip = null;   // one object's position, rotation and scale, in Unity values
 let placeReturn = [];       // selection to fall back to if a placement is cancelled
 let placingLabel = null;    // set while a library pick-up is following the cursor
 
@@ -162,6 +165,40 @@ function placePreviewButton() {
   if (middle - own / 2 > left + GAP && middle + own / 2 < right - GAP) btn.classList.add('centred');
 }
 
+/**
+ * The one line of keys shown along the bottom of the preview, for whichever of
+ * the two ways of moving is on. It is the only thing left on screen once the
+ * editor's panels have gone, so it is also the only thing H has to hide.
+ */
+function previewHint(fly) {
+  const keys = (...k) => k.map((x) => `<kbd>${x}</kbd>`).join('');
+  const move = fly
+    ? `<b>Free camera</b> &middot; ${keys('&larr;', '&uarr;', '&darr;', '&rarr;')} <b>fly</b> &middot;
+       ${keys('E')}${keys('Q')} <b>up / down</b> &middot; ${keys('Shift')} <b>faster</b> &middot;
+       ${keys('F')} <b>walk</b>`
+    : `<b>Walking</b> &middot; ${keys('&larr;', '&uarr;', '&darr;', '&rarr;')} <b>walk</b> &middot;
+       ${keys('C')} <b>crouch</b> &middot; ${keys('F')} <b>free camera</b>`;
+  $('preview-hud').querySelector('.pv').innerHTML = `${move} &middot; mouse <b>look</b> &middot;
+    ${keys('P')} <b>save picture</b> &middot; ${keys('H')} <b>hide this</b> &middot;
+    ${keys('Esc')} <b>back to the editor</b>`;
+}
+
+function downloadBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+/**
+ * Preview is also photo mode. The editor's panels — the bars, the library, the
+ * inspector, the assistant — all go for the duration and the view takes the
+ * whole window, so what is on screen is the map and one line of keys, and H
+ * takes that line away too. P saves what you are looking at as a PNG at twice
+ * the size of the window.
+ */
 function wirePreviewButton() {
   $('b-preview').onclick = () => vp.togglePreview();
   vp.addEventListener('preview', (e) => {
@@ -169,15 +206,33 @@ function wirePreviewButton() {
     $('b-preview').classList.toggle('on', on);
     $('b-preview').textContent = on ? 'Previewing' : 'Preview';
     $('preview-hud').hidden = !on;
+    $('preview-hud').classList.remove('pv-off');
     $('stage').classList.toggle('previewing', on);
-    // The button changes width with its label, so where it belongs may have
-    // changed with it.
-    placePreviewButton();
+    document.documentElement.classList.toggle('previewing', on);
+    hideContextMenu();
+    if (on) previewHint(false);
+    // The canvas has just changed size with the panels around it.
+    resize();
     refreshStatus();
     if (on) {
       tip('preview',
         'You are standing in the map at six feet. The arrow keys walk, the mouse looks, C crouches to '
-        + 'three feet, and Escape puts you back where you were in the editor.');
+        + 'three feet, F lets go of the floor, P saves a picture and Escape puts you back where you were.');
+    }
+  });
+  vp.addEventListener('preview-mode', (e) => previewHint(e.detail.fly));
+  vp.addEventListener('preview-hint', () => $('preview-hud').classList.toggle('pv-off'));
+  vp.addEventListener('preview-photo', async () => {
+    try {
+      const blob = await vp.capturePhoto(2);
+      if (!blob) throw new Error('the browser returned no image');
+      const base = (map?.name || 'OpsForge').replace(/[\\/:*?"<>|]+/g, '').trim() || 'OpsForge';
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+      downloadBlob(blob, `${base} ${stamp}.png`);
+      toast('Picture saved.');
+    } catch (err) {
+      console.error(err);
+      toast(`The picture could not be saved: ${err.message}`, true);
     }
   });
 }
@@ -411,6 +466,13 @@ function buildLibrary() {
     }
 
     head.querySelector('.n').textContent = inGroup || '';
+    if (group.id === 'editor' && inGroup) {
+      const p = document.createElement('p');
+      p.className = 'hint';
+      p.style.padding = '0 12px 10px';
+      p.textContent = 'Helpers for building. Never exported, never counted, never in a published picture.';
+      body.appendChild(p);
+    }
     if (open(group.id) && !inGroup) {
       const p = document.createElement('p');
       p.className = 'hint';
@@ -654,6 +716,118 @@ function paste() {
   toast('Click to place. Esc cancels.');
 }
 
+// -- copying a transform ------------------------------------------------------
+// Copy and paste above move *objects*. This moves *numbers*: one object's
+// position, rotation and scale, to be put onto another object or several. The
+// three are copied together and pasted together or one at a time, which covers
+// "copy the rotation off that wall" without a second clipboard per field.
+//
+// Pasting onto one object puts the numbers exactly where they were copied
+// from. Onto several, rotation and scale go onto each piece for itself — make
+// these six walls face the way that one does — and position moves the whole
+// selection as one, so the pieces are not stacked on a single spot.
+
+const TRANSFORM_PARTS = {
+  all: 'position, rotation and scale',
+  position: 'position',
+  rotation: 'rotation',
+  scale: 'scale',
+};
+
+function copyTransform(meshes = [...vp.selection]) {
+  if (meshes.length !== 1) return toast('Select one object to copy its position, rotation and scale.');
+  const m = meshes[0];
+  const mo = vp.toMapObject(m);
+  transformClip = {
+    label: m.userData.def.label,
+    position: { ...mo.position },
+    rotation: { ...mo.rotation },
+    scale: { ...mo.scale },
+  };
+  toast(`Copied the position, rotation and scale of ${m.userData.def.label}.`);
+  if (selFields) buildSelectionPanel();
+}
+
+/** Put `part` of the copied transform onto `meshes`. One undo step. */
+function pasteTransform(part, meshes = [...vp.selection]) {
+  if (!transformClip) return toast('Copy a transform first — right-click an object, or use Copy in the inspector.');
+  const live = meshes.filter((m) => vp.objects.includes(m) && !m.userData.locked);
+  if (!live.length) return toast('Select something to paste onto.');
+  const c = transformClip;
+  const want = (p) => part === 'all' || part === p;
+  let rounded = 0;
+
+  if (want('position') && live.length > 1) {
+    // Several pieces move as one, across the floor: the middle of the
+    // selection goes to the copied X and Z, and its height stays where it is.
+    // The copied height is one object's origin — on the floor for most pieces,
+    // in the middle for a box — and lining a whole selection's middle up with
+    // that would sink half of a stack of crates into the ground.
+    vp.setSelection(live);
+    const mid = vp.selectionBounds(true).getCenter(new THREE.Vector3());
+    const shown = { x: mid.x, z: -mid.z };
+    vp.pivot.position.add(vp.worldDirection(new THREE.Vector3(
+      c.position.x - shown.x, 0, -(c.position.z - shown.z),
+    )));
+    vp.pivot.updateMatrixWorld(true);
+  }
+  // Off the pivot, so each piece is written in the design's frame — the frame
+  // `toMapObject` reads and the file stores — and not in the pivot's.
+  vp.setSelection([]);
+  for (const m of live) {
+    const def = m.userData.def;
+    if (want('position') && live.length === 1) m.position.fromArray(convertPosition(c.position));
+    if (want('rotation')) m.quaternion.fromArray(unityEulerToQuat(c.rotation));
+    if (want('scale')) {
+      const s = holdRound(def, c.scale);
+      if (s !== c.scale) rounded++;
+      m.scale.set(s.x || 0.001, s.y || 0.001, s.z || 0.001);
+    }
+    vp.markDirty(m);
+  }
+  vp.setSelection(live);
+  vp.settle();
+  vp.rebuildPivot();
+  commit();
+  const onto = live.length === 1 ? live[0].userData.def.label : `${live.length} objects`;
+  const round = rounded ? ` ${rounded === 1 ? 'A cylinder was' : `${rounded} cylinders were`} kept round.` : '';
+  const together = want('position') && live.length > 1 ? ' They moved as one, keeping their height.' : '';
+  toast(`Pasted the ${TRANSFORM_PARTS[part]} of ${c.label} onto ${onto}.${together}${round}`);
+}
+
+/**
+ * The four ways to paste, as a menu at (x, y). Used by the inspector's Paste
+ * button and the right-click menu, so both offer the same four in the same
+ * order.
+ */
+function showPasteTransformMenu(x, y, meshes) {
+  hideContextMenu();
+  const el = document.createElement('div');
+  el.className = 'ctxmenu';
+  el.style.left = `${x}px`;
+  el.style.top = `${y}px`;
+  const head = document.createElement('div');
+  head.className = 'ctxhead';
+  head.textContent = transformClip ? `Paste from ${transformClip.label}` : 'Nothing copied';
+  el.appendChild(head);
+  const fmt = (v) => ['x', 'y', 'z'].map((a) => round3(v[a])).join(', ');
+  const rows = [
+    ['all', 'Everything', ''],
+    ['position', 'Position', transformClip ? fmt(transformClip.position) : ''],
+    ['rotation', 'Rotation', transformClip ? fmt(transformClip.rotation) : ''],
+    ['scale', 'Scale', transformClip ? fmt(transformClip.scale) : ''],
+  ];
+  for (const [part, label, value] of rows) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.disabled = !transformClip;
+    b.innerHTML = `<span>${escapeHtml(label)}</span>${value ? `<kbd>${escapeHtml(value)}</kbd>` : ''}`;
+    b.onclick = () => { hideContextMenu(); pasteTransform(part, meshes); };
+    el.appendChild(b);
+  }
+  mountContextMenu(el);
+}
+
 /**
  * The size of the selection along each of the pivot's own axes.
  *
@@ -796,9 +970,11 @@ function mirrorSelection(axis, into = null) {
     const copy = vp.addObject({
       type: def.type,
       $type: target ? (def.objectType || 'MapObject') : m.userData.objectType,
-      // Props belong to the subtype, so they only carry over within it.
+      // Props belong to the subtype, so they only carry over within it — bar
+      // a damage box going invisible, which is a choice about the box rather
+      // than its colour, and survives the swap to the other team.
       props: target && target.type !== m.userData.def.type
-        ? { ...(def.props || {}) } : { ...m.userData.props },
+        ? { ...(damageStyleFor(def, m.userData.props) || {}) } : { ...m.userData.props },
       position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 },
       dirty: true,
     });
@@ -988,7 +1164,14 @@ function prefabFileName(name) {
 
 function exportPrefab(meshes = null) {
   if (meshes) vp.setSelection(meshes);
-  if (!vp.selection.size) return toast('Select what you want to keep as a prefab first.');
+  // A prefab is a piece of map, and the scale figure is not part of the map.
+  const figures = [...vp.selection].filter((m) => m.userData.def.editorOnly);
+  if (figures.length) vp.setSelection([...vp.selection].filter((m) => !m.userData.def.editorOnly));
+  if (!vp.selection.size) {
+    return toast(figures.length
+      ? "The scale figure is the editor's own and does not go into a prefab."
+      : 'Select what you want to keep as a prefab first.');
+  }
   const n = vp.selection.size;
   openDialog({
     title: 'Export prefab',
@@ -1896,10 +2079,20 @@ function buildSelectionPanel() {
       ${def.unknown ? '<br><span style="color:var(--accent)">Not in any loaded pack — shown as a marker, but exported unchanged.</span>' : ''}
     </p>
     ${multi ? '' : propRows(list[0])}
+    ${def.editorOnly && !multi ? `<p class="hint" style="margin:0 0 8px">Editor only &mdash; never exported, not
+      counted against the budget, and left out of published pictures. Stand it beside a doorway or a
+      wall to see the size of it.</p>` : ''}
     ${vecRow('Position', 'p', multi ? 'Moves the whole selection' : '')}
     ${vecRow('Rotation', 'r', multi ? 'disabled' : '')}
     ${vecRow('Scale', 's', multi ? 'disabled' : '')}
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;margin-top:9px">
+    ${multi ? '' : roundNote(list[0])}
+    <div class="xfrow">
+      <button class="btn ghost" id="s-xf-copy"${multi ? ' disabled' : ''}
+        title="Remember this object's position, rotation and scale, to put onto another object">Copy transform</button>
+      <button class="btn ghost" id="s-xf-paste"${transformClip ? '' : ' disabled'}
+        title="Put a copied position, rotation or scale — or all three — onto the selection">Paste&hellip;</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;margin-top:5px">
       <button class="btn ghost" id="s-drop"
         title="Let it fall until it rests on whatever is underneath — the top of another object, or the ground. Loose objects each find their own landing; a group falls as one and keeps its stacking (Shift+End)">Drop</button>
       <button class="btn ghost" id="s-floor"
@@ -1936,8 +2129,48 @@ function buildSelectionPanel() {
   $('s-group').onclick = groupSelection;
   $('s-ungroup').onclick = ungroupSelection;
   $('s-del').onclick = deleteSelection;
+  $('s-xf-copy').onclick = () => copyTransform();
+  $('s-xf-paste').onclick = (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    showPasteTransformMenu(r.left, r.bottom + 2, [...vp.selection]);
+  };
+  const makeRound = $('s-round');
+  if (makeRound) makeRound.onclick = () => roundOff(list[0]);
   if (!multi) wirePropRows(list[0]);
   refreshSelectionValues();
+}
+
+/**
+ * The line under a cylinder's Scale boxes. Usually one short sentence saying
+ * the two radii move together. On a cylinder that arrived oval — from a file
+ * this editor wrote before it held them round — a warning, and the button that
+ * fixes it, because nothing else will: the game draws it round regardless.
+ */
+function roundNote(mesh) {
+  const def = mesh.userData.def;
+  if (!def.round) return '';
+  const s = vp.toMapObject(mesh).scale;
+  if (!isOval(def, s)) {
+    return '<p class="hint" style="margin:-2px 0 6px">Round: X and Z change together, as in the game.</p>';
+  }
+  return `<div class="ovalnote"><p>The game draws a cylinder round, and this one is
+    ${round3(s.x)} across X and ${round3(s.z)} across Z &mdash; the headset will not show it as it looks here.</p>
+    <button class="btn ghost" id="s-round" title="Make Z match X, or X match Z, whichever is larger">Make round</button></div>`;
+}
+
+/** Give an oval cylinder the larger of its two widths on both axes. One undo step. */
+function roundOff(mesh) {
+  const mo = vp.toMapObject(mesh);
+  const s = holdRound(mesh.userData.def, mo.scale);
+  if (s === mo.scale) return;
+  vp.setSelection([]);
+  mesh.scale.set(s.x, s.y, s.z);
+  vp.markDirty(mesh);
+  vp.setSelection([mesh]);
+  vp.settle();
+  vp.rebuildPivot();
+  commit();
+  toast(`Made round at ${round3(Math.abs(s.x))} across.`);
 }
 
 // -- subtype properties -----------------------------------------------------
@@ -2040,6 +2273,40 @@ function showInGameRow(value) {
     <span>Show in game</span></label>`;
 }
 
+/**
+ * A damage box hurts whether or not anyone can see it. Its `style` is its
+ * colour, or the game's own "Invisible" — so the choice that matters is a tick,
+ * and the colour it goes back to is the one its key stands for.
+ */
+function damageVisibleRow(value) {
+  const on = value !== DAMAGE_STYLE_INVISIBLE;
+  return `<label class="mtick" title="Unticked, the box still does damage but the game does not draw it — players find it by walking into it">
+    <input type="checkbox" id="f-dmgvisible"${on ? ' checked' : ''}>
+    <span>Visible to players</span></label>`;
+}
+
+function wireDamageVisibleRow(mesh) {
+  const tick = $('f-dmgvisible');
+  if (!tick) return;
+  tick.onchange = () => {
+    setDamageBoxesVisible([mesh], tick.checked);
+  };
+}
+
+/** Show or hide damage boxes in the game. One undo step for the lot. */
+function setDamageBoxesVisible(meshes, visible) {
+  const boxes = meshes.filter((m) => m.userData.def.field && m.userData.def.props?.style !== undefined);
+  if (!boxes.length) return;
+  for (const m of boxes) {
+    vp.setProp(m, 'style', visible ? m.userData.def.props.style : DAMAGE_STYLE_INVISIBLE);
+  }
+  commit();
+  const what = boxes.length === 1 ? 'The damage box' : `${boxes.length} damage boxes`;
+  toast(visible
+    ? `${what} will be drawn in the game.`
+    : `${what} will do damage without being drawn — players find ${boxes.length === 1 ? 'it' : 'them'} by walking in.`);
+}
+
 function propRows(mesh) {
   const props = mesh.userData.props || {};
   const keys = Object.keys(props);
@@ -2051,6 +2318,7 @@ function propRows(mesh) {
       if (key === 'behaviour') return behaviourRow(props[key]);
       if (key === 'content') return messageRow(props[key]);
       if (key === 'showInGame') return showInGameRow(props[key]);
+      if (key === 'style' && mesh.userData.def.field) return damageVisibleRow(props[key]);
       const label = PROP_LABELS[key] || key;
       const list = propSuggestions(key);
       const opts = list.map((v) => `<option value="${escapeHtml(v)}">`).join('');
@@ -2155,8 +2423,10 @@ function wirePropRows(mesh) {
   wireSpawnerRows(mesh);
   wireMessageRows(mesh);
   const keys = Object.keys(mesh.userData.props || {});
+  wireDamageVisibleRow(mesh);
   keys.forEach((key, i) => {
     if (SPECIAL_PROPS.includes(key)) return;
+    if (key === 'style' && mesh.userData.def.field) return;
     const input = $(`f-prop${i}`);
     if (!input) return;
     input.onchange = () => {
@@ -2232,7 +2502,12 @@ function applyNumericEdit() {
     const mo = vp.toMapObject(list[0]);
     const p = read(selFields.p, mo.position);
     const r = read(selFields.r, mo.rotation);
-    const s = read(selFields.s, mo.scale);
+    let s = read(selFields.s, mo.scale);
+    // A cylinder's X and Z are one width typed twice: the box that was typed in
+    // leads and the other follows. Neither typed, nothing changes — an oval
+    // that came in from a file is the inspector's note to raise, not this.
+    const lead = s.x !== mo.scale.x ? 'x' : s.z !== mo.scale.z ? 'z' : null;
+    if (lead) s = holdRound(list[0].userData.def, s, lead);
     // The pivot carries the object's world placement while it is selected.
     vp.placeSelection(p, r);
     list[0].scale.set(s.x || 0.001, s.y || 0.001, s.z || 0.001);
@@ -3090,16 +3365,34 @@ function showContextMenu(x, y, meshes) {
   sep0.className = 'ctxsep';
   el.appendChild(sep0);
 
+  // Bands, top to bottom: taking hold of it, copying it, reshaping it, and —
+  // on its own at the foot, where nothing is reached for by accident — deleting
+  // it.
+  const band = () => {
+    const s = document.createElement('div');
+    s.className = 'ctxsep';
+    el.appendChild(s);
+  };
   item('Select', '', () => vp.setSelection(meshes), locked);
+  item('Duplicate', 'Ctrl D', () => { vp.setSelection(meshes); duplicate(); }, locked);
+  item('Copy', 'Ctrl C', () => { vp.setSelection(meshes); copySelection(); }, locked);
+  item('Copy transform', '', () => copyTransform(meshes), locked || many);
+  item('Paste transform…', '', () => showPasteTransformMenu(x, y, meshes), locked || !transformClip);
+  band();
   item('Flip across X', '', () => flipSelection(meshes, 'x'), locked,
     { meshes, axis: 'x' });
   item('Flip across Z', '', () => flipSelection(meshes, 'z'), locked,
     { meshes, axis: 'z' });
   item('Swap theme…', '', () => showThemeMenu(x, y, meshes), locked);
   item('Replace…', '', () => openReplace(meshes), locked);
+  const fields = meshes.filter((m) => m.userData.def.field);
+  if (fields.length === meshes.length) {
+    const unseen = fields.every((m) => !damageBoxVisible(m.userData.props));
+    item(unseen ? 'Visible to players' : 'Invisible to players', '',
+      () => setDamageBoxesVisible(meshes, unseen), locked);
+  }
   item('Export prefab…', '', () => exportPrefab(meshes), locked);
-  item('Duplicate', 'Ctrl D', () => { vp.setSelection(meshes); duplicate(); }, locked);
-  item('Copy', 'Ctrl C', () => { vp.setSelection(meshes); copySelection(); }, locked);
+  band();
   item('Delete', 'Del', () => { vp.setSelection(meshes); deleteSelection(); }, locked);
 
   mountContextMenu(el);
@@ -3310,13 +3603,16 @@ function swapInPlace(pairs) {
     const next = vp.addObject({
       $type: def.objectType,
       type: def.type,
-      props: def.props ? { ...def.props } : undefined,
+      props: def.props ? { ...damageStyleFor(def, m.userData.props) } : undefined,
       position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 },
       dirty: true,
     });
     next.position.copy(p);
     alignShapeYaw(next.quaternion.copy(q), m.userData.def, def);
-    next.scale.copy(s);
+    // A box replaced with a cylinder keeps its size, and a cylinder's size is
+    // round: the wider of the two footprints, so it still covers what the box did.
+    const sized = holdRound(def, s);
+    next.scale.set(sized.x, sized.y, sized.z);
     next.userData.group = m.userData.group;
     made.push(next);
   }
@@ -4940,6 +5236,14 @@ async function loadMapText(text, sourceName) {
     msg += ` ${outside} object${outside === 1 ? '' : 's'} outside the ${PLAYABLE_SIZE} m `
       + 'playable square, marked in red — the headset will not draw those.';
   }
+  // Said, and left alone: the file is somebody's, and rounding a cylinder off
+  // changes how much room it takes up. Select one and the inspector offers
+  // Make round.
+  const ovals = vp.designObjects().filter((m) => isOval(m.userData.def, m.scale)).length;
+  if (ovals) {
+    msg += ` ${ovals} cylinder${ovals === 1 ? ' is' : 's are'} stretched oval, which the game draws `
+      + 'round — select one to make it round.';
+  }
   toast(msg, unknown.size > 0);
   $('st-file').textContent = sourceName;
 }
@@ -6381,7 +6685,7 @@ function budgetColour(ratio) {
 }
 
 function refreshBudget() {
-  const n = vp.objects.length;
+  const n = vp.mapObjectCount();
   const el = $('budget');
   if (!el) return;
   const over = n > OBJECT_BUDGET;
@@ -6461,7 +6765,7 @@ function warnOutside(count) {
  * is left alone so the first object *placed* outside still says something.
  */
 function adoptMapGuides() {
-  budgetOverride = vp.objects.length > OBJECT_BUDGET;
+  budgetOverride = vp.mapObjectCount() > OBJECT_BUDGET;
   budgetWarned = budgetOverride;
   outsideDismissed = false;
   groundWarned = false;
@@ -6656,7 +6960,15 @@ function editorState() {
     if (m.userData.hidden) rec.h = 1;
     if (Object.keys(rec).length) objects[i] = rec;
   });
-  return Object.keys(objects).length ? { v: 1, objects } : null;
+  // The scale figures, which the map file has no room for at all. Kept as
+  // Unity values, the same three a map object carries, so a restore puts each
+  // back exactly where it stood.
+  const figures = vp.editorObjects().filter((m) => !m.userData.layer).map((m) => {
+    const { position, rotation, scale } = vp.toMapObject(m);
+    return { type: m.userData.def.type, position, rotation, scale };
+  });
+  if (!Object.keys(objects).length && !figures.length) return null;
+  return { v: 1, objects, ...(figures.length ? { figures } : {}) };
 }
 
 /**
@@ -6675,10 +6987,22 @@ function editorState() {
  * unrelated runs of objects would move as a single lump.
  */
 function applyEditorState(state) {
-  if (!state || state.v !== 1 || !state.objects) return 0;
+  if (!state || state.v !== 1) return 0;
   const hidden = [], locked = [];
   let touched = 0, highest = 0;
-  for (const [key, rec] of Object.entries(state.objects)) {
+  // Only what the catalog still calls editor-only comes back, and only as one.
+  // This is a file from disk or from storage, and anything else in it is not
+  // a figure.
+  for (const f of Array.isArray(state.figures) ? state.figures : []) {
+    if (getByKey(f?.type)?.editorOnly !== true) continue;
+    const vec = (v, d) => ({ x: Number(v?.x) || d, y: Number(v?.y) || d, z: Number(v?.z) || d });
+    vp.addObject({
+      type: f.type, position: vec(f.position, 0), rotation: vec(f.rotation, 0), scale: vec(f.scale, 1),
+      dirty: true, layer: null,
+    });
+    touched++;
+  }
+  for (const [key, rec] of Object.entries(state.objects || {})) {
     const m = vp.designObjects()[Number(key)];
     if (!m) continue;
     if (rec.g) {
@@ -7225,7 +7549,7 @@ function refreshStatus() {
   // Number() at the sink as well as in `parseMap`: this is HTML, and the
   // bounds are the one value here that came out of a file.
   $('readout').innerHTML =
-    `ARENA <b>${Number(b.x)} × ${Number(b.y)} × ${Number(b.z)}</b> m<br>OBJECTS <b>${vp.objects.length}</b>${extra}`;
+    `ARENA <b>${Number(b.x)} × ${Number(b.y)} × ${Number(b.z)}</b> m<br>OBJECTS <b>${vp.mapObjectCount()}</b>${extra}`;
 }
 
 // ---------------------------------------------------------------------------

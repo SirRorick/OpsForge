@@ -17,6 +17,7 @@ import { createHash } from 'node:crypto';
 const ROOT = dirname(fileURLToPath(import.meta.url));
 export const ORDER = [
   'unity.js', 'align.js', 'rules.js', 'format.js', 'publish.js', 'zip.js', 'modio.js', 'packs.js', 'catalog.js',
+  'looks.js',
   'ai.js', 'link.js', 'assistant.js',
   'placeholders.js', 'project.js', 'checkpoints.js', 'gizmo.js', 'scene.js', 'app.js',
 ];
@@ -68,7 +69,7 @@ export function build() {
  * to import. The modules are the headless ones — a three.js import here would
  * be a bug in the module, not something to hoist.
  */
-export const LINK_ORDER = ['unity.js', 'rules.js', 'format.js', 'packs.js', 'catalog.js', 'ai.js'];
+export const LINK_ORDER = ['unity.js', 'rules.js', 'format.js', 'packs.js', 'catalog.js', 'looks.js', 'ai.js'];
 
 export function buildLink() {
   const hoisted = [];

@@ -12,7 +12,7 @@
 // `behaviour` — so lookups take the whole map object, not just the type.
 // ---------------------------------------------------------------------------
 
-import { BUILTIN_PACKS } from './packs.js';
+import { BUILTIN_PACKS, ROUND_SHAPES, DAMAGE_STYLE_INVISIBLE } from './packs.js';
 
 /**
  * Where the editor's art lives, relative to the page.
@@ -106,6 +106,9 @@ function registerPack(pack) {
       key: raw.key || raw.type,
       pack: pack.id,
       group: pack.group || 'virtual',
+      // Held round: X and Z stay equal however it is resized. See ROUND_SHAPES.
+      round: raw.round ?? ROUND_SHAPES.has(raw.shape),
+      editorOnly: raw.editorOnly === true,
     };
     byKey.set(def.key, def);
     if (!byType.has(def.type)) byType.set(def.type, []);
@@ -265,6 +268,53 @@ export function teamVariants(def) {
 /** The family entry for one team — `teamVariants` narrowed to a single side. */
 export function teamVariant(def, team) {
   return teamVariants(def).find((d) => d.team === team) || null;
+}
+
+// -- held round -------------------------------------------------------------
+// Every cylinder the game's own editor has ever written has X and Z equal, and
+// one stretched oval here comes out round in the headset. See ROUND_SHAPES in
+// packs.js for the evidence. These are the whole of the rule, shared by the
+// gizmo, the inspector, Replace and the assistant so that all four agree.
+
+const ROUND_EPS = 1e-6;
+
+/** Whether a scale has a round piece's X and Z apart. */
+export function isOval(def, scale) {
+  return !!def?.round && Math.abs(Math.abs(scale.x) - Math.abs(scale.z)) > ROUND_EPS;
+}
+
+/**
+ * `scale` with a round piece's X and Z made equal, or `scale` itself for
+ * anything else. `lead` names the axis the person was changing, which is the
+ * one that wins; without one the larger wins, so a piece rounded off never
+ * shrinks out from under something it was covering.
+ */
+export function holdRound(def, scale, lead = null) {
+  if (!isOval(def, scale)) return scale;
+  const size = lead === 'x' || lead === 'z'
+    ? Math.abs(scale[lead])
+    : Math.max(Math.abs(scale.x), Math.abs(scale.z));
+  // Each axis keeps its own sign: a piece turned inside out by a mirror stays
+  // that way, and only how far across it is changes.
+  const signed = (v) => (v < 0 ? -size : size);
+  return { ...scale, x: signed(scale.x), z: signed(scale.z) };
+}
+
+// -- damage box style ---------------------------------------------------------
+
+/** Whether a damage box is drawn in the game at all. */
+export function damageBoxVisible(props) {
+  return props?.style !== DAMAGE_STYLE_INVISIBLE;
+}
+
+/**
+ * The `style` a damage box should carry when it becomes `def`, keeping an
+ * invisible one invisible. Anything else takes the style its key stands for —
+ * which is what a team swap from blue to orange means.
+ */
+export function damageStyleFor(def, fromProps) {
+  if (!def?.field || !def.props || def.props.style === undefined) return def?.props ?? null;
+  return damageBoxVisible(fromProps) ? { ...def.props } : { ...def.props, style: DAMAGE_STYLE_INVISIBLE };
 }
 
 export function categoriesOf(pack) {
