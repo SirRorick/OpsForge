@@ -243,7 +243,8 @@ export function blobStore(env) {
     if (!c) throw new Error('No credential for the Blob store: connect the store to this project, with OIDC on.');
     return c.token;
   };
-  const urlOf = (pathname) => `https://${storeId}.private.blob.vercel-storage.com/${pathname.split('/').map(encodeURIComponent).join('/')}`;
+  // The API takes the id as it is written; the store's host is lower case.
+  const urlOf = (pathname) => `https://${storeId.toLowerCase()}.private.blob.vercel-storage.com/${pathname.split('/').map(encodeURIComponent).join('/')}`;
   const api = (extra = {}) => ({
     authorization: `Bearer ${bearer()}`,
     'x-api-version': BLOB_API_VERSION,
