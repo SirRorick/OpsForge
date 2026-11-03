@@ -17,6 +17,8 @@ header{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var
 #who{font-family:var(--mono);font-size:11px;color:var(--dim)}
 main{padding:16px;max-width:1100px;margin:0 auto}
 h1{font:600 20px var(--hud);letter-spacing:.06em;text-transform:uppercase;margin:0 0 6px}
+h2{font:600 15px var(--hud);letter-spacing:.07em;text-transform:uppercase;color:var(--dim);margin:22px 0 4px}
+#code{font-family:var(--mono);letter-spacing:.12em;text-transform:uppercase}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px}
 .narrow{max-width:380px;margin:40px auto}
 .hint{color:var(--dim);font-size:12px;margin:4px 0 10px}

@@ -21,5 +21,5 @@ function dependencies() {
   return deps;
 }
 
-export async function GET(request) { return handle(request, dependencies()); }
-export async function POST(request) { return handle(request, dependencies()); }
+export async function GET(request) { return handle(request, dependencies(), process.env); }
+export async function POST(request) { return handle(request, dependencies(), process.env); }

@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 // Public:
 //   GET  /api/library            every live prefab and the tag list
+//   GET  /api/file/<pathname>    one of a prefab's files: its prefab, thumbnail or 360° strip
 //   GET  /api/health             whether this deployment's library is wired up
 //   GET  /api/whoami             the mod.io account a token belongs to, and whether it may share
 //   POST /api/submit             share a prefab            (mod.io sign-in)
@@ -14,8 +15,10 @@
 //   GET  /api/admin/state        the review queue, the library, tags, bans, settings
 //   POST /api/admin/act          restore, hide, delete, ban, tag moderation, settings
 //
-// Records live in Redis and files in Blob; see adapters.js. Keys, all under
-// "of:":
+// Records are one document in the private Blob store, worked on through the
+// Redis-shaped commands of `docKv` (adapters.js) and written back once per
+// request, only when the request succeeded and changed something. Keys, all
+// under "of:":
 //   p:<id>        a prefab's record, JSON
 //   z:live        live prefab ids, scored by when they were shared
 //   z:hidden      hidden ones — reported past the threshold, hidden by hand, or
@@ -27,9 +30,9 @@
 //   tags          custom tags: slug -> { label, by, byName, at, hidden }
 //   tagrep:<slug> reports on a custom tag
 //   set           settings: threshold
-//   idx           the public listing, cached; deleted by every change
-//   rl:...        rate-limit counters
-//   ac:<h>, as:<h> an admin's pending code and sessions, stored as hashes
+//   rl:...        rate-limit counters — carried along, never a write by themselves
+//   acsent:<h>    when sign-in codes were last mailed to an admin address
+//   revoked       admin sessions signed out before they ran out
 // ---------------------------------------------------------------------------
 
 import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
@@ -43,10 +46,12 @@ const K = (s) => `of:${s}`;
 const lookup = (type, props) => defFor({ type, props });
 
 const DAY = 86_400;
-const SESSION_S = 30 * DAY;
+const SESSION_S = 7 * DAY;
 const CODE_S = 20 * 60;
 const CODE_TRIES = 5;
-const ADMIN_COOKIE = '__Host-opsforge_admin';
+const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 32: no I, O, 0 or 1 to misread
+const SESSION_COOKIE = '__Host-opsforge_admin';
+const CHALLENGE_COOKIE = '__Host-opsforge_code';
 const MAX_BODY = 4_000_000;            // Vercel refuses a request over 4.5 MB
 const MAX_THUMB = 400_000;
 const MAX_SPIN = 2_500_000;
@@ -55,12 +60,14 @@ export class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
 
-const json = (status, body, headers = {}) => new Response(JSON.stringify(body), {
-  status,
-  headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...headers },
-});
+const json = (status, body, headers = {}, cookies = []) => {
+  const h = new Headers({ 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...headers });
+  for (const c of cookies) h.append('set-cookie', c);
+  return new Response(JSON.stringify(body), { status, headers: h });
+};
 
 const sha = (s) => createHash('sha256').update(String(s)).digest('hex');
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function readJson(request) {
   const declared = Number(request.headers.get('content-length') || 0);
@@ -94,11 +101,34 @@ function cookie(request, name) {
   return hits.length === 1 ? hits[0] : null;
 }
 
-/** Count one more of something per window, and refuse past `max`. */
+/**
+ * Count one more of something per window, and refuse past `max`. The counter
+ * is kept in the store, but only alongside a write the request was making
+ * anyway — so what it counts is what got through.
+ */
 async function limit(kv, key, max, seconds) {
   const n = await kv.cmd('INCR', K(`rl:${key}`));
   if (n === 1) await kv.cmd('EXPIRE', K(`rl:${key}`), seconds);
   if (n > max) throw new HttpError(429, 'That is too many in a short time. Try again later.');
+}
+
+/**
+ * The same, in this instance's memory only, for the requests that must not
+ * cost a write to refuse: anybody may ask for an admin code. Kept per store,
+ * which on a deployment is per instance and in the tests per library.
+ */
+const counters = new WeakMap(); // store -> Map(key -> { n, until })
+function quick(d, key, max, seconds) {
+  const now = Date.now();
+  if (!counters.has(d.store)) counters.set(d.store, new Map());
+  const recent = counters.get(d.store);
+  const e = recent.get(key);
+  if (!e || e.until <= now) {
+    if (recent.size > 5000) recent.clear();
+    recent.set(key, { n: 1, until: now + seconds * 1000 });
+    return true;
+  }
+  return ++e.n <= max;
 }
 
 const newId = () => {
@@ -107,6 +137,38 @@ const newId = () => {
   for (const b of randomBytes(10)) s += alphabet[b % alphabet.length];
   return s;
 };
+
+// -- the month's allowance -------------------------------------------------------------
+// The free plan's Blob store allows 2,000 uploads and writes a month, and past
+// that it stops — every prefab's pictures with it — for thirty days. The
+// library counts its own, and stops taking new prefabs well before, reports a
+// little later, and the admin's own changes last, so the store never gets
+// there. OPSFORGE_BLOB_OPS raises the allowance on a paid plan.
+
+const SHARE_COST = 4; // three files and the record
+const STOP_AT = { share: 0.75, report: 0.9, admin: 0.975 };
+const STOPPED = {
+  share: 'The library has taken all the new prefabs it can this month. Sharing opens again on the 1st.',
+  report: 'Reports are paused until the 1st — the library has used this month’s storage allowance.',
+  admin: 'This month’s storage allowance is nearly used up, so changes wait until the 1st.',
+};
+
+function allowance(env) {
+  const n = Number(env.OPSFORGE_BLOB_OPS);
+  return Number.isInteger(n) && n > 0 ? n : 2000;
+}
+
+/** Uploads and saves so far this month, the month's allowance, and where each kind of change stops. */
+function storageUse(d) {
+  const all = allowance(d.env);
+  const stops = Object.fromEntries(Object.entries(STOP_AT).map(([k, f]) => [k, Math.floor(all * f)]));
+  return { used: d.kv.budget().used, allowance: all, stops };
+}
+
+function afford(d, what, cost = 1) {
+  const { used } = d.kv.budget();
+  if (used + cost > allowance(d.env) * STOP_AT[what]) throw new HttpError(503, STOPPED[what]);
+}
 
 // -- settings -----------------------------------------------------------------------
 
@@ -165,16 +227,11 @@ async function buildIndex(kv) {
 }
 
 async function getLibrary(d) {
-  let text = await d.kv.cmd('GET', K('idx'));
-  if (!text) {
-    text = JSON.stringify(await buildIndex(d.kv));
-    await d.kv.cmd('SET', K('idx'), text, 'EX', 300);
-  }
   // Cached at Vercel's edge for a few seconds — a report that hides something
   // reaches everybody within a quarter of a minute — and never by a browser.
   // A browser honours stale-while-revalidate too, and showed somebody the
   // library from before the prefab they had just shared.
-  return new Response(text, {
+  return new Response(JSON.stringify(await buildIndex(d.kv)), {
     status: 200,
     headers: {
       'content-type': 'application/json; charset=utf-8',
@@ -183,8 +240,6 @@ async function getLibrary(d) {
     },
   });
 }
-
-const changed = (kv) => kv.cmd('DEL', K('idx'));
 
 // -- contributors ---------------------------------------------------------------------
 
@@ -252,6 +307,7 @@ async function submit(d, request) {
   const user = await contributor(d, request);
   await limit(d.kv, `sub:${user.id}`, 10, DAY);
   await limit(d.kv, `subip:${clientIp(request)}`, 30, DAY);
+  afford(d, 'share', SHARE_COST);
   const body = await readJson(request);
 
   const title = cleanText(body.title, LIMITS.title);
@@ -283,6 +339,7 @@ async function submit(d, request) {
     put(`thumb.${thumb.info.ext}`, thumb.buf, thumb.info.type),
     put(`spin.${spin.info.ext}`, spin.buf, spin.info.type),
   ]);
+  d.kv.spend(3);
 
   const now = d.now();
   const record = {
@@ -304,7 +361,6 @@ async function submit(d, request) {
     }
   }
   await d.kv.pipe(cmds);
-  await changed(d.kv);
   return json(201, { prefab: publicRecord(record) });
 }
 
@@ -323,7 +379,8 @@ async function hidePrefab(kv, record, why, now) {
 
 async function report(d, request) {
   const user = await contributor(d, request);
-  await limit(d.kv, `rep:${user.id}`, 40, DAY);
+  await limit(d.kv, `rep:${user.id}`, 20, DAY);
+  afford(d, 'report');
   const body = await readJson(request);
   const reason = REPORT_REASONS.some((r) => r.id === body.reason) ? body.reason : 'other';
   const note = cleanText(body.note, LIMITS.reportNote);
@@ -343,7 +400,6 @@ async function report(d, request) {
       tag.hidden = true;
       tag.hiddenWhy = 'reports';
       await d.kv.cmd('HSET', K('tags'), slug, JSON.stringify(tag));
-      await changed(d.kv);
       hidden = true;
     }
     return json(200, { ok: true, already: !added, hidden });
@@ -360,7 +416,6 @@ async function report(d, request) {
   let hidden = record.status !== 'live';
   if (added && !hidden && count >= needed) {
     await hidePrefab(d.kv, record, 'reports', d.now());
-    await changed(d.kv);
     hidden = true;
   }
   return json(200, { ok: true, already: !added, hidden });
@@ -368,10 +423,19 @@ async function report(d, request) {
 
 // -- the admin's sign-in ---------------------------------------------------------------------
 // The same shape as every other email-code sign-in on roricktech.com, and on
-// purpose not the shared Nexus one: an address, a six-digit code mailed to it,
-// a session cookie. An address that is not on the list gets the same answer as
-// one that is, and a decoy row, so the list cannot be probed from outside.
-// Codes and sessions are kept only as keyed hashes.
+// purpose not the shared Nexus one: an address, a code mailed to it, a session
+// cookie. An address that is not on the list gets the same answer as one that
+// is, so the list cannot be probed from outside.
+//
+// Neither the code nor the session is stored. Asking for a code sets a cookie
+// holding the address, an expiry and a keyed hash of the code; the code itself
+// goes only into the email. The session is a signed cookie too. So signing in
+// costs the store one write — when the code is mailed, which is also what caps
+// how many are — and wrong guesses cost it nothing. That is why the code is
+// eight characters from 32 rather than six digits: there is no database
+// counting wrong guesses across every instance, so the code has to be
+// unguessable in twenty minutes on its own. OPSFORGE_SECRET keys every hash;
+// changing it signs everybody out.
 
 function adminEmails(env) {
   return new Set(String(env.OPSFORGE_ADMIN_EMAILS || '').split(/[,\s]+/).map((e) => e.trim().toLowerCase()).filter(Boolean));
@@ -384,60 +448,80 @@ function secret(env) {
 }
 
 const keyed = (env, s) => createHmac('sha256', secret(env)).update(String(s)).digest('hex');
+const pack = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+const unpack = (s) => { try { return JSON.parse(Buffer.from(String(s), 'base64url').toString('utf8')); } catch { return null; } };
+const sameMac = (a, b) => /^[0-9a-f]{64}$/.test(a) && /^[0-9a-f]{64}$/.test(b) && timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
+const setCookie = (name, value, seconds) => `${name}=${value}; Path=/; Max-Age=${seconds}; HttpOnly; Secure; SameSite=Strict`;
+
+function newCode() {
+  let s = '';
+  for (let i = 0; i < 8; i++) s += CODE_ALPHABET[randomInt(0, CODE_ALPHABET.length)];
+  return s;
+}
+const cleanCode = (s) => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 16);
+const showCode = (c) => `${c.slice(0, 4)}-${c.slice(4)}`;
 
 async function adminCode(d, request) {
   if (!d.mail) throw new HttpError(503, 'The admin sign-in is not set up on this deployment.');
   const body = await readJson(request);
   const email = String(body.email || '').trim().toLowerCase().slice(0, 200);
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new HttpError(400, 'That is not an email address.');
-  await limit(d.kv, `acip:${clientIp(request)}`, 10, 3600);
-  await limit(d.kv, `acem:${sha(email).slice(0, 32)}`, 5, 3600);
+  const tooMany = () => new HttpError(429, 'That is too many codes in a short time. Try again later.');
+  if (!quick(d, `acip:${clientIp(request)}`, 10, 3600) || !quick(d, `acem:${sha(email)}`, 3, 3600)) throw tooMany();
   const allowed = adminEmails(d.env).has(email);
-  const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
-  const row = { h: allowed ? keyed(d.env, `${email}:${code}`) : null, tries: 0 };
-  await d.kv.cmd('SET', K(`ac:${keyed(d.env, email)}`), JSON.stringify(row), 'EX', CODE_S);
+  const payload = pack({ e: email, x: d.now() + CODE_S * 1000, n: randomBytes(12).toString('base64url') });
+  let mac;
   if (allowed) {
+    // Three an hour and eight a day per address, across every instance.
+    const key = K(`acsent:${keyed(d.env, email).slice(0, 32)}`);
+    const sent = JSON.parse((await d.kv.cmd('GET', key)) || '[]').filter((t) => t > d.now() - DAY * 1000);
+    if (sent.length >= 8 || sent.filter((t) => t > d.now() - 3_600_000).length >= 3) throw tooMany();
+    await d.kv.cmd('SET', key, JSON.stringify([...sent, d.now()]), 'EX', DAY);
+    const code = newCode();
+    mac = keyed(d.env, `code:${payload}:${code}`);
     await d.mail.send({
       to: email,
-      subject: `OpsForge admin code: ${code}`,
-      text: `Your OpsForge admin sign-in code is ${code}.\n\nIt works for 20 minutes. If you did not ask for it, ignore this email.`,
-      html: `<p>Your OpsForge admin sign-in code is</p><p style="font-size:28px;letter-spacing:6px;font-family:monospace"><b>${code}</b></p><p>It works for 20 minutes. If you did not ask for it, ignore this email.</p>`,
+      subject: `OpsForge admin code: ${showCode(code)}`,
+      text: `Your OpsForge admin sign-in code is ${showCode(code)}.\n\nIt works for 20 minutes, in the browser you asked for it from. If you did not ask for it, ignore this email.`,
+      html: `<p>Your OpsForge admin sign-in code is</p><p style="font-size:28px;letter-spacing:4px;font-family:monospace"><b>${showCode(code)}</b></p><p>It works for 20 minutes, in the browser you asked for it from. If you did not ask for it, ignore this email.</p>`,
     });
+  } else {
+    // A cookie that looks the same and can never be redeemed, after about as long.
+    mac = randomBytes(32).toString('hex');
+    await sleep(300 + randomInt(0, 600));
   }
-  return json(200, { ok: true, message: 'If that address may sign in, a code is on its way.' });
+  return json(200, { ok: true, message: 'If that address may sign in, a code is on its way.' }, {},
+    [setCookie(CHALLENGE_COOKIE, `${payload}.${mac}`, CODE_S)]);
 }
 
 async function adminVerify(d, request) {
   const body = await readJson(request);
-  const email = String(body.email || '').trim().toLowerCase().slice(0, 200);
-  const code = String(body.code || '').replace(/\D/g, '');
-  const key = K(`ac:${keyed(d.env, email)}`);
-  const raw = await d.kv.cmd('GET', key);
+  const code = cleanCode(body.code);
   const fail = () => new HttpError(401, 'That code is wrong or has expired.');
-  if (!raw || code.length !== 6) throw fail();
-  const row = JSON.parse(raw);
-  row.tries++;
-  if (row.tries > CODE_TRIES) { await d.kv.cmd('DEL', key); throw fail(); }
-  await d.kv.cmd('SET', key, JSON.stringify(row), 'EX', CODE_S);
-  const want = Buffer.from(row.h || keyed(d.env, `decoy:${randomBytes(8).toString('hex')}`), 'hex');
-  const got = Buffer.from(keyed(d.env, `${email}:${code}`), 'hex');
-  if (!row.h || !timingSafeEqual(want, got) || !adminEmails(d.env).has(email)) throw fail();
-  await d.kv.cmd('DEL', key);
-  const token = randomBytes(32).toString('base64url');
-  await d.kv.cmd('SET', K(`as:${keyed(d.env, token)}`), JSON.stringify({ email, at: d.now() }), 'EX', SESSION_S);
-  return json(200, { ok: true, email }, {
-    'set-cookie': `${ADMIN_COOKIE}=${token}; Path=/; Max-Age=${SESSION_S}; HttpOnly; Secure; SameSite=Strict`,
-  });
+  const [payload = '', mac = ''] = String(cookie(request, CHALLENGE_COOKIE) || '').split('.');
+  const c = unpack(payload);
+  if (!c || typeof c.e !== 'string' || !(c.x > d.now()) || code.length !== 8) throw fail();
+  if (body.email !== undefined && String(body.email).trim().toLowerCase() !== c.e) throw fail();
+  // A handful of guesses per code in this instance, on top of 32^8 codes.
+  if (!quick(d, `acv:${c.n}`, CODE_TRIES, CODE_S)) throw fail();
+  if (!sameMac(keyed(d.env, `code:${payload}:${code}`), mac) || !adminEmails(d.env).has(c.e)) throw fail();
+  const session = pack({ e: c.e, x: d.now() + SESSION_S * 1000, n: randomBytes(12).toString('base64url') });
+  return json(200, { ok: true, email: c.e }, {}, [
+    setCookie(SESSION_COOKIE, `${session}.${keyed(d.env, `session:${session}`)}`, SESSION_S),
+    setCookie(CHALLENGE_COOKIE, '', 0),
+  ]);
 }
 
 async function adminSession(d, request) {
-  const token = cookie(request, ADMIN_COOKIE);
-  if (!token || token.length > 100) return null;
-  const raw = await d.kv.cmd('GET', K(`as:${keyed(d.env, token)}`));
-  if (!raw) return null;
-  const s = JSON.parse(raw);
+  const raw = cookie(request, SESSION_COOKIE);
+  if (!raw || raw.length > 600) return null;
+  const [payload = '', mac = ''] = raw.split('.');
+  const s = unpack(payload);
+  if (!s || typeof s.e !== 'string' || !(s.x > d.now())) return null;
+  if (!sameMac(keyed(d.env, `session:${payload}`), mac)) return null;
+  if (await d.kv.cmd('HGET', K('revoked'), String(s.n))) return null;
   // Taking an address off the list ends its sessions at once.
-  return adminEmails(d.env).has(s.email) ? { ...s, token } : null;
+  return adminEmails(d.env).has(s.e) ? { email: s.e, n: String(s.n), x: s.x } : null;
 }
 
 async function requireAdmin(d, request) {
@@ -448,8 +532,15 @@ async function requireAdmin(d, request) {
 
 async function adminLogout(d, request) {
   const s = await adminSession(d, request);
-  if (s) await d.kv.cmd('DEL', K(`as:${keyed(d.env, s.token)}`));
-  return json(200, { ok: true }, { 'set-cookie': `${ADMIN_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict` });
+  if (s) {
+    // The cookie goes from this browser; the list stops a copy of it working anywhere else.
+    const flat = await d.kv.cmd('HGETALL', K('revoked'));
+    const stale = [];
+    for (let i = 0; i < flat.length; i += 2) if (Number(flat[i + 1]) <= d.now()) stale.push(flat[i]);
+    if (stale.length) await d.kv.cmd('HDEL', K('revoked'), ...stale);
+    await d.kv.cmd('HSET', K('revoked'), s.n, s.x);
+  }
+  return json(200, { ok: true }, {}, [setCookie(SESSION_COOKIE, '', 0)]);
 }
 
 // -- the admin's view -------------------------------------------------------------------------
@@ -486,6 +577,7 @@ async function adminState(d, request) {
   return json(200, {
     me: { email: me.email },
     threshold: await threshold(kv),
+    storage: storageUse(d),
     hidden: hidden.map((r, i) => ({ ...r, reports: hiddenReps[i] })),
     live: live.map((r, i) => ({ ...r, reports: liveReps[i] })),
     tags: tags.map((t, i) => ({ ...t, uses: usage[t.slug] || 0, reports: tagReps[i] })),
@@ -534,6 +626,7 @@ async function retag(d, from, to) {
 
 async function adminAct(d, request) {
   await requireAdmin(d, request);
+  afford(d, 'admin');
   const body = await readJson(request);
   const kv = d.kv;
   const now = d.now();
@@ -652,38 +745,34 @@ async function adminAct(d, request) {
     default:
       throw new HttpError(400, 'Unknown action.');
   }
-  await changed(kv);
   return json(200, { ok: true, ...result });
 }
 
 // -- health ---------------------------------------------------------------------------------------
 // Whether this deployment's library is wired up, for whoever deployed it to
 // check from outside — without anybody having to copy a credential anywhere
-// to find out. Redis is the request itself; Blob is a two-byte file written and
-// deleted; mail and the admin list are only whether they are configured. The
-// answer is kept ten minutes, so this cannot be used to make the store work.
+// to find out. It reads the records and writes nothing, so asking costs the
+// store nothing; mail and the admin list are only whether they are configured.
 
-async function health(d) {
-  const cached = await d.kv.cmd('GET', K('health'));
-  if (cached) return json(200, { ...JSON.parse(cached), cached: true });
-  const out = {
-    library: true,
-    redis: true,
-    blob: false,
+function wiring(d) {
+  return {
+    store: d.store?.kind || null,
+    credential: d.store?.credentialKind?.() || null,
     mail: !!d.mail,
     admins: adminEmails(d.env).size,
     secret: String(d.env.OPSFORGE_SECRET || '').length >= 16,
-    at: new Date(d.now()).toISOString(),
   };
-  try {
-    const probe = await d.files.put('health/probe.txt', Buffer.from('ok'), 'text/plain');
-    await d.files.del([probe.url]);
-    out.blob = true;
-  } catch (err) {
-    out.blobError = String(err.message).slice(0, 160);
-  }
-  await d.kv.cmd('SET', K('health'), JSON.stringify(out), 'EX', 600);
-  return json(200, out);
+}
+
+async function health(d) {
+  return json(200, {
+    library: true,
+    ...wiring(d),
+    prefabs: await d.kv.cmd('ZCARD', K('z:live')),
+    hidden: await d.kv.cmd('ZCARD', K('z:hidden')),
+    storage: storageUse(d),
+    at: new Date(d.now()).toISOString(),
+  });
 }
 
 // -- routing --------------------------------------------------------------------------------------
@@ -702,26 +791,66 @@ const ROUTES = {
 };
 
 /**
- * One request in, one response out. `deps` is the adapters plus `env` and a
- * clock, so a test can hand in memory and a fixed time.
+ * One of a prefab's files. They never change — every one has a fresh random
+ * name — so the browser and Vercel's edge keep them a day, and the function
+ * runs about once per file per edge. Deleting a prefab takes its card out of
+ * the library at once; anybody already holding a file's address can still
+ * fetch it until the day is out.
  */
-export async function handle(request, deps) {
+async function serveFile(deps, pathname) {
+  const f = await deps.files.read(pathname);
+  if (!f) return json(404, { error: 'No such file.' });
+  const keep = deps.store?.kind === 'memory' ? { 'cache-control': 'no-store' }
+    : { 'cache-control': 'public, max-age=86400', 'vercel-cdn-cache-control': 'max-age=86400' };
+  return new Response(f.bytes, {
+    headers: { 'content-type': f.contentType, 'x-content-type-options': 'nosniff', ...keep },
+  });
+}
+
+/**
+ * One request in, one response out. `deps` is the adapters plus `env` and a
+ * clock, so a test can hand in memory and a fixed time; `env` alone is enough
+ * for /api/health to say what is missing on a deployment with no store yet. A request reads the
+ * records once and, if it succeeded and changed something, writes them back
+ * once; a POST reads them straight from storage rather than through the cache,
+ * because it is about to write over them.
+ */
+export async function handle(request, deps, env = deps?.env) {
   const url = new URL(request.url);
   const route = (url.searchParams.get('route') || url.pathname.replace(/^\/api\/?/, '')).replace(/\/+$/, '');
-  const fn = ROUTES[`${request.method} ${route}`];
-  // The dev server's in-memory files. A deployment keeps its files in Blob and
-  // never comes through here.
-  if (request.method === 'GET' && route.startsWith('file/') && deps?.files?.read) {
-    const f = deps.files.read(route.slice(5));
-    return f
-      ? new Response(f.bytes, { headers: { 'content-type': f.contentType, 'cache-control': 'no-store' } })
-      : json(404, { error: 'No such file.' });
-  }
   try {
+    if (!deps && route === 'health' && request.method === 'GET' && env) {
+      return json(503, {
+        library: false,
+        ...wiring({ env, mail: !!(env.RESEND_API_KEY && env.RESEND_FROM) }),
+        error: 'No private Blob store is connected to this project (BLOB_STORE_ID is not set).',
+      });
+    }
+    if (!deps && (ROUTES[`${request.method} ${route}`] || route.startsWith('file/'))) {
+      throw new HttpError(503, 'The prefab library is not set up on this copy of OpsForge.');
+    }
+    deps?.store?.useRequest?.(request);
+    if (request.method === 'GET' && route.startsWith('file/')) return await serveFile(deps, route.slice(5));
+    const fn = ROUTES[`${request.method} ${route}`];
     if (!fn) throw new HttpError(404, 'No such endpoint.');
-    if (!deps) throw new HttpError(503, 'The prefab library is not set up on this copy of OpsForge.');
     if (request.method === 'POST' && !sameOrigin(request)) throw new HttpError(403, 'Requests must come from the editor itself.');
-    return await fn({ now: () => Date.now(), ...deps }, request);
+    const d = { now: () => Date.now(), ...deps };
+    const fresh = request.method === 'POST' || route === 'admin/state' || url.searchParams.has('fresh');
+    try {
+      d.kv = await deps.kv.begin({ fresh, now: d.now });
+    } catch (err) {
+      console.error(err);
+      if (route === 'health') return json(503, { library: false, ...wiring(d), error: String(err.message).slice(0, 200) });
+      throw new HttpError(503, 'The prefab library could not reach its storage. Try again in a moment.');
+    }
+    const res = await fn(d, request);
+    if (res.status < 400) {
+      try { await d.kv.commit(); } catch (err) {
+        console.error(err);
+        throw new HttpError(503, 'The library is busy — try that again in a moment.');
+      }
+    }
+    return res;
   } catch (err) {
     if (err instanceof HttpError) return json(err.status, { error: err.message });
     console.error(err);

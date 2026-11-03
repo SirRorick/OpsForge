@@ -142,12 +142,11 @@ export const CSP_SOURCES = {
   'font-src': ["'self'", 'https://fonts.gstatic.com'],
   // mod.io serves some thumbnails by redirecting thumb.modcdn.io to its own
   // resizing worker, so that one host is named as well — not all of workers.dev.
-  // The prefab library's pictures and files are in the deployment's Vercel Blob
-  // store, whose host is the store's own subdomain of this one.
-  'img-src': ["'self'", 'data:', 'blob:', 'https://*.modcdn.io', 'https://modio-web-thumbnail.modapi.workers.dev',
-    'https://*.public.blob.vercel-storage.com'],
+  // The prefab library's pictures and files come from this same site
+  // (/api/file/...), out of a private store nothing else can read.
+  'img-src': ["'self'", 'data:', 'blob:', 'https://*.modcdn.io', 'https://modio-web-thumbnail.modapi.workers.dev'],
   'connect-src': [
-    "'self'", 'blob:', 'data:', 'https://*.public.blob.vercel-storage.com',
+    "'self'", 'blob:', 'data:',
     'https://g-11054.modapi.io', 'https://*.modcdn.io',
     'https://api.anthropic.com', 'https://api.openai.com',
     'http://127.0.0.1:47615',

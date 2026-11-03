@@ -49,6 +49,9 @@ async function runApi(req, res, url) {
   const fn = api[req.method];
   const out = fn ? await fn(request) : new Response('Method not allowed', { status: 405 });
   const headers = Object.fromEntries(out.headers);
+  // Two cookies are two headers; folded into one they are neither.
+  const cookies = out.headers.getSetCookie();
+  if (cookies.length) headers['set-cookie'] = cookies;
   // Local is http, and a Secure cookie set over http is dropped by every
   // browser but Chrome's localhost exception; say so rather than fail quietly.
   res.writeHead(out.status, headers);

@@ -61,7 +61,7 @@ $('email').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('send')
 $('verify').onclick = async () => {
   say('signin-status', 'Checking…');
   try {
-    await api('admin/verify', { email: $('email').value, code: $('code').value });
+    await api('admin/verify', { email: $('email').value.trim().toLowerCase(), code: $('code').value });
     say('signin-status', '');
     await load();
   } catch (err) { say('signin-status', err.message, true); }
@@ -89,6 +89,10 @@ async function load() {
   $('signout').hidden = false;
   $('who').textContent = state.me.email;
   $('threshold').value = state.threshold;
+  const { used, allowance, stops } = state.storage;
+  $('storage').textContent = `${used} of ${allowance} uploads and saves used since the 1st (UTC). `
+    + `New prefabs stop at ${stops.share}, reports at ${stops.report} and your own changes at ${stops.admin}, `
+    + 'so the store never reaches the free plan’s limit, where it would stop for thirty days. Deleting is free.';
   render();
 }
 

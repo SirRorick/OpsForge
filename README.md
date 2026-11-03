@@ -384,6 +384,9 @@ cover, whole rooms — kept with the editor itself.
 - Prefabs are checked on the way in and again on the way out: only pieces the
   game has, at sane sizes and positions, at most 300 objects, rebuilt from their
   values so nothing else rides along. The scale figure cannot be shared.
+- The library lives on free storage, which allows so many uploads a month. It
+  stops taking new prefabs well before that runs out and says so; sharing opens
+  again on the 1st, and browsing and placing never stop.
 
 The library runs on the same Vercel deployment as the editor; a copy served
 anywhere else says it has no library behind it, and everything else works as

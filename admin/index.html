@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://*.public.blob.vercel-storage.com; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <meta name="referrer" content="no-referrer">
@@ -27,11 +27,11 @@
 <main>
   <section id="signin" class="card narrow" hidden>
     <h1>Sign in</h1>
-    <p class="hint">An address on the admin list gets a six-digit code by email.</p>
+    <p class="hint">An address on the admin list gets an eight-character code by email. Enter it in this browser.</p>
     <label class="field"><span>Email</span><input type="email" id="email" autocomplete="email"></label>
     <button class="btn" id="send">Send code</button>
     <div id="code-step" hidden>
-      <label class="field"><span>Code</span><input type="text" id="code" inputmode="numeric" maxlength="6" autocomplete="one-time-code"></label>
+      <label class="field"><span>Code</span><input type="text" id="code" maxlength="9" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" placeholder="ABCD-EFGH"></label>
       <button class="btn" id="verify">Sign in</button>
     </div>
     <p class="status" id="signin-status"></p>
@@ -78,6 +78,8 @@
       <label class="field"><span>Reports to hide</span><input type="number" id="threshold" min="1" max="20"></label>
       <p class="hint">How many different accounts reporting a prefab or a tag hides it until you review it.</p>
       <button class="btn" id="threshold-save">Save</button>
+      <h2>Storage this month</h2>
+      <p class="hint" id="storage"></p>
     </div>
   </section>
 </main>
