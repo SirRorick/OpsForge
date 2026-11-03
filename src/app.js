@@ -45,6 +45,9 @@ import {
 import { zipWrite } from './zip.js';
 import { convertPosition, unityEulerToQuat } from './unity.js';
 import { wireAssistant } from './assistant.js';
+import { wirePrefabLibrary } from './library.js';
+import { BUILD, buildLabel } from './version.js';
+import { PREFAB_FORMAT, PREFAB_VERSION } from './prefablib.js';
 import {
   modioSearch, modioFetchMod, modioFetchMapText, modioValidateToken, modioMyMods,
   modioFindByGuid,
@@ -96,6 +99,8 @@ let placingLabel = null;    // set while a library pick-up is following the curs
   wireAutosave();
   wireLayerPicker();
   wireAssistant(assistantHost());
+  wireCommunityLibrary();
+  showBuild();
   await loadNavCloud();
   resize();
   addEventListener('resize', resize);
@@ -1113,8 +1118,8 @@ function deleteSelection() {
 // about the thing: a stack of crates built on the ground comes back on the
 // ground, and a jumbotron hung at three metres comes back at three.
 
-const PREFAB_FORMAT = 'opsforge.prefab';
-const PREFAB_VERSION = 1;
+// The format and its version are the library's too — prefablib.js — since a
+// prefab shared to it is this same file.
 const PREFAB_EXT = 'opsprefab';
 
 /** The selection as a prefab document, ready to serialise. */
@@ -1258,6 +1263,50 @@ function placePrefab(data) {
   if (newer) msg += ` Written by a newer editor (prefab v${data.version}); anything it added is ignored.`;
   if (unknown.size) msg += ` ${unknown.size} type(s) not in any loaded pack: ${[...unknown].join(', ')}.`;
   toast(msg, newer || unknown.size > 0);
+}
+
+// -- the community library -----------------------------------------------------
+// The browsing, sharing and reporting live in library.js; this is the part of
+// it that touches the map — the selection going out, a prefab coming in — and
+// the mod.io sign-in it borrows from Export.
+
+let prefabLibrary = null;
+
+function wireCommunityLibrary() {
+  prefabLibrary = wirePrefabLibrary({
+    toast,
+    openDialog,
+    closeDialog,
+    // The scale figure is the editor's own and never leaves it.
+    selection: () => [...vp.selection].filter((m) => !m.userData.def.editorOnly),
+    prefabFrom: (name, meshes) => {
+      vp.setSelection(meshes);
+      return prefabFromSelection(name);
+    },
+    renderImages: (doc) => vp.renderPrefabImages(doc),
+    place: (doc) => placePrefab(doc),
+    signIn: (then, why) => openSignInDialog(then, why),
+    token: () => modioToken(),
+    forgetToken: () => modioForgetToken(),
+  });
+  for (const id of ['b-prefab-library', 'lib-prefabs']) {
+    const b = $(id);
+    if (b) b.onclick = () => prefabLibrary.open();
+  }
+  const share = $('b-prefab-share');
+  if (share) share.onclick = () => prefabLibrary.share();
+}
+
+/** Which build this is, in the status bar and on the wordmark's tooltip. */
+function showBuild() {
+  const label = buildLabel(BUILD);
+  const el = $('st-build');
+  if (el) {
+    el.textContent = label;
+    el.title = `OpsForge ${label}`;
+  }
+  const brand = $('brand');
+  if (brand) brand.title = `OpsForge — a map editor for Spatial Ops · ${label}`;
 }
 
 function wirePrefabTool() {
@@ -3392,6 +3441,7 @@ function showContextMenu(x, y, meshes) {
       () => setDamageBoxesVisible(meshes, unseen), locked);
   }
   item('Export prefab…', '', () => exportPrefab(meshes), locked);
+  item('Share to prefab library…', '', () => { vp.setSelection(meshes); prefabLibrary?.share(); }, locked);
   band();
   item('Delete', 'Del', () => { vp.setSelection(meshes); deleteSelection(); }, locked);
 
@@ -5884,10 +5934,10 @@ function warnAboutArUcoAnchor() {
  * a code, and exchanging it hands back a token that represents the person and
  * can publish to any game that accepts community submissions.
  */
-function openSignInDialog() {
+function openSignInDialog(then = chooseExportDestination, why = '') {
   openDialog({
     title: 'Sign in to mod.io',
-    body: 'mod.io will email you a 5-digit code to confirm it is you.',
+    body: `${why ? `${why} ` : ''}mod.io will email you a 5-digit code to confirm it is you.`,
     fields: [{ id: 'email', label: 'Email', placeholder: 'you@example.com' }],
     actions: [
       { label: 'Cancel', ghost: true, run: () => {} },
@@ -5903,7 +5953,7 @@ function openSignInDialog() {
             ui.status('Emailing a code…');
             await modioRequestEmailCode(email);
             ui.close();
-            openCodeDialog();
+            openCodeDialog(then);
           } catch (err) {
             ui.status(err.message, true);
             ui.enable('Send code', true);
@@ -5915,7 +5965,7 @@ function openSignInDialog() {
   });
 }
 
-function openCodeDialog() {
+function openCodeDialog(then = chooseExportDestination) {
   openDialog({
     title: 'Enter the code',
     body: 'Check your email for a 5-digit code from mod.io.',
@@ -5942,7 +5992,7 @@ function openCodeDialog() {
             const me = await modioValidateToken(token);
             modioSaveToken(token, me.username, values.remember === true);
             ui.close();
-            chooseExportDestination();
+            then();
           } catch (err) {
             ui.status(err.message, true);
             ui.enable('Verify', true);
@@ -5978,6 +6028,10 @@ function openCodeDialog() {
 // that looks like a control has been signposted.
 
 const CUSTOM_LOGO_CLICKS = 5;
+// Ten, in the same run, opens the prefab library's admin panel in a new tab.
+// Nothing on it is secret — the panel asks for its own sign-in — it is simply
+// nothing anybody but the person moderating needs to see a button for.
+const ADMIN_PANEL_CLICKS = 10;
 let customLogoUnlocked = false;
 let brandClicks = 0;
 let brandClickTimer = null;
@@ -5986,15 +6040,19 @@ function wireBrand() {
   const brand = $('brand');
   if (!brand) return;
   brand.addEventListener('click', () => {
-    if (customLogoUnlocked) return;
     brandClicks++;
     // The run has to be a run. Left to accumulate for ever, a click a day for
     // five days would open it, which is not a gesture anybody made.
     clearTimeout(brandClickTimer);
     brandClickTimer = setTimeout(() => { brandClicks = 0; }, 2500);
-    if (brandClicks < CUSTOM_LOGO_CLICKS) return;
-    customLogoUnlocked = true;
-    toast('Custom export image enabled for this session.');
+    if (brandClicks === CUSTOM_LOGO_CLICKS && !customLogoUnlocked) {
+      customLogoUnlocked = true;
+      toast('Custom export image enabled for this session.');
+    }
+    if (brandClicks === ADMIN_PANEL_CLICKS) {
+      brandClicks = 0;
+      window.open('admin/', '_blank', 'noopener');
+    }
   });
 }
 
@@ -6470,7 +6528,7 @@ function openDialog({ title, body, fields = [], actions, wide }) {
   closeDialog();
   const veil = $('veil');
   const box = document.createElement('div');
-  box.className = 'dlg' + (wide ? ' wide' : '');
+  box.className = 'dlg' + (wide === 'x' ? ' wide xwide' : wide ? ' wide' : '');
   box.setAttribute('role', 'dialog');
   box.setAttribute('aria-modal', 'true');
 

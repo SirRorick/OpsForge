@@ -211,6 +211,28 @@ function keepParts(def, parts) {
  * The object still occupies the full 2.15 m column the game reserves for it;
  * only the part you can see floats.
  */
+/**
+ * The stage's background — `#stage` in index.html, a glow from the top middle
+ * fading to the page colour — painted into a rectangle of a 2D canvas. The
+ * renderer clears to nothing and the page shows through it on screen; a
+ * picture taken off-screen has no page behind it, so this is put there first.
+ */
+function paintStage(ctx, x, y, w, h) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x, y, w, h);
+  ctx.clip();
+  ctx.translate(x + w / 2, y);
+  ctx.scale(1.2 * w, 0.9 * h);
+  const sky = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+  sky.addColorStop(0, '#16222C');
+  sky.addColorStop(0.7, '#0A0F14');
+  sky.addColorStop(1, '#0A0F14');
+  ctx.fillStyle = sky;
+  ctx.fillRect(-1, 0, 2, 2);
+  ctx.restore();
+}
+
 function seatOnFloor(geometry, def) {
   geometry.computeBoundingBox();
   if (!def.hover) geometry.translate(0, -geometry.boundingBox.min.y, 0);
@@ -2776,34 +2798,47 @@ export class Viewport extends EventTarget {
    * present. It is gitignored and optional, so a miss keeps the placeholder and
    * says so once rather than failing.
    */
+  /**
+   * The game's model for an entry, merged, tinted, seated and cached — or null
+   * when the entry has none or the file is not there. Shared by the objects in
+   * the map and the pictures of a prefab, so both are drawn from the same art.
+   */
+  async _modelFor(def) {
+    const url = modelUrl(def);
+    if (!url) return null;
+    // Two entries can share a prefab and not a pivot, and the normalisation
+    // below depends on both.
+    const cacheKey = `${def.model}|${def.pivot}|${def.size[1]}|${def.color}|${def.opacity ?? 1}` +
+      `|${def.tintModel}|${def.fixedParts ?? ''}|${def.keepParts ?? ''}|${def.cutout}|${def.hover}` +
+      `|${JSON.stringify(def.area ?? null)}|${tilesWithScale(def)}|${def.fitHeight ?? ''}`;
+    let model = this._modelCache.get(cacheKey);
+    if (!model) {
+      const found = keepParts(def, await this._prefabParts(url));
+      if (!found.length) return null;
+
+      const { scaled, fixed } = this._splitFixedPart(null, def, found);
+      const whole = mergeForDisplay(flattenArea(def.area, scaled), def.color, def.opacity ?? 1,
+        def.tintModel === true, def.cutout === true, tilesWithScale(def));
+      // Seat on the floor using the whole object's extent, then move the
+      // fixed part by the same amount so it does not drift off the area.
+      const before = new THREE.Box3().setFromBufferAttribute(
+        whole.geometry.getAttribute('position')).min.y;
+      seatOnFloor(whole.geometry, def);
+      fitToHeight(whole.geometry, def.fitHeight);
+      const after = new THREE.Box3().setFromBufferAttribute(
+        whole.geometry.getAttribute('position')).min.y;
+      model = { ...whole, fixed, dropY: after - before };
+      this._modelCache.set(cacheKey, model);
+    }
+    return model;
+  }
+
   async _swapInModel(mesh, def) {
     const url = modelUrl(def);
     if (!url) return;
     try {
-      // Two entries can share a prefab and not a pivot, and the normalisation
-      // below depends on both.
-      const cacheKey = `${def.model}|${def.pivot}|${def.size[1]}|${def.color}|${def.opacity ?? 1}` +
-        `|${def.tintModel}|${def.fixedParts ?? ''}|${def.keepParts ?? ''}|${def.cutout}|${def.hover}` +
-        `|${JSON.stringify(def.area ?? null)}|${tilesWithScale(def)}|${def.fitHeight ?? ''}`;
-      let model = this._modelCache.get(cacheKey);
-      if (!model) {
-        const found = keepParts(def, await this._prefabParts(url));
-        if (!found.length) return;
-
-        const { scaled, fixed } = this._splitFixedPart(mesh, def, found);
-        const whole = mergeForDisplay(flattenArea(def.area, scaled), def.color, def.opacity ?? 1,
-          def.tintModel === true, def.cutout === true, tilesWithScale(def));
-        // Seat on the floor using the whole object's extent, then move the
-        // fixed part by the same amount so it does not drift off the area.
-        const before = new THREE.Box3().setFromBufferAttribute(
-          whole.geometry.getAttribute('position')).min.y;
-        seatOnFloor(whole.geometry, def);
-        fitToHeight(whole.geometry, def.fitHeight);
-        const after = new THREE.Box3().setFromBufferAttribute(
-          whole.geometry.getAttribute('position')).min.y;
-        model = { ...whole, fixed, dropY: after - before };
-        this._modelCache.set(cacheKey, model);
-      }
+      const model = await this._modelFor(def);
+      if (!model) return;
       // The .glb was fetched while all this waited, and in that time the mesh
       // may have been deleted, or the map cleared and rebuilt by an undo, or
       // the object re-skinned into something else by `setProp`. Answering for
@@ -5509,27 +5544,106 @@ export class Viewport extends EventTarget {
     } finally {
       for (const o of hidden) o.visible = true;
     }
-    // The renderer clears to nothing, and what shows through on screen is the
-    // stage's own background — `#stage` in index.html, a glow from the top
-    // middle fading to the page colour. Painted under the render here, or the
-    // sky comes out as transparent and most viewers show that as black.
+    // Under the render, or the sky comes out transparent and most viewers show
+    // that as black. See paintStage.
     const out = document.createElement('canvas');
     out.width = w;
     out.height = h;
     const ctx = out.getContext('2d');
-    ctx.save();
-    ctx.translate(w / 2, 0);
-    ctx.scale(1.2 * w, 0.9 * h);
-    const sky = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
-    sky.addColorStop(0, '#16222C');
-    sky.addColorStop(0.7, '#0A0F14');
-    sky.addColorStop(1, '#0A0F14');
-    ctx.fillStyle = sky;
-    ctx.fillRect(-1, 0, 2, 2);
-    ctx.restore();
+    paintStage(ctx, 0, 0, w, h);
     ctx.drawImage(canvas, 0, 0, w, h);
     renderer.dispose();
     return new Promise((resolve) => out.toBlob(resolve, 'image/png'));
+  }
+
+  // -- the pictures a shared prefab carries ------------------------------------
+  // Every prefab in the library is shown the same way, so they can be compared
+  // at a glance: the game's own models, on the stage's own background, from a
+  // camera at the same height and angle, framed to the prefab's size and
+  // nothing else. A still for the card, and a strip of frames going once round
+  // it for the card to play while the pointer is over it. The still is the
+  // strip's first frame, so the turn starts from the picture you were looking
+  // at. Rendered here, at the moment of sharing, from the prefab itself rather
+  // than from the view — whatever the person was looking at has no say in it.
+
+  /**
+   * `{ thumb, spin }` as data URLs (WebP where the browser can write it, PNG
+   * where it cannot) for a prefab document in the editor's own format.
+   */
+  async renderPrefabImages(doc, { thumb = 384, frame = 192, frames = 24 } = {}) {
+    const inner = new THREE.Group();
+    const meshes = await Promise.all(doc.objects.map(async (o) => {
+      const def = defFor({ type: o.type, props: o.props });
+      // The game's art whenever it is there, whatever the Stand-ins switch says:
+      // the picture is for everybody, and everybody gets the same one.
+      const model = def.model ? await this._modelFor(def).catch(() => null) : null;
+      const m = model
+        ? new THREE.Mesh(model.geometry, model.materials)
+        : new THREE.Mesh(geometryFor(def), this.materialFor(def));
+      m.position.fromArray(o.p);
+      m.quaternion.fromArray(o.q);
+      m.scale.fromArray(o.s);
+      return m;
+    }));
+    for (const m of meshes) inner.add(m);
+    const box = new THREE.Box3().setFromObject(inner);
+    if (box.isEmpty()) throw new Error('that prefab has nothing to draw');
+    const centre = box.getCenter(new THREE.Vector3());
+    const radius = Math.max(0.25, box.getSize(new THREE.Vector3()).length() / 2);
+    inner.position.sub(centre);
+    const turntable = new THREE.Group();
+    turntable.add(inner);
+
+    const scene = new THREE.Scene();
+    scene.add(new THREE.HemisphereLight(0x9fc4e0, 0x1a2028, 2.0));
+    const key = new THREE.DirectionalLight(0xfff2df, 2.4);
+    key.position.set(6, 12, 5);
+    scene.add(key);
+    const fill = new THREE.DirectionalLight(0x7fa8c9, 0.7);
+    fill.position.set(-7, 5, -6);
+    scene.add(fill);
+    scene.add(turntable);
+
+    const FOV = 30, ELEVATION = THREE.MathUtils.degToRad(28), START = THREE.MathUtils.degToRad(-35);
+    const camera = new THREE.PerspectiveCamera(FOV, 1, 0.01, 1000);
+    const distance = (radius / Math.sin(THREE.MathUtils.degToRad(FOV / 2))) * 1.06;
+    camera.position.set(0, Math.sin(ELEVATION) * distance, Math.cos(ELEVATION) * distance);
+    camera.lookAt(0, 0, 0);
+
+    const canvas = document.createElement('canvas');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer: true });
+    renderer.toneMapping = this.renderer.toneMapping;
+    renderer.toneMappingExposure = this.renderer.toneMappingExposure;
+    renderer.outputColorSpace = this.renderer.outputColorSpace;
+    const shot = (size, angle) => {
+      renderer.setSize(size, size, false);
+      turntable.rotation.y = angle;
+      renderer.render(scene, camera);
+      return canvas;
+    };
+    const encode = (c, quality) => {
+      const webp = c.toDataURL('image/webp', quality);
+      return webp.startsWith('data:image/webp') ? webp : c.toDataURL('image/png');
+    };
+    try {
+      const still = document.createElement('canvas');
+      still.width = still.height = thumb;
+      const sctx = still.getContext('2d');
+      paintStage(sctx, 0, 0, thumb, thumb);
+      sctx.drawImage(shot(thumb, START), 0, 0, thumb, thumb);
+
+      const strip = document.createElement('canvas');
+      strip.width = frame * frames;
+      strip.height = frame;
+      const tctx = strip.getContext('2d');
+      for (let i = 0; i < frames; i++) {
+        paintStage(tctx, i * frame, 0, frame, frame);
+        tctx.drawImage(shot(frame, START + (i / frames) * Math.PI * 2), i * frame, 0, frame, frame);
+      }
+      return { thumb: encode(still, 0.88), spin: encode(strip, 0.8) };
+    } finally {
+      renderer.dispose();
+    }
   }
 
   _stepPreview(dt) {

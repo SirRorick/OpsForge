@@ -12,7 +12,7 @@
 // `behaviour` — so lookups take the whole map object, not just the type.
 // ---------------------------------------------------------------------------
 
-import { BUILTIN_PACKS, ROUND_SHAPES, DAMAGE_STYLE_INVISIBLE } from './packs.js';
+import { BUILTIN_PACKS, HOLD_ROUND, ROUND_SHAPES, DAMAGE_STYLE_INVISIBLE } from './packs.js';
 
 /**
  * Where the editor's art lives, relative to the page.
@@ -106,8 +106,9 @@ function registerPack(pack) {
       key: raw.key || raw.type,
       pack: pack.id,
       group: pack.group || 'virtual',
-      // Held round: X and Z stay equal however it is resized. See ROUND_SHAPES.
-      round: raw.round ?? ROUND_SHAPES.has(raw.shape),
+      // Held round: X and Z stay equal however it is resized — while HOLD_ROUND
+      // is on. See ROUND_SHAPES.
+      round: HOLD_ROUND && (raw.round ?? ROUND_SHAPES.has(raw.shape)),
       editorOnly: raw.editorOnly === true,
     };
     byKey.set(def.key, def);

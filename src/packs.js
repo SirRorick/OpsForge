@@ -194,6 +194,13 @@ export const PACK_GROUPS = [
 //
 // `round` is derived from the shape rather than written on each entry, so a
 // cylinder in an extra pack under packs/ is held round too.
+//
+// **Off, as of 2026-11-03**, at the owner's call: this editor writes plenty the
+// in-game editor never offers, and the game draws most of it as written. Ovals
+// are being tested in a headset. Every part of the rule — the gizmo ties, the
+// inspector, Replace, paste, the assistant, the warnings and Make round — reads
+// `round` off the catalog entry, so this one switch turns all of it on or off.
+export const HOLD_ROUND = false;
 export const ROUND_SHAPES = new Set(['cylinder', 'cylinderBoundary']);
 
 // ---------------------------------------------------------------------------

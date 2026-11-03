@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://*.public.blob.vercel-storage.com; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>OpsForge Library Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="admin.css">
+</head>
+<body>
+<!-- The prefab library's moderation page. Reached from the editor by clicking
+     its wordmark ten times, and by its address; neither is a secret, and
+     nothing here works without signing in. The sign-in is this page's own:
+     an allowlisted address, a code mailed to it, a session cookie only this
+     site can set. See api/_lib/library.js. -->
+<header>
+  <b class="brand">Ops<i>Forge</i></b><span class="sub">Prefab library admin</span>
+  <span class="grow"></span>
+  <span id="who"></span>
+  <button class="btn ghost" id="signout" hidden>Sign out</button>
+</header>
+
+<main>
+  <section id="signin" class="card narrow" hidden>
+    <h1>Sign in</h1>
+    <p class="hint">An address on the admin list gets a six-digit code by email.</p>
+    <label class="field"><span>Email</span><input type="email" id="email" autocomplete="email"></label>
+    <button class="btn" id="send">Send code</button>
+    <div id="code-step" hidden>
+      <label class="field"><span>Code</span><input type="text" id="code" inputmode="numeric" maxlength="6" autocomplete="one-time-code"></label>
+      <button class="btn" id="verify">Sign in</button>
+    </div>
+    <p class="status" id="signin-status"></p>
+  </section>
+
+  <section id="dash" hidden>
+    <nav id="tabs">
+      <button data-tab="review" class="on">Review <span class="n" id="n-review"></span></button>
+      <button data-tab="library">Library <span class="n" id="n-library"></span></button>
+      <button data-tab="tags">Tags <span class="n" id="n-tags"></span></button>
+      <button data-tab="bans">Banned <span class="n" id="n-bans"></span></button>
+      <button data-tab="settings">Settings</button>
+    </nav>
+    <p class="status" id="dash-status"></p>
+
+    <div class="pane" id="pane-review">
+      <p class="hint">Hidden prefabs: reported past the threshold, hidden by hand, or shared by an account since banned.
+        Restore puts one back and clears its reports; Delete removes it and its files for good.</p>
+      <div id="review-list" class="list"></div>
+    </div>
+
+    <div class="pane" id="pane-library" hidden>
+      <div class="row"><input type="search" id="lib-filter" placeholder="Filter by title, tag, author or id"></div>
+      <div id="library-list" class="list"></div>
+    </div>
+
+    <div class="pane" id="pane-tags" hidden>
+      <p class="hint">Tags people wrote themselves. Presets are part of the editor and are not listed.
+        Rename one onto another to merge a typo into the right spelling.</p>
+      <div id="tags-list" class="list"></div>
+    </div>
+
+    <div class="pane" id="pane-bans" hidden>
+      <p class="hint">Banned mod.io accounts can still browse the library but cannot share to it or report in it.</p>
+      <div class="row">
+        <input type="text" id="ban-uid" placeholder="mod.io account id" inputmode="numeric">
+        <input type="text" id="ban-reason" placeholder="Reason (kept here only)">
+        <button class="btn" id="ban-go">Ban</button>
+      </div>
+      <div id="bans-list" class="list"></div>
+    </div>
+
+    <div class="pane" id="pane-settings" hidden>
+      <label class="field"><span>Reports to hide</span><input type="number" id="threshold" min="1" max="20"></label>
+      <p class="hint">How many different accounts reporting a prefab or a tag hides it until you review it.</p>
+      <button class="btn" id="threshold-save">Save</button>
+    </div>
+  </section>
+</main>
+
+<script type="module" src="admin.js"></script>
+</body>
+</html>

@@ -4,6 +4,7 @@
 // served over http. Node rather than Python so it works the same everywhere.
 //
 //   npm run serve              -> http://localhost:8000
+//   npm run serve -- --no-open  the same, without opening a browser
 //   npm run serve -- 9000
 //   npm run serve -- --lan     also answer other machines on the network
 //
@@ -23,7 +24,36 @@ const PORT = Number(ARGS.find((a) => /^\d+$/.test(a))) || 8000;
 const HOST = ARGS.includes('--lan') ? '0.0.0.0' : '127.0.0.1';
 
 /** Top-level names the editor fetches. Anything else answers 404. */
-const SERVED = new Set(['index.html', 'src', 'assets', 'packs', 'dist', 'favicon.ico']);
+const SERVED = new Set(['index.html', 'src', 'assets', 'packs', 'dist', 'admin', 'favicon.ico']);
+
+// The prefab library's API, run here the way Vercel runs it, against an
+// in-memory store that lasts as long as this process. Nothing is sent to
+// mod.io: a token "dev:<id>:<name>" is that person (devIdentity), and the
+// admin code is printed to this console instead of mailed. The admin address
+// is OPSFORGE_ADMIN_EMAILS if set, else admin@opsforge.test.
+process.env.OPSFORGE_DEV ??= '1';
+process.env.OPSFORGE_DEV_MODIO ??= '1';
+process.env.OPSFORGE_ADMIN_EMAILS ??= 'admin@opsforge.test';
+const api = await import('./api/index.js');
+
+/** A Node request as the Web Request the function expects, and its Response back. */
+async function runApi(req, res, url) {
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  const body = chunks.length ? Buffer.concat(chunks) : undefined;
+  const request = new Request(url, {
+    method: req.method,
+    headers: Object.entries(req.headers).filter(([, v]) => typeof v === 'string'),
+    body: req.method === 'GET' || req.method === 'HEAD' ? undefined : body,
+  });
+  const fn = api[req.method];
+  const out = fn ? await fn(request) : new Response('Method not allowed', { status: 405 });
+  const headers = Object.fromEntries(out.headers);
+  // Local is http, and a Secure cookie set over http is dropped by every
+  // browser but Chrome's localhost exception; say so rather than fail quietly.
+  res.writeHead(out.status, headers);
+  res.end(Buffer.from(await out.arrayBuffer()));
+}
 
 function servable(rel) {
   const parts = rel.split('/').filter(Boolean);
@@ -49,6 +79,7 @@ const TYPES = {
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://localhost:${PORT}`);
+    if (url.pathname.startsWith('/api/')) return void await runApi(req, res, url);
     let rel = decodeURIComponent(url.pathname);
     if (rel === '/') rel = '/index.html';
 
@@ -91,7 +122,7 @@ server.listen(PORT, HOST, () => {
   const url = `http://localhost:${PORT}/index.html`;
   const reach = HOST === '0.0.0.0' ? 'this machine and the network' : 'this machine only (--lan to share)';
   console.log(`Serving ${ROOT}\n  ${url}\n  reachable from ${reach}\n  Ctrl+C to stop`);
-  open(url);
+  if (!ARGS.includes('--no-open')) open(url);
 });
 
 function open(url) {

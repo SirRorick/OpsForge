@@ -13,12 +13,14 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { Script } from 'node:vm';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 export const ORDER = [
+  'version.js',
   'unity.js', 'align.js', 'rules.js', 'format.js', 'publish.js', 'zip.js', 'modio.js', 'packs.js', 'catalog.js',
-  'looks.js',
-  'ai.js', 'link.js', 'assistant.js',
+  'looks.js', 'prefablib.js',
+  'ai.js', 'link.js', 'assistant.js', 'library.js',
   'placeholders.js', 'project.js', 'checkpoints.js', 'gizmo.js', 'scene.js', 'app.js',
 ];
 
@@ -35,6 +37,7 @@ export function build() {
 
   for (const name of ORDER) {
     let src = readFileSync(join(ROOT, 'src', name), 'utf8');
+    if (name === 'version.js') src = stampBuild(src);
 
     src = src.replace(IMPORT_STMT, (stmt, specifier) => {
       if (specifier.startsWith('.')) return ''; // local module, inlined below
@@ -59,6 +62,29 @@ export function build() {
   mkdirSync(join(ROOT, 'dist'), { recursive: true });
   const out = join(ROOT, 'dist', 'spatial-ops-map-editor.html');
   writeFileSync(out, withContentSecurityPolicy(spliceBundle(html, bundle)), 'utf8');
+  return out;
+}
+
+/**
+ * What this bundle is: the short commit it was built from, "+" when the working
+ * tree held changes not yet committed, and the day. Outside a git checkout —
+ * a copy unpacked from a release zip — the stamp stays "dev", which is true.
+ */
+export function buildStamp() {
+  try {
+    const git = (...a) => execFileSync('git', a, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const commit = git('rev-parse', '--short=7', 'HEAD');
+    const dirty = git('status', '--porcelain', '--untracked-files=no') ? '+' : '';
+    return { commit: commit + dirty, date: new Date().toISOString().slice(0, 10) };
+  } catch {
+    return { commit: 'dev', date: '' };
+  }
+}
+
+function stampBuild(src) {
+  const { commit, date } = buildStamp();
+  const out = src.replace("commit: 'dev', date: ''", `commit: ${JSON.stringify(commit)}, date: ${JSON.stringify(date)}`);
+  if (out === src && commit !== 'dev') throw new Error('src/version.js no longer has the line build.mjs stamps');
   return out;
 }
 
@@ -116,9 +142,12 @@ export const CSP_SOURCES = {
   'font-src': ["'self'", 'https://fonts.gstatic.com'],
   // mod.io serves some thumbnails by redirecting thumb.modcdn.io to its own
   // resizing worker, so that one host is named as well — not all of workers.dev.
-  'img-src': ["'self'", 'data:', 'blob:', 'https://*.modcdn.io', 'https://modio-web-thumbnail.modapi.workers.dev'],
+  // The prefab library's pictures and files are in the deployment's Vercel Blob
+  // store, whose host is the store's own subdomain of this one.
+  'img-src': ["'self'", 'data:', 'blob:', 'https://*.modcdn.io', 'https://modio-web-thumbnail.modapi.workers.dev',
+    'https://*.public.blob.vercel-storage.com'],
   'connect-src': [
-    "'self'", 'blob:', 'data:',
+    "'self'", 'blob:', 'data:', 'https://*.public.blob.vercel-storage.com',
     'https://g-11054.modapi.io', 'https://*.modcdn.io',
     'https://api.anthropic.com', 'https://api.openai.com',
     'http://127.0.0.1:47615',

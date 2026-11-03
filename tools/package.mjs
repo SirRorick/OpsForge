@@ -133,8 +133,35 @@ export function packageRelease({ out, zip = true } = {}) {
   writeFileSync(join(dest, 'HOW-TO-RUN.md'), howToRun(), 'utf8');
   writeFileSync(join(dest, 'vercel.json'), `${JSON.stringify(vercelConfig(), null, 2)}\n`, 'utf8');
   packageLink(join(dest, 'link'));
+  packageLibraryServer(dest);
 
   return { dest, zip: zip ? zipDirectory(dest, `${dest}.zip`) : null };
+}
+
+/**
+ * The community prefab library's server and its admin page, for a Vercel
+ * deployment of the release: api/ is the one function, admin/ the static page,
+ * and the three modules the function imports — the catalog it checks pieces
+ * against, and the rules it shares with the editor — under src/ where its
+ * relative imports find them. They are the same files as the repository's and
+ * no secret; they are public on GitHub already.
+ *
+ * Anywhere that is not Vercel, all of this is inert: a static server hands
+ * out the files and runs none of them, and the editor says the library is not
+ * available on this copy.
+ */
+export const LIBRARY_SHARED = ['catalog.js', 'packs.js', 'prefablib.js'];
+
+export function packageLibraryServer(dest) {
+  cpSync(join(ROOT, 'api'), join(dest, 'api'), { recursive: true });
+  cpSync(join(ROOT, 'admin'), join(dest, 'admin'), { recursive: true });
+  mkdirSync(join(dest, 'src'), { recursive: true });
+  for (const name of LIBRARY_SHARED) cpSync(join(ROOT, 'src', name), join(dest, 'src', name));
+  // ES modules for the function, and nothing to install: no dependencies, no
+  // build script, so Vercel serves the folder as it is.
+  writeFileSync(join(dest, 'package.json'), `${JSON.stringify({
+    name: 'opsforge-release', private: true, type: 'module', engines: { node: '>=20' },
+  }, null, 2)}\n`, 'utf8');
 }
 
 /**
@@ -207,7 +234,12 @@ export function linkManifest(version) {
 export function vercelConfig() {
   return {
     cleanUrls: false,
+    // Every /api/<route> is the one function, told its route.
+    rewrites: [{ source: '/api/:path*', destination: '/api/index?route=:path*' }],
     headers: [{
+      source: '/admin/(.*)',
+      headers: [{ key: 'X-Robots-Tag', value: 'noindex, nofollow' }],
+    }, {
       source: '/(.*)',
       headers: [
         { key: 'Content-Security-Policy', value: "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" },

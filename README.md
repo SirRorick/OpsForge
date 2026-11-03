@@ -106,12 +106,10 @@ the server until something asks for them.
   of wall is four metres of brick rather than one smeared one. Every object
   also has a built-in stand-in shape, and the **Stand-ins** switch in the top
   right corner of the view draws those instead at any time.
-- **Cylinders stay round.** The game draws every cylinder round whatever the
-  file says — 527 maps from the public library saved before OpsForge existed
-  hold over 1,500 of them and not one is oval — so stretching one along X
-  stretches it along Z as well, whether by the gizmo, the inspector or the
-  assistant. A map that already has an oval cylinder in it is told so when it
-  opens, and selecting one offers **Make round**.
+- **Anything can be stretched on any axis**, cylinders included, even where the
+  headset's own editor only offers an even scale. The game draws most of what
+  this editor writes as it is written; if a stretched cylinder ever shows round
+  in the headset, that is worth reporting.
 - **Scale Figure**, under **Editor Only** at the bottom of the library, is a
   1.8 m person to build against — the game's own bot, dyed magenta so it cannot
   be mistaken for anything real. Move it, turn it and copy it like any other
@@ -353,6 +351,45 @@ the inspector has seven digits in it.
 - The same link works typed by hand: `?map=` and a mod.io map id on the end of
   the editor's address opens that map, signed in or not.
 
+## Community prefab library
+
+A shared shelf of prefabs anybody can browse, place and add to — buildings,
+cover, whole rooms — kept with the editor itself.
+
+- **Browsing needs nothing.** **Community prefabs…** at the top of the Library
+  panel, or **Prefab library…** under Prefabs in the Build tab, opens it. Search
+  is forgiving: plurals, a letter out of place and a few common synonyms all
+  find what was meant ("biulding", "houses"), every word has to match
+  something, and a search that finds nothing suggests the nearest tag. The tag
+  chips along the top narrow it further. Hover a card to see the prefab turn
+  round; click it, or **Place**, and it arrives on the cursor as one group, the
+  same as an imported prefab file.
+- **The first time it opens** it says what it is: made by the community, not by
+  OpsForge or the game's makers, shared as submitted, and to be checked before
+  use. Accepting is remembered in the browser.
+- **Sharing** — **Share selection…**, or **Share to prefab library…** on the
+  right-click menu — needs a mod.io sign-in, the same one Export uses to publish
+  maps. The editor draws the pictures itself, from the same camera, lights and
+  background for every prefab, so the library reads as one collection: a still
+  for the card and a turn all the way round for hovering. Give it a title and at
+  least one tag. Theme and size tags are offered already ticked from what the
+  prefab is made of; preset tags cover kinds, styles, sizes and modes; and you
+  can write your own, which the editor checks against the tags that already
+  exist — "biulding" is asked whether it meant "building" — and which then join
+  the list everybody picks from. Confirm it is your own work and it is in the
+  library at once, under your mod.io name.
+- **Reporting** a prefab, or a tag somebody wrote for it, also needs a mod.io
+  sign-in, so each account counts once. **Three reports hide it** until it has
+  been reviewed.
+- Prefabs are checked on the way in and again on the way out: only pieces the
+  game has, at sane sizes and positions, at most 300 objects, rebuilt from their
+  values so nothing else rides along. The scale figure cannot be shared.
+
+The library runs on the same Vercel deployment as the editor; a copy served
+anywhere else says it has no library behind it, and everything else works as
+before. How it is set up and moderated is in
+[docs/LIBRARY.md](docs/LIBRARY.md).
+
 ## AI assistant
 
 Describe what you want — "a blue cover wall with a sniper spawner behind it",
@@ -417,8 +454,8 @@ and change rule sets, and save prefabs. It is held to the editor's rules:
   the game's own render of it, so "a red brick wall" or "something wooden" finds
   the right piece whatever its theme is called. (`npm run measure-looks`
   remeasures them from the library icons.)
-- **Cylinders stay round** and **the scale figure is not its to place**, for the
-  same reasons they are not yours.
+- **The scale figure is not its to place**: it is the editor's own and never
+  part of a map.
 - It cannot go past the **700-object budget** or put anything **entirely outside
   the 60 × 60 m square** — where you would be warned, it is refused, because it
   cannot answer the warning.
@@ -562,6 +599,13 @@ first, with nothing to say which is which.
 
 Grouping, locking and hidden objects travel in it too. Those otherwise live only
 in the browser they were made in.
+
+## Which build is this?
+
+The bottom left corner of the status bar names the build — `v13 · build 1a2b3c4 ·
+2026-11-03` is release 13, built from that commit on that day — and hovering
+the OpsForge wordmark says the same. A copy run straight from `src/` says
+`dev`. Quote it when you report a problem.
 
 ## Keyboard
 
